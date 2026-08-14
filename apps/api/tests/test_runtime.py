@@ -73,16 +73,28 @@ class ScriptedModelProvider:
                 tool_calls=[
                     ToolCall(
                         id="call-edit",
-                        name="shell",
+                        name="write_file",
                         arguments={
-                            "command": f'"{self.python_executable}" -c "from pathlib import Path; path = Path(\'math_utils.py\'); path.write_text(path.read_text().replace(\'return a + b\', \'return a - b\'), encoding=\'utf-8\')"',
-                            "timeout_seconds": 30,
+                            "path": "math_utils.py",
+                            "content": "def subtract(a: int, b: int) -> int:\n    return a - b\n",
                         },
                     )
                 ],
             )
 
         if len(tool_messages) == 5:
+            return ModelResponse(
+                deltas=["Inspecting the git diff"],
+                tool_calls=[
+                    ToolCall(
+                        id="call-diff",
+                        name="git_diff",
+                        arguments={"path": "math_utils.py", "timeout_seconds": 30},
+                    )
+                ],
+            )
+
+        if len(tool_messages) == 6:
             return ModelResponse(
                 deltas=["Re-running tests"],
                 tool_calls=[
@@ -116,6 +128,13 @@ def _write_broken_repo(repo_path: Path) -> None:
         encoding="utf-8",
     )
     subprocess.run(["git", "init"], cwd=repo_path, check=True, capture_output=True)
+    subprocess.run(["git", "add", "."], cwd=repo_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init"],
+        cwd=repo_path,
+        check=True,
+        capture_output=True,
+    )
 
 
 def test_agent_runtime_executes_single_agent_loop(tmp_path: Path, monkeypatch) -> None:
