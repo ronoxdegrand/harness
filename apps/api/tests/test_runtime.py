@@ -1,0 +1,221 @@
+import json
+import sqlite3
+import subprocess
+import sys
+from pathlib import Path
+
+from agent_harness_api.context import Context
+from agent_harness_api.config import get_settings
+from agent_harness_api.db import initialize_database
+from agent_harness_api.events import EventEmitter, RuntimeEvent
+from agent_harness_api.model import ModelResponse
+from agent_harness_api.runtime import AgentRuntime
+from agent_harness_api.store import RunStore
+from agent_harness_api.tools import ToolCall, ToolExecutor, build_default_tool_registry
+
+
+class ScriptedModelProvider:
+    def __init__(self, python_executable: str) -> None:
+        self.python_executable = python_executable
+
+    def complete(self, context: Context) -> ModelResponse:
+        tool_messages = [message for message in context.messages if message.role == "tool"]
+        if not tool_messages:
+            return ModelResponse(
+                deltas=["Inspecting repository"],
+                tool_calls=[
+                    ToolCall(id="call-list", name="list_files", arguments={}),
+                ],
+            )
+
+        if len(tool_messages) == 1:
+            return ModelResponse(
+                deltas=["Searching for the failing function"],
+                tool_calls=[
+                    ToolCall(
+                        id="call-search",
+                        name="search_files",
+                        arguments={"query": "subtract", "limit": 10},
+                    )
+                ],
+            )
+
+        if len(tool_messages) == 2:
+            return ModelResponse(
+                deltas=["Reading implementation details"],
+                tool_calls=[
+                    ToolCall(
+                        id="call-read",
+                        name="read_file",
+                        arguments={"path": "math_utils.py"},
+                    )
+                ],
+            )
+
+        if len(tool_messages) == 3:
+            return ModelResponse(
+                deltas=["Running tests before editing"],
+                tool_calls=[
+                    ToolCall(
+                        id="call-test-fail",
+                        name="shell",
+                        arguments={
+                            "command": f'"{self.python_executable}" -m pytest -q',
+                            "timeout_seconds": 30,
+                        },
+                    )
+                ],
+            )
+
+        if len(tool_messages) == 4:
+            return ModelResponse(
+                deltas=["Patching the bug"],
+                tool_calls=[
+                    ToolCall(
+                        id="call-edit",
+                        name="shell",
+                        arguments={
+                            "command": f'"{self.python_executable}" -c "from pathlib import Path; path = Path(\'math_utils.py\'); path.write_text(path.read_text().replace(\'return a + b\', \'return a - b\'), encoding=\'utf-8\')"',
+                            "timeout_seconds": 30,
+                        },
+                    )
+                ],
+            )
+
+        if len(tool_messages) == 5:
+            return ModelResponse(
+                deltas=["Re-running tests"],
+                tool_calls=[
+                    ToolCall(
+                        id="call-test-pass",
+                        name="shell",
+                        arguments={
+                            "command": f'"{self.python_executable}" -m pytest -q',
+                            "timeout_seconds": 30,
+                        },
+                    )
+                ],
+            )
+
+        return ModelResponse(
+            deltas=["Summarizing completion"],
+            output_text="Fixed the subtraction bug and confirmed the test suite passes.",
+        )
+
+
+def _write_broken_repo(repo_path: Path) -> None:
+    repo_path.mkdir(parents=True, exist_ok=True)
+    (repo_path / "math_utils.py").write_text(
+        "def subtract(a: int, b: int) -> int:\n    return a + b\n",
+        encoding="utf-8",
+    )
+    tests_dir = repo_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_math_utils.py").write_text(
+        "from math_utils import subtract\n\n\ndef test_subtract() -> None:\n    assert subtract(5, 2) == 3\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init"], cwd=repo_path, check=True, capture_output=True)
+
+
+def test_agent_runtime_executes_single_agent_loop(tmp_path: Path, monkeypatch) -> None:
+    database_path = tmp_path / "runtime.db"
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(database_path))
+    get_settings.cache_clear()
+    initialize_database()
+
+    broken_repo = tmp_path / "broken-repo"
+    _write_broken_repo(broken_repo)
+
+    captured_events: list[RuntimeEvent] = []
+    emitter = EventEmitter()
+    emitter.subscribe(captured_events.append)
+
+    registry = build_default_tool_registry()
+    runtime = AgentRuntime(
+        model=ScriptedModelProvider(sys.executable),
+        tool_registry=registry,
+        tool_executor=ToolExecutor(registry),
+        store=RunStore(database_path),
+        event_emitter=emitter,
+        max_iterations=8,
+        timeout_seconds=60,
+    )
+
+    result = runtime.run(
+        "Inspect the repository, fix the bug, and confirm tests pass.",
+        target_path=broken_repo,
+    )
+
+    assert result.status == "completed"
+    assert "test suite passes" in result.output_text
+    assert "return a - b" in (broken_repo / "math_utils.py").read_text(encoding="utf-8")
+
+    event_types = [event.type for event in captured_events]
+    assert "turn.started" in event_types
+    assert "model.started" in event_types
+    assert "model.delta" in event_types
+    assert "model.completed" in event_types
+    assert "tool.started" in event_types
+    assert "tool.failed" in event_types
+    assert "tool.completed" in event_types
+    assert "turn.completed" in event_types
+    assert "turn.failed" not in event_types
+
+    tool_failures = [
+        event
+        for event in captured_events
+        if event.type == "tool.failed"
+        and event.payload["tool_call"]["id"] == "call-test-fail"
+    ]
+    assert tool_failures
+    failure_result = tool_failures[0].payload["result"]
+    assert failure_result["success"] is False
+    assert "assert subtract(5, 2) == 3" in failure_result["output"]
+
+    connection = sqlite3.connect(database_path)
+    run_row = connection.execute(
+        "SELECT status, final_output FROM harness_runs WHERE id = ?",
+        (result.run_id,),
+    ).fetchone()
+    event_count = connection.execute(
+        "SELECT COUNT(*) FROM harness_events WHERE run_id = ?",
+        (result.run_id,),
+    ).fetchone()
+    snapshot_count = connection.execute(
+        "SELECT COUNT(*) FROM harness_snapshots WHERE run_id = ?",
+        (result.run_id,),
+    ).fetchone()
+    connection.close()
+
+    assert run_row == ("completed", result.output_text)
+    assert event_count is not None and event_count[0] > 0
+    assert snapshot_count is not None and snapshot_count[0] >= 2
+
+
+def test_runtime_resume_loads_latest_snapshot(tmp_path: Path, monkeypatch) -> None:
+    database_path = tmp_path / "resume.db"
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(database_path))
+    get_settings.cache_clear()
+    initialize_database()
+
+    store = RunStore(database_path)
+    store.create_run(
+        run_id="resume-run",
+        target_path=tmp_path,
+        max_iterations=2,
+        timeout_seconds=10,
+    )
+    snapshot = [{"role": "user", "content": "resume me", "name": None, "tool_call_id": None}]
+    store.save_snapshot("resume-run", 1, snapshot)
+
+    registry = build_default_tool_registry()
+    runtime = AgentRuntime(
+        model=ScriptedModelProvider(sys.executable),
+        tool_registry=registry,
+        tool_executor=ToolExecutor(registry),
+        store=store,
+    )
+
+    context = runtime.resume("resume-run")
+    assert json.loads(json.dumps(context.snapshot())) == snapshot

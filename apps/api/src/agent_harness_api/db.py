@@ -16,9 +16,39 @@ def initialize_database() -> Path:
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS harness_runs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id TEXT PRIMARY KEY,
                 status TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                target_path TEXT NOT NULL,
+                max_iterations INTEGER NOT NULL,
+                timeout_seconds INTEGER NOT NULL,
+                final_output TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS harness_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (run_id) REFERENCES harness_runs (id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS harness_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                iteration INTEGER NOT NULL,
+                messages TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (run_id) REFERENCES harness_runs (id)
             )
             """
         )
@@ -34,4 +64,3 @@ def database_status() -> dict[str, str | bool]:
         "path": str(db_path),
         "exists": db_path.exists(),
     }
-
