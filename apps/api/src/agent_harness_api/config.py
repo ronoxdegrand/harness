@@ -7,6 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     app_name: str = "AI Agent Harness API"
     app_env: str = "development"
+    workspace_root: Path = Path(__file__).resolve().parents[4]
     sqlite_path: Path = Path(__file__).resolve().parents[2] / "data" / "app.db"
 
     model_config = SettingsConfigDict(
@@ -19,4 +20,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-
