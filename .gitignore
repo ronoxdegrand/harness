@@ -5,11 +5,16 @@ Thumbs.db
 __pycache__/
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
 *.pyc
+.coverage
+.python-version
 
 node_modules/
 dist/
+build/
 .vite/
+*.tsbuildinfo
 
 .env
 .env.*
@@ -18,7 +23,9 @@ dist/
 *.db
 *.db-shm
 *.db-wal
+apps/api/data/
+*.egg-info/
+.eggs/
 
 coverage/
 htmlcov/
-
