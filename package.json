@@ -6,7 +6,10 @@
     "apps/web"
   ],
   "scripts": {
-    "dev:web": "npm --workspace apps/web run dev",
+    "dev:api": "node ./scripts/dev.js start-api",
+    "dev:web": "node ./scripts/dev.js start-web",
+    "stop:api": "node ./scripts/dev.js stop-api",
+    "stop:web": "node ./scripts/dev.js stop-web",
     "build:web": "npm --workspace apps/web run build",
     "typecheck:web": "npm --workspace apps/web run typecheck"
   }
