@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -21,33 +22,70 @@ def test_run_websocket_streams_runtime_events(tmp_path: Path, monkeypatch) -> No
     repo_path = workspace_root / "demo"
     _create_repo(repo_path)
     monkeypatch.setenv("HARNESS_WORKSPACE_ROOT", str(workspace_root))
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     get_settings.cache_clear()
 
-    with TestClient(app) as client:
-        with client.websocket_connect("/ws/run") as websocket:
-            ready = websocket.receive_json()
-            assert ready["kind"] == "session.ready"
+    call_count = {"value": 0}
 
-            websocket.send_json(
-                {
-                    "task": 'inspect the repo, search for "test_ok", run tests, and show git diff',
-                    "workspace_path": "demo",
+    def fake_post(*args, **kwargs):
+        call_count["value"] += 1
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                if call_count["value"] == 1:
+                    return {
+                        "candidates": [
+                            {
+                                "content": {
+                                    "parts": [
+                                        {
+                                            "functionCall": {
+                                                "name": "list_files",
+                                                "args": {"path": ".", "limit": 200},
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                return {
+                    "candidates": [
+                        {"content": {"parts": [{"text": "I inspected the repo and the tests pass."}]}}
+                    ]
                 }
-            )
 
-            kinds: list[str] = []
-            runtime_event_types: list[str] = []
-            final_payload: dict[str, object] | None = None
+        return FakeResponse()
 
-            while True:
-                message = websocket.receive_json()
-                kinds.append(message["kind"])
-                if message["kind"] == "runtime.event":
-                    runtime_event_types.append(message["event"]["type"])
-                if message["kind"] == "run.completed":
-                    final_payload = message["payload"]
-                if message["kind"] == "run.finished":
-                    break
+    with patch("agent_harness_api.gemini_model.httpx.post", side_effect=fake_post):
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws/run") as websocket:
+                ready = websocket.receive_json()
+                assert ready["kind"] == "session.ready"
+
+                websocket.send_json(
+                    {
+                        "task": 'inspect the repo, search for "test_ok", run tests, and show git diff',
+                        "workspace_path": "demo",
+                    }
+                )
+
+                kinds: list[str] = []
+                runtime_event_types: list[str] = []
+                final_payload: dict[str, object] | None = None
+
+                while True:
+                    message = websocket.receive_json()
+                    kinds.append(message["kind"])
+                    if message["kind"] == "runtime.event":
+                        runtime_event_types.append(message["event"]["type"])
+                    if message["kind"] == "run.completed":
+                        final_payload = message["payload"]
+                    if message["kind"] == "run.finished":
+                        break
 
     assert "runtime.event" in kinds
     assert "run.completed" in kinds

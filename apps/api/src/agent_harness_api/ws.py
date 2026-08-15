@@ -8,9 +8,9 @@ from typing import Any
 from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect
 
-from .browser_model import BrowserDemoModelProvider
 from .config import Settings
 from .events import EventEmitter, RuntimeEvent
+from .gemini_model import GeminiModelProvider
 from .runtime import AgentRuntime
 from .store import RunStore
 from .tools import ToolExecutor, build_default_tool_registry
@@ -24,10 +24,20 @@ def resolve_workspace_path(workspace_root: Path, workspace_path: str) -> Path:
     return resolved_target
 
 
-def build_browser_runtime(workspace_path: Path, emitter: EventEmitter) -> AgentRuntime:
+def build_runtime(
+    workspace_path: Path,
+    emitter: EventEmitter,
+    *,
+    api_key: str | None,
+    model_name: str,
+) -> AgentRuntime:
     registry = build_default_tool_registry()
     return AgentRuntime(
-        model=BrowserDemoModelProvider(workspace_path),
+        model=GeminiModelProvider(
+            api_key=api_key,
+            model_name=model_name,
+            tool_registry=registry,
+        ),
         tool_registry=registry,
         tool_executor=ToolExecutor(registry),
         store=RunStore(),
@@ -79,7 +89,12 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
         )
 
     emitter.subscribe(on_event)
-    runtime = build_browser_runtime(target_path, emitter)
+    runtime = build_runtime(
+        target_path,
+        emitter,
+        api_key=settings.gemini_api_key,
+        model_name=settings.gemini_model,
+    )
 
     def run_agent() -> None:
         try:
