@@ -17,7 +17,7 @@ const starterTask =
 
 function getWebSocketUrl() {
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-  return `${protocol}://${window.location.hostname}:8000/ws/run`;
+  return `${protocol}://${window.location.host}/ws/run`;
 }
 
 function formatEventLabel(type: string) {
