@@ -115,6 +115,11 @@ class ScriptedModelProvider:
         )
 
 
+class EmptyModelProvider:
+    def complete(self, context: Context) -> ModelResponse:
+        return ModelResponse()
+
+
 def _write_broken_repo(repo_path: Path) -> None:
     repo_path.mkdir(parents=True, exist_ok=True)
     (repo_path / "math_utils.py").write_text(
@@ -135,6 +140,29 @@ def _write_broken_repo(repo_path: Path) -> None:
         check=True,
         capture_output=True,
     )
+
+
+def test_runtime_fails_when_model_returns_no_text_or_tools(tmp_path: Path, monkeypatch) -> None:
+    database_path = tmp_path / "empty_model.db"
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(database_path))
+    get_settings.cache_clear()
+    initialize_database()
+
+    registry = build_default_tool_registry()
+    runtime = AgentRuntime(
+        model=EmptyModelProvider(),
+        tool_registry=registry,
+        tool_executor=ToolExecutor(registry),
+        store=RunStore(database_path),
+        max_iterations=2,
+        timeout_seconds=30,
+    )
+
+    try:
+        runtime.run("ask for anything", target_path=tmp_path)
+        raise AssertionError("Expected a runtime error when the model produced an empty response.")
+    except RuntimeError as exc:
+        assert "empty response" in str(exc).lower()
 
 
 def test_agent_runtime_executes_single_agent_loop(tmp_path: Path, monkeypatch) -> None:

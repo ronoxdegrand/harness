@@ -75,10 +75,38 @@ export default function App() {
           setAssistantText((current) => (current ? `${current}\n${delta}` : delta));
         }
 
+        if (payload.event.type === "tool.started") {
+          const toolName = String(payload.event.payload.tool_call?.name ?? "tool");
+          setAssistantText((current) => current || `Running tool: ${toolName}...`);
+        }
+
+        if (payload.event.type === "tool.failed") {
+          const toolName = String(payload.event.payload.tool_call?.name ?? "tool");
+          const result = payload.event.payload.result as Record<string, unknown> | undefined;
+          const output = typeof result?.output === "string" ? result.output : "Tool failed.";
+          setStatus("failed");
+          setError(`Tool failed: ${toolName}. ${output}`);
+        }
+
+        if (payload.event.type === "turn.failed") {
+          const errorMessage = String(payload.event.payload.error ?? "The model request failed.");
+          setStatus("failed");
+          setError(errorMessage);
+        }
+
         if (payload.event.type === "model.completed") {
           const outputText = String(payload.event.payload.output_text ?? "").trim();
+          const toolCalls = Array.isArray(payload.event.payload.tool_calls)
+            ? payload.event.payload.tool_calls
+            : [];
+
           if (outputText) {
             setAssistantText(outputText);
+          } else if (toolCalls.length > 0) {
+            const toolNames = toolCalls
+              .map((tool) => String((tool as Record<string, unknown>).name ?? "tool"))
+              .join(", ");
+            setAssistantText(`Tool call received: ${toolNames}. Working on results...`);
           }
         }
 
@@ -96,6 +124,7 @@ export default function App() {
       if (payload.kind === "run.failed") {
         setStatus("failed");
         setError(payload.error);
+        setAssistantText((current) => current || "The run failed.");
         return;
       }
 

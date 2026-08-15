@@ -75,6 +75,7 @@ def test_run_websocket_streams_runtime_events(tmp_path: Path, monkeypatch) -> No
 
                 kinds: list[str] = []
                 runtime_event_types: list[str] = []
+                model_completed_payloads: list[dict[str, object]] = []
                 final_payload: dict[str, object] | None = None
 
                 while True:
@@ -82,6 +83,8 @@ def test_run_websocket_streams_runtime_events(tmp_path: Path, monkeypatch) -> No
                     kinds.append(message["kind"])
                     if message["kind"] == "runtime.event":
                         runtime_event_types.append(message["event"]["type"])
+                        if message["event"]["type"] == "model.completed":
+                            model_completed_payloads.append(message["event"]["payload"])
                     if message["kind"] == "run.completed":
                         final_payload = message["payload"]
                     if message["kind"] == "run.finished":
@@ -93,5 +96,7 @@ def test_run_websocket_streams_runtime_events(tmp_path: Path, monkeypatch) -> No
     assert "model.delta" in runtime_event_types
     assert "tool.started" in runtime_event_types
     assert "tool.completed" in runtime_event_types
+    assert model_completed_payloads
+    assert "output_text" not in model_completed_payloads[0]
     assert final_payload is not None
     assert final_payload["status"] == "completed"

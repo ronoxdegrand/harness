@@ -32,6 +32,7 @@ class AgentRuntime:
         timeout_seconds: int = 120,
     ) -> None:
         self.model = model
+        self.model_name = getattr(model, "model_name", None)
         self.tool_registry = tool_registry
         self.tool_executor = tool_executor
         self.store = store
@@ -61,6 +62,7 @@ class AgentRuntime:
             target_path=resolved_target,
             max_iterations=iteration_limit,
             timeout_seconds=timeout_limit,
+            model_name=self.model_name,
         )
         self.store.save_snapshot(active_run_id, 0, context.snapshot())
 
@@ -70,7 +72,12 @@ class AgentRuntime:
                     raise TimeoutError(f"Run exceeded {timeout_limit} seconds.")
 
                 self._emit(active_run_id, "turn.started", iteration=iteration)
-                self._emit(active_run_id, "model.started", iteration=iteration)
+                self._emit(
+                    active_run_id,
+                    "model.started",
+                    iteration=iteration,
+                    model_name=self.model_name,
+                )
                 response = self.model.complete(context)
 
                 for delta in response.deltas:
@@ -81,13 +88,23 @@ class AgentRuntime:
                         delta=delta,
                     )
 
+                model_completed_payload: dict[str, object] = {
+                    "iteration": iteration,
+                    "tool_calls": [call.as_dict() for call in response.tool_calls],
+                }
+                if response.output_text:
+                    model_completed_payload["output_text"] = response.output_text
+
                 self._emit(
                     active_run_id,
                     "model.completed",
-                    iteration=iteration,
-                    output_text=response.output_text,
-                    tool_calls=[call.as_dict() for call in response.tool_calls],
+                    **model_completed_payload,
                 )
+
+                if not response.output_text and not response.tool_calls:
+                    raise RuntimeError(
+                        "Model returned an empty response; neither text nor tool calls were produced."
+                    )
 
                 if response.output_text:
                     context.add_assistant(response.output_text)
