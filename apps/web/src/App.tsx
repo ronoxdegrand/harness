@@ -76,12 +76,14 @@ export default function App() {
         }
 
         if (payload.event.type === "tool.started") {
-          const toolName = String(payload.event.payload.tool_call?.name ?? "tool");
+          const toolCall = payload.event.payload.tool_call as Record<string, unknown> | undefined;
+          const toolName = typeof toolCall?.name === "string" ? toolCall.name : "tool";
           setAssistantText((current) => current || `Running tool: ${toolName}...`);
         }
 
         if (payload.event.type === "tool.failed") {
-          const toolName = String(payload.event.payload.tool_call?.name ?? "tool");
+          const toolCall = payload.event.payload.tool_call as Record<string, unknown> | undefined;
+          const toolName = typeof toolCall?.name === "string" ? toolCall.name : "tool";
           const result = payload.event.payload.result as Record<string, unknown> | undefined;
           const output = typeof result?.output === "string" ? result.output : "Tool failed.";
           setStatus("failed");

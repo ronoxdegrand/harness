@@ -19,6 +19,7 @@ class RunStore:
         target_path: Path,
         max_iterations: int,
         timeout_seconds: int,
+        model_name: str | None = None,
     ) -> None:
         with self._connect() as connection:
             connection.execute(
@@ -28,10 +29,18 @@ class RunStore:
                     status,
                     target_path,
                     max_iterations,
-                    timeout_seconds
-                ) VALUES (?, ?, ?, ?, ?)
+                    timeout_seconds,
+                    model_name
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (run_id, "running", str(target_path), max_iterations, timeout_seconds),
+                (
+                    run_id,
+                    "running",
+                    str(target_path),
+                    max_iterations,
+                    timeout_seconds,
+                    model_name,
+                ),
             )
             connection.commit()
 
@@ -105,4 +114,3 @@ class RunStore:
     def _connect(self) -> sqlite3.Connection:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         return sqlite3.connect(self.database_path)
-
