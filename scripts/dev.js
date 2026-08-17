@@ -66,12 +66,18 @@ function stopApi() {
 }
 
 function startWeb() {
-  const executable = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  const child = spawn(executable, ['run', 'dev'], {
-    cwd: webDir,
-    stdio: 'inherit',
-    shell: process.platform === 'win32',
-  });
+  const child =
+    process.platform === 'win32'
+      ? spawn(process.env.comspec || 'cmd.exe', ['/d', '/s', '/c', 'npm run dev'], {
+          cwd: webDir,
+          stdio: 'inherit',
+          shell: false,
+        })
+      : spawn('npm', ['run', 'dev'], {
+          cwd: webDir,
+          stdio: 'inherit',
+          shell: false,
+        });
 
   child.on('exit', (code) => {
     process.exit(code ?? 0);
