@@ -2,14 +2,14 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 
 type RunSocketMessage =
   | { kind: "session.ready"; payload: { workspace_root: string } }
+  | { kind: "thread.opened"; payload: { thread: ThreadSummary } }
   | { kind: "runtime.event"; event: RuntimeEvent }
   | {
       kind: "run.completed";
       payload: {
-        run_id: string;
+        thread_id: string;
         output_text: string;
         status: string;
-        iterations: number;
         finalized_by_iteration_limit: boolean;
       };
     }
@@ -21,16 +21,31 @@ type RuntimeEvent = {
   payload: Record<string, unknown>;
 };
 
+type ThreadSummary = {
+  id: string;
+  title: string;
+};
+
+type ThreadTurn = {
+  id: number;
+  role: "user" | "assistant";
+  content: string;
+};
+
+type ThreadDetail = {
+  thread: ThreadSummary;
+  turns: ThreadTurn[];
+  events: RuntimeEvent[];
+};
+
 const starterTask =
   'inspect the repo, search for "AgentRuntime", run tests, and show git diff';
 
-function getWebSocketUrl() {
-  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-  return `${protocol}://${window.location.host}/ws/run`;
-}
-
-function formatEventLabel(type: string) {
-  return type.replaceAll(".", " ");
+async function readJson<T>(response: Response): Promise<T> {
+  if (!response.headers.get("content-type")?.includes("application/json")) {
+    throw new Error("The API returned an unexpected response.");
+  }
+  return (await response.json()) as T;
 }
 
 export default function App() {
@@ -38,6 +53,9 @@ export default function App() {
   const [workspacePath, setWorkspacePath] = useState(".");
   const [status, setStatus] = useState("idle");
   const [workspaceRoot, setWorkspaceRoot] = useState("");
+  const [threads, setThreads] = useState<ThreadSummary[]>([]);
+  const [activeThread, setActiveThread] = useState<ThreadSummary | null>(null);
+  const [threadTurns, setThreadTurns] = useState<ThreadTurn[]>([]);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [assistantText, setAssistantText] = useState("");
   const [finalizedByIterationLimit, setFinalizedByIterationLimit] = useState(false);
@@ -55,17 +73,70 @@ export default function App() {
     };
   }, []);
 
-  function startRun(event: FormEvent<HTMLFormElement>) {
+  useEffect(() => {
+    void refreshThreads();
+  }, []);
+
+  async function refreshThreads() {
+    try {
+      const response = await fetch("/threads");
+      if (!response.ok) {
+        return;
+      }
+      const payload = await readJson<{ threads: ThreadSummary[] }>(response);
+      setThreads(payload.threads);
+    } catch {
+      setError("Could not load threads. Is the API running?");
+    }
+  }
+
+  async function openThread(threadId: string) {
+    try {
+      const response = await fetch(`/threads/${threadId}`);
+      if (!response.ok) {
+        setError("Could not open this thread.");
+        return;
+      }
+      const payload = await readJson<ThreadDetail>(response);
+      setActiveThread(payload.thread);
+      setThreadTurns(payload.turns);
+      setEvents(payload.events);
+      setAssistantText("");
+    } catch {
+      setError("Could not open this thread.");
+    }
+  }
+
+  function startNewThread() {
+    socketRef.current?.close();
+    setActiveThread(null);
+    setThreadTurns([]);
+    setEvents([]);
+    setAssistantText("");
+    setFinalizedByIterationLimit(false);
+    setError("");
+    setStatus("idle");
+    setTask("");
+  }
+
+  async function startRun(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     socketRef.current?.close();
+
+    const thread = activeThread;
 
     setStatus("connecting");
     setEvents([]);
     setAssistantText("");
     setFinalizedByIterationLimit(false);
     setError("");
+    setThreadTurns((current) => [
+      ...current,
+      { id: Date.now(), role: "user", content: task },
+    ]);
 
-    const socket = new WebSocket(getWebSocketUrl());
+    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${protocol}://${window.location.host}/ws/run`);
     socketRef.current = socket;
 
     socket.onmessage = (message) => {
@@ -74,7 +145,19 @@ export default function App() {
       if (payload.kind === "session.ready") {
         setWorkspaceRoot(payload.payload.workspace_root);
         setStatus("running");
-        socket.send(JSON.stringify({ task, workspace_path: workspacePath }));
+        socket.send(
+          JSON.stringify({
+            task,
+            workspace_path: workspacePath,
+            ...(thread ? { thread_id: thread.id } : {}),
+          }),
+        );
+        return;
+      }
+
+      if (payload.kind === "thread.opened") {
+        setActiveThread(payload.payload.thread);
+        void refreshThreads();
         return;
       }
 
@@ -132,6 +215,8 @@ export default function App() {
         if (payload.payload.output_text.trim()) {
           setAssistantText(payload.payload.output_text);
         }
+        void openThread(payload.payload.thread_id);
+        void refreshThreads();
         return;
       }
 
@@ -195,6 +280,39 @@ export default function App() {
             </button>
           </form>
 
+          <div className="border border-slate-200 bg-white p-3">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500">Threads</p>
+              <button
+                className="border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700"
+                type="button"
+                onClick={startNewThread}
+              >
+                New thread
+              </button>
+            </div>
+            <div className="mt-3 space-y-1">
+              {threads.length ? (
+                threads.map((thread) => (
+                  <button
+                    className={`block w-full border px-2 py-2 text-left text-sm ${
+                      activeThread?.id === thread.id
+                        ? "border-slate-950 bg-slate-950 text-white"
+                        : "border-slate-200 text-slate-700"
+                    }`}
+                    key={thread.id}
+                    type="button"
+                    onClick={() => void openThread(thread.id)}
+                  >
+                    {thread.title}
+                  </button>
+                ))
+              ) : (
+                <p className="text-xs text-slate-500">No threads yet.</p>
+              )}
+            </div>
+          </div>
+
           <div className="space-y-2 border border-slate-200 bg-white p-3 text-xs text-slate-600">
             <p>
               <span className="font-semibold text-slate-900">Status:</span> {status}
@@ -218,25 +336,42 @@ export default function App() {
               Thread
             </p>
             <div className="mt-3 space-y-3">
-              <article className="border border-slate-200 bg-slate-50 p-3">
-                <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500">
-                  User
-                </p>
-                <p className="mt-2 whitespace-pre-wrap text-sm text-slate-900">{task}</p>
-              </article>
-              <article className="border border-slate-900 bg-slate-900 p-3 text-slate-50">
-                <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">
-                  Assistant
-                </p>
-                <p className="mt-2 whitespace-pre-wrap text-sm leading-6">
-                  {assistantText || "Waiting for streamed model output..."}
-                </p>
-                {finalizedByIterationLimit ? (
-                  <p className="mt-3 border-l-2 border-amber-300 pl-3 text-xs leading-5 text-amber-100">
-                    Iteration limit reached. This response was generated from the work completed so far.
+              {threadTurns.length ? (
+                threadTurns.map((turn) => (
+                  <article
+                    className={
+                      turn.role === "assistant"
+                        ? "border border-slate-900 bg-slate-900 p-3 text-slate-50"
+                        : "border border-slate-200 bg-slate-50 p-3"
+                    }
+                    key={turn.id}
+                  >
+                    <p
+                      className={`text-xs font-bold uppercase tracking-[0.14em] ${
+                        turn.role === "assistant" ? "text-slate-400" : "text-slate-500"
+                      }`}
+                    >
+                      {turn.role}
+                    </p>
+                    <p className="mt-2 whitespace-pre-wrap text-sm leading-6">{turn.content}</p>
+                  </article>
+                ))
+              ) : (
+                <p className="text-sm text-slate-500">Start a thread to keep its conversation here.</p>
+              )}
+              {status === "running" && assistantText ? (
+                <article className="border border-slate-900 bg-slate-900 p-3 text-slate-50">
+                  <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">
+                    Assistant
                   </p>
-                ) : null}
-              </article>
+                  <p className="mt-2 whitespace-pre-wrap text-sm leading-6">{assistantText}</p>
+                </article>
+              ) : null}
+              {finalizedByIterationLimit ? (
+                <p className="border-l-2 border-amber-300 pl-3 text-xs leading-5 text-amber-700">
+                  Iteration limit reached. This response was generated from the work completed so far.
+                </p>
+              ) : null}
             </div>
           </div>
 
@@ -268,7 +403,7 @@ export default function App() {
                     }`}
                   >
                     <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500">
-                      {formatEventLabel(runtimeEvent.type)}
+                      {runtimeEvent.type.replaceAll(".", " ")}
                     </p>
 
                     {isToolEvent ? (

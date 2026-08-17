@@ -15,8 +15,41 @@ def initialize_database() -> Path:
     with sqlite3.connect(db_path) as connection:
         connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS harness_threads (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                workspace_path TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS harness_turns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_id TEXT NOT NULL,
+                run_id TEXT,
+                role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (thread_id) REFERENCES harness_threads (id),
+                FOREIGN KEY (run_id) REFERENCES harness_runs (id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS harness_turns_thread_role_id
+            ON harness_turns (thread_id, role, id)
+            """
+        )
+        connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS harness_runs (
                 id TEXT PRIMARY KEY,
+                thread_id TEXT,
                 status TEXT NOT NULL,
                 target_path TEXT NOT NULL,
                 max_iterations INTEGER NOT NULL,
@@ -25,7 +58,8 @@ def initialize_database() -> Path:
                 error TEXT,
                 model_name TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (thread_id) REFERENCES harness_threads (id)
             )
             """
         )
@@ -54,8 +88,11 @@ def initialize_database() -> Path:
             """
         )
         columns = connection.execute("PRAGMA table_info(harness_runs)").fetchall()
-        if "model_name" not in {row[1] for row in columns}:
+        column_names = {row[1] for row in columns}
+        if "model_name" not in column_names:
             connection.execute("ALTER TABLE harness_runs ADD COLUMN model_name TEXT")
+        if "thread_id" not in column_names:
+            connection.execute("ALTER TABLE harness_runs ADD COLUMN thread_id TEXT")
         connection.commit()
 
     return db_path

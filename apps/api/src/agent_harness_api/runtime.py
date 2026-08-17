@@ -47,6 +47,8 @@ class AgentRuntime:
         *,
         target_path: str | Path,
         run_id: str | None = None,
+        thread_id: str | None = None,
+        initial_context: Context | None = None,
         max_iterations: int | None = None,
         timeout_seconds: int | None = None,
     ) -> RunResult:
@@ -55,7 +57,7 @@ class AgentRuntime:
         iteration_limit = max_iterations or self.max_iterations
         timeout_limit = timeout_seconds or self.timeout_seconds
         started_at = time.monotonic()
-        context = Context()
+        context = initial_context or Context()
         context.add_user(prompt)
 
         self.store.create_run(
@@ -64,6 +66,7 @@ class AgentRuntime:
             max_iterations=iteration_limit,
             timeout_seconds=timeout_limit,
             model_name=self.model_name,
+            thread_id=thread_id,
         )
         self.store.save_snapshot(active_run_id, 0, context.snapshot())
 
