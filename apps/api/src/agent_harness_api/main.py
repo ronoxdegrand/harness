@@ -15,6 +15,10 @@ class ThreadCreateRequest(BaseModel):
     prompt: str | None = None
 
 
+class ThreadRenameRequest(BaseModel):
+    title: str
+
+
 def _thread_payload(store: RunStore, thread: Thread) -> dict[str, object]:
     return {
         "thread": thread.as_dict(),
@@ -80,6 +84,20 @@ async def get_thread(thread_id: str) -> dict[str, object]:
     if thread is None:
         raise HTTPException(status_code=404, detail="Thread not found.")
     return _thread_payload(store, thread)
+
+
+@app.patch("/threads/{thread_id}")
+async def rename_thread(thread_id: str, request: ThreadRenameRequest) -> dict[str, str]:
+    title = request.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Thread title cannot be empty.")
+    if len(title) > 80:
+        raise HTTPException(status_code=400, detail="Thread title must be 80 characters or fewer.")
+
+    thread = RunStore().rename_thread(thread_id, title)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="Thread not found.")
+    return thread.as_dict()
 
 
 @app.websocket("/ws/run")

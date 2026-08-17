@@ -1,4 +1,6 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 type RunSocketMessage =
   | { kind: "session.ready"; payload: { workspace_root: string } }
@@ -19,17 +21,21 @@ type RunSocketMessage =
 type RuntimeEvent = {
   type: string;
   payload: Record<string, unknown>;
+  created_at?: string;
 };
 
 type ThreadSummary = {
   id: string;
   title: string;
+  created_at: string;
+  updated_at: string;
 };
 
 type ThreadTurn = {
   id: number;
   role: "user" | "assistant";
   content: string;
+  created_at: string;
 };
 
 type ThreadDetail = {
@@ -38,9 +44,6 @@ type ThreadDetail = {
   events: RuntimeEvent[];
 };
 
-const starterTask =
-  'inspect the repo, search for "AgentRuntime", run tests, and show git diff';
-
 async function readJson<T>(response: Response): Promise<T> {
   if (!response.headers.get("content-type")?.includes("application/json")) {
     throw new Error("The API returned an unexpected response.");
@@ -48,16 +51,35 @@ async function readJson<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
+function AssistantMarkdown({ content }: { content: string }) {
+  return (
+    <div className="markdown">
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+    </div>
+  );
+}
+
+function formatTimestamp(timestamp: string) {
+  const isoTimestamp = timestamp.includes("T") ? timestamp : `${timestamp.replace(" ", "T")}Z`;
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(isoTimestamp));
+}
+
 export default function App() {
-  const [task, setTask] = useState(starterTask);
+  const [task, setTask] = useState("");
   const [workspacePath, setWorkspacePath] = useState(".");
   const [status, setStatus] = useState("idle");
-  const [workspaceRoot, setWorkspaceRoot] = useState("");
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [activeThread, setActiveThread] = useState<ThreadSummary | null>(null);
   const [threadTurns, setThreadTurns] = useState<ThreadTurn[]>([]);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [assistantText, setAssistantText] = useState("");
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
   const [finalizedByIterationLimit, setFinalizedByIterationLimit] = useState(false);
   const [error, setError] = useState("");
   const socketRef = useRef<WebSocket | null>(null);
@@ -102,6 +124,7 @@ export default function App() {
       setThreadTurns(payload.turns);
       setEvents(payload.events);
       setAssistantText("");
+      setEditingTitle(false);
     } catch {
       setError("Could not open this thread.");
     }
@@ -113,10 +136,36 @@ export default function App() {
     setThreadTurns([]);
     setEvents([]);
     setAssistantText("");
+    setEditingTitle(false);
     setFinalizedByIterationLimit(false);
     setError("");
     setStatus("idle");
     setTask("");
+  }
+
+  async function renameActiveThread(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!activeThread) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`/threads/${activeThread.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: titleDraft }),
+      });
+      if (!response.ok) {
+        setError("Could not rename this thread.");
+        return;
+      }
+      const thread = await readJson<ThreadSummary>(response);
+      setActiveThread(thread);
+      setThreads((current) => current.map((item) => (item.id === thread.id ? thread : item)));
+      setEditingTitle(false);
+    } catch {
+      setError("Could not rename this thread.");
+    }
   }
 
   async function startRun(event: FormEvent<HTMLFormElement>) {
@@ -132,7 +181,7 @@ export default function App() {
     setError("");
     setThreadTurns((current) => [
       ...current,
-      { id: Date.now(), role: "user", content: task },
+      { id: Date.now(), role: "user", content: task, created_at: new Date().toISOString() },
     ]);
 
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
@@ -143,7 +192,6 @@ export default function App() {
       const payload = JSON.parse(message.data) as RunSocketMessage;
 
       if (payload.kind === "session.ready") {
-        setWorkspaceRoot(payload.payload.workspace_root);
         setStatus("running");
         socket.send(
           JSON.stringify({
@@ -240,149 +288,207 @@ export default function App() {
   }
 
   return (
-    <main className="min-h-screen bg-[#f4f4f0] px-4 py-6 text-slate-950 sm:px-6">
-      <section className="mx-auto grid max-w-7xl gap-4 lg:grid-cols-[360px_minmax(0,1fr)]">
-        <aside className="space-y-4 border border-slate-300 bg-[#fffdf7] p-4">
-          <div className="space-y-2">
-            <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">
-              Milestone 4
-            </p>
-            <h1 className="text-2xl font-semibold">Agent loop in the browser</h1>
-            <p className="text-sm leading-6 text-slate-600">
-              Submit a task, stream runtime events, and watch tools execute live.
-            </p>
-          </div>
-
-          <form className="space-y-3" onSubmit={startRun}>
-            <label className="block text-sm font-medium text-slate-700">
-              Task
-              <textarea
-                className="mt-1 min-h-32 w-full border border-slate-300 bg-white p-3 text-sm outline-none"
-                value={task}
-                onChange={(event) => setTask(event.target.value)}
-              />
-            </label>
-
-            <label className="block text-sm font-medium text-slate-700">
-              Workspace path
-              <input
-                className="mt-1 w-full border border-slate-300 bg-white p-3 text-sm outline-none"
-                value={workspacePath}
-                onChange={(event) => setWorkspacePath(event.target.value)}
-              />
-            </label>
-
+    <main className="bg-[#f7f7f5] text-[#1b1b1a] lg:h-screen lg:overflow-hidden">
+      <section className="mx-auto grid max-w-[1800px] lg:h-screen lg:grid-cols-[272px_minmax(0,1fr)_340px]">
+        <aside className="flex min-h-0 flex-col border-b border-[#e7e7e1] bg-[#f6f6f2] lg:border-b-0 lg:border-r">
+          <header className="flex h-14 shrink-0 items-center border-b border-[#e7e7e1] px-3">
             <button
-              className="w-full border border-slate-950 bg-slate-950 px-4 py-3 text-sm font-semibold text-white"
-              type="submit"
+              className="flex w-full cursor-pointer items-center gap-2 rounded-lg border border-[#d9d9d2] bg-white px-3 py-2 text-sm font-semibold text-[#20201e] transition hover:bg-[#fdfdfb]"
+              type="button"
+              onClick={startNewThread}
             >
-              Run task
+              <span className="text-lg font-normal leading-none">+</span> New chat
             </button>
-          </form>
+          </header>
 
-          <div className="border border-slate-200 bg-white p-3">
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500">Threads</p>
-              <button
-                className="border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700"
-                type="button"
-                onClick={startNewThread}
-              >
-                New thread
-              </button>
-            </div>
-            <div className="mt-3 space-y-1">
+          <div className="flex min-h-0 flex-1 flex-col p-3">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#777770]">
+              Recent threads
+            </p>
+            <nav className="mt-3 space-y-1 overflow-y-auto pr-1">
               {threads.length ? (
                 threads.map((thread) => (
                   <button
-                    className={`block w-full border px-2 py-2 text-left text-sm ${
+                    className={`block w-full cursor-pointer rounded-md px-3 py-2 text-left transition ${
                       activeThread?.id === thread.id
-                        ? "border-slate-950 bg-slate-950 text-white"
-                        : "border-slate-200 text-slate-700"
+                        ? "bg-[#e8e8e2] text-[#20201e]"
+                        : "text-[#5d5d57] hover:bg-[#ecece7] hover:text-[#20201e]"
                     }`}
                     key={thread.id}
                     type="button"
                     onClick={() => void openThread(thread.id)}
                   >
-                    {thread.title}
+                    <span className="block truncate text-sm">{thread.title}</span>
+                    <span className="mt-0.5 block text-xs text-[#85857e]">
+                      {formatTimestamp(thread.updated_at)}
+                    </span>
                   </button>
                 ))
               ) : (
-                <p className="text-xs text-slate-500">No threads yet.</p>
+                <p className="px-3 py-4 text-sm text-[#777770]">Your chats will appear here.</p>
+              )}
+            </nav>
+          </div>
+        </aside>
+
+        <section className="flex min-h-0 min-w-0 flex-col bg-[#fcfcfa] lg:h-screen">
+          <header className="flex h-14 shrink-0 items-center justify-between border-b border-[#e7e7e1] px-3">
+            <div className="min-w-0">
+              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#8b8b84]">Conversation</p>
+              {editingTitle ? (
+                <form className="mt-1 flex items-center gap-2" onSubmit={renameActiveThread}>
+                  <input
+                    autoFocus
+                    className="min-w-0 rounded-md border border-[#cfcfc8] bg-white px-2 py-1 text-sm font-semibold outline-none focus:border-[#777770]"
+                    maxLength={80}
+                    value={titleDraft}
+                    onChange={(event) => setTitleDraft(event.target.value)}
+                  />
+                  <button className="cursor-pointer text-xs font-semibold text-[#50504b] hover:text-[#1b1b1a]" type="submit">
+                    Save
+                  </button>
+                  <button
+                    className="cursor-pointer text-xs text-[#777770] hover:text-[#1b1b1a]"
+                    type="button"
+                    onClick={() => setEditingTitle(false)}
+                  >
+                    Cancel
+                  </button>
+                </form>
+              ) : (
+                <div className="mt-1 flex items-center gap-2">
+                  <h2 className="truncate text-xl font-semibold tracking-tight">
+                    {activeThread?.title || "New chat"}
+                  </h2>
+                  {activeThread ? (
+                    <button
+                      aria-label="Rename thread"
+                      className="grid size-7 shrink-0 cursor-pointer place-items-center rounded-md text-[#777770] transition hover:bg-[#ecece7] hover:text-[#1b1b1a]"
+                      type="button"
+                      onClick={() => {
+                        setTitleDraft(activeThread.title);
+                        setEditingTitle(true);
+                      }}
+                    >
+                      <svg aria-hidden="true" className="size-4" fill="none" viewBox="0 0 24 24">
+                        <path
+                          d="M13.5 6.5 17.5 10.5M4 20l4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16 4 20Z"
+                          stroke="currentColor"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth="1.7"
+                        />
+                      </svg>
+                    </button>
+                  ) : null}
+                </div>
               )}
             </div>
-          </div>
-
-          <div className="space-y-2 border border-slate-200 bg-white p-3 text-xs text-slate-600">
-            <p>
-              <span className="font-semibold text-slate-900">Status:</span> {status}
-            </p>
-            <p className="break-all">
-              <span className="font-semibold text-slate-900">Workspace root:</span>{" "}
-              {workspaceRoot || "connecting..."}
-            </p>
-          </div>
+            <div className="flex items-center gap-2 text-xs">
+              {finalizedByIterationLimit ? (
+                <span className="rounded-full bg-amber-100 px-2 py-1 font-semibold text-amber-800">
+                  Limit reached
+                </span>
+              ) : null}
+              <span
+                className={`size-2 rounded-full ${
+                  status === "failed" ? "bg-red-500" : status === "running" ? "bg-amber-500" : "bg-emerald-500"
+                }`}
+              />
+              <span className="capitalize text-[#666660]">{status}</span>
+            </div>
+          </header>
 
           {error ? (
-            <div className="border border-red-300 bg-red-50 p-3 text-sm text-red-700">
+            <div className="mx-auto mt-3 w-[min(100%-2rem,720px)] rounded-lg border border-red-200 bg-red-50 px-3 py-3 text-sm text-red-700">
               {error}
             </div>
           ) : null}
-        </aside>
 
-        <section className="grid min-h-[80vh] gap-4 lg:grid-rows-[auto_minmax(0,1fr)]">
-          <div className="border border-slate-300 bg-white p-4">
-            <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">
-              Thread
-            </p>
-            <div className="mt-3 space-y-3">
+          <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+            <div className="mx-auto w-full max-w-3xl space-y-3">
               {threadTurns.length ? (
                 threadTurns.map((turn) => (
                   <article
                     className={
                       turn.role === "assistant"
-                        ? "border border-slate-900 bg-slate-900 p-3 text-slate-50"
-                        : "border border-slate-200 bg-slate-50 p-3"
+                        ? "message-in flex gap-3"
+                        : "message-in ml-auto max-w-[82%] rounded-2xl bg-[#ecece7] px-4 py-3"
                     }
                     key={turn.id}
                   >
-                    <p
-                      className={`text-xs font-bold uppercase tracking-[0.14em] ${
-                        turn.role === "assistant" ? "text-slate-400" : "text-slate-500"
-                      }`}
-                    >
-                      {turn.role}
-                    </p>
-                    <p className="mt-2 whitespace-pre-wrap text-sm leading-6">{turn.content}</p>
+                    {turn.role === "assistant" ? (
+                      <div className="border-l-2 border-[#d8d8d1] pl-3">
+                        <AssistantMarkdown content={turn.content} />
+                        <time className="mt-2 block text-xs text-[#85857e]" dateTime={turn.created_at}>
+                          {formatTimestamp(turn.created_at)}
+                        </time>
+                      </div>
+                    ) : (
+                      <div>
+                        <p className="whitespace-pre-wrap text-sm leading-7">{turn.content}</p>
+                        <time className="mt-2 block text-xs text-[#85857e]" dateTime={turn.created_at}>
+                          {formatTimestamp(turn.created_at)}
+                        </time>
+                      </div>
+                    )}
                   </article>
                 ))
-              ) : (
-                <p className="text-sm text-slate-500">Start a thread to keep its conversation here.</p>
-              )}
+              ) : null}
               {status === "running" && assistantText ? (
-                <article className="border border-slate-900 bg-slate-900 p-3 text-slate-50">
-                  <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">
-                    Assistant
-                  </p>
-                  <p className="mt-2 whitespace-pre-wrap text-sm leading-6">{assistantText}</p>
+                <article className="message-in border-l-2 border-[#d8d8d1] pl-3">
+                  <AssistantMarkdown content={assistantText} />
                 </article>
               ) : null}
               {finalizedByIterationLimit ? (
-                <p className="border-l-2 border-amber-300 pl-3 text-xs leading-5 text-amber-700">
+                <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
                   Iteration limit reached. This response was generated from the work completed so far.
                 </p>
               ) : null}
             </div>
           </div>
 
-          <div className="overflow-hidden border border-slate-300 bg-white">
-            <div className="border-b border-slate-200 px-4 py-3">
-              <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">
-                Activity feed
-              </p>
+          <form className="border-t border-[#e7e7e1] bg-[#fcfcfa] px-3 py-3" onSubmit={startRun}>
+            <div className="mx-auto max-w-3xl rounded-2xl border border-[#d8d8d1] bg-white p-2 shadow-[0_12px_35px_rgba(31,31,30,0.07)]">
+              <textarea
+                className="min-h-24 w-full resize-none bg-transparent px-3 py-2 text-sm leading-6 outline-none placeholder:text-[#97978f]"
+                placeholder={'Inspect the repo, search for "AgentRuntime", run tests, and show git diff'}
+                value={task}
+                onChange={(event) => setTask(event.target.value)}
+              />
+              <div className="flex items-center justify-between gap-3 px-1 pt-1">
+                <label className="min-w-0 text-xs text-[#777770]">
+                  <span className="sr-only">Workspace path</span>
+                  <input
+                    className="w-36 bg-transparent outline-none placeholder:text-[#a0a09a] sm:w-52"
+                    value={workspacePath}
+                    onChange={(event) => setWorkspacePath(event.target.value)}
+                    placeholder="Workspace path"
+                  />
+                </label>
+                <button
+                  className="cursor-pointer rounded-xl bg-[#30302d] px-4 py-2 text-xs font-bold text-white transition hover:bg-[#1f1f1e] disabled:cursor-not-allowed disabled:bg-[#b5b5ae]"
+                  disabled={!task.trim() || status === "connecting" || status === "running"}
+                  type="submit"
+                >
+                  Send
+                </button>
+              </div>
             </div>
-            <div className="h-[55vh] space-y-3 overflow-y-auto p-4">
-              {events.map((runtimeEvent, index) => {
+          </form>
+        </section>
+
+        <aside className="flex min-h-0 flex-col border-t border-[#e7e7e1] bg-[#f6f6f2] lg:h-screen lg:border-t-0 lg:border-l">
+          <header className="flex h-14 shrink-0 items-center justify-between border-b border-[#e1e1db] px-3">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#888880]">Run inspector</p>
+              <p className="mt-1 text-sm font-semibold">Activity</p>
+            </div>
+            <span className="rounded-full bg-[#e5e5de] px-2 py-1 text-xs text-[#65655e]">{events.length}</span>
+          </header>
+          <div className="max-h-[45vh] min-h-0 flex-1 space-y-3 overflow-y-auto p-3 lg:max-h-none">
+            {events.length ? (
+              events.map((runtimeEvent, index) => {
                 const isToolEvent = runtimeEvent.type.startsWith("tool.");
                 const toolCall = runtimeEvent.payload.tool_call as
                   | { name?: string; arguments?: Record<string, unknown> }
@@ -394,28 +500,33 @@ export default function App() {
                 return (
                   <article
                     key={`${runtimeEvent.type}-${index}`}
-                    className={`border p-3 text-sm ${
+                    className={`rounded-xl border p-3 text-sm ${
                       runtimeEvent.type === "tool.failed"
-                        ? "border-red-300 bg-red-50"
-                        : runtimeEvent.type === "tool.completed"
-                          ? "border-emerald-300 bg-emerald-50"
-                          : "border-slate-200 bg-slate-50"
+                        ? "border-red-200 bg-red-50"
+                      : runtimeEvent.type === "tool.completed"
+                          ? "border-emerald-200 bg-emerald-50"
+                          : "border-[#e1e1db] bg-[#fcfcfa]"
                     }`}
                   >
-                    <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#7c7c75]">
                       {runtimeEvent.type.replaceAll(".", " ")}
                     </p>
+                    {runtimeEvent.created_at ? (
+                      <time className="mt-1 block text-xs text-[#85857e]" dateTime={runtimeEvent.created_at}>
+                        {formatTimestamp(runtimeEvent.created_at)}
+                      </time>
+                    ) : null}
 
                     {isToolEvent ? (
                       <div className="mt-2 space-y-2">
-                        <p className="font-medium text-slate-900">
+                        <p className="font-medium text-[#252523]">
                           {toolCall?.name || "tool"}
                         </p>
-                        <pre className="overflow-x-auto whitespace-pre-wrap text-xs text-slate-600">
+                        <pre className="overflow-x-auto whitespace-pre-wrap text-xs text-[#666660]">
                           {JSON.stringify(toolCall?.arguments ?? {}, null, 2)}
                         </pre>
                         {result?.output ? (
-                          <pre className="overflow-x-auto whitespace-pre-wrap border border-slate-200 bg-white p-2 text-xs text-slate-700">
+                          <pre className="overflow-x-auto whitespace-pre-wrap rounded-md border border-[#e5e5de] bg-white p-2 text-xs text-[#55554f]">
                             {String(result.output).slice(0, 1200)}
                           </pre>
                         ) : null}
@@ -424,17 +535,21 @@ export default function App() {
                         ) : null}
                       </div>
                     ) : (
-                      <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs text-slate-600">
+                      <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs text-[#666660]">
                         {JSON.stringify(runtimeEvent.payload, null, 2)}
                       </pre>
                     )}
                   </article>
                 );
-              })}
-              <div ref={feedBottomRef} />
-            </div>
+              })
+            ) : (
+              <p className="px-2 py-8 text-center text-sm leading-6 text-[#81817a]">
+                Tool calls, model events, and run details will appear here.
+              </p>
+            )}
+            <div ref={feedBottomRef} />
           </div>
-        </section>
+        </aside>
       </section>
     </main>
   );

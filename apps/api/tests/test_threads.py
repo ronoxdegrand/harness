@@ -36,8 +36,17 @@ def test_thread_api_persists_across_app_sessions(tmp_path: Path, monkeypatch) ->
         assert created.status_code == 200
         thread = created.json()["thread"]
         assert thread["title"] == "First thread"
+        assert thread["created_at"]
+        assert thread["updated_at"]
         assert created.json()["turns"] == []
         assert created.json()["events"] == []
+
+        renamed = client.patch(f"/threads/{thread['id']}", json={"title": "Renamed thread"})
+        assert renamed.status_code == 200
+        assert renamed.json()["title"] == "Renamed thread"
+        thread = renamed.json()
+        assert client.patch(f"/threads/{thread['id']}", json={"title": " "}).status_code == 400
+        assert client.patch("/threads/does-not-exist", json={"title": "Missing"}).status_code == 404
 
         titled_from_prompt = client.post(
             "/threads",

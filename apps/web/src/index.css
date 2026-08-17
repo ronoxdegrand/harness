@@ -1,15 +1,11 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
 @import "tailwindcss";
 
 :root {
   color-scheme: light;
-  font-family:
-    "Segoe UI",
-    "Helvetica Neue",
-    Helvetica,
-    Arial,
-    sans-serif;
-  background: #ffffff;
-  color: #020617;
+  font-family: "Inter", sans-serif;
+  background: #f7f7f5;
+  color: #1b1b1a;
 }
 
 * {
@@ -27,7 +23,125 @@ body {
   min-width: 320px;
 }
 
+code,
+pre {
+  font-family: "JetBrains Mono", monospace;
+}
+
 .text-balance {
   text-wrap: balance;
 }
 
+@keyframes message-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.message-in {
+  animation: message-in 220ms ease-out both;
+}
+
+.markdown {
+  font-size: 0.875rem;
+  line-height: 1.75;
+}
+
+.markdown > :first-child {
+  margin-top: 0;
+}
+
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3 {
+  margin: 1.5rem 0 0.6rem;
+  font-size: 1.05rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.markdown h1 {
+  font-size: 1.35rem;
+}
+
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown blockquote,
+.markdown pre,
+.markdown table {
+  margin: 0.8rem 0;
+}
+
+.markdown ul,
+.markdown ol {
+  padding-left: 1.4rem;
+}
+
+.markdown ul {
+  list-style: disc;
+}
+
+.markdown ol {
+  list-style: decimal;
+}
+
+.markdown a {
+  color: #2868b2;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.markdown blockquote {
+  border-left: 2px solid #d8d8d1;
+  color: #666660;
+  padding-left: 0.9rem;
+}
+
+.markdown code {
+  border-radius: 0.3rem;
+  background: #ecece7;
+  padding: 0.1rem 0.3rem;
+  font-size: 0.82em;
+}
+
+.markdown pre {
+  overflow-x: auto;
+  border: 1px solid #e0e0da;
+  border-radius: 0.65rem;
+  background: #f4f4f0;
+  padding: 0.85rem;
+}
+
+.markdown pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.markdown table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.markdown th,
+.markdown td {
+  border: 1px solid #dfdfd8;
+  padding: 0.35rem 0.55rem;
+  text-align: left;
+}
+
+.markdown th {
+  background: #f2f2ed;
+  font-weight: 600;
+}

@@ -121,6 +121,22 @@ class RunStore:
             ).fetchone()
         return self._thread_from_row(row) if row else None
 
+    def rename_thread(self, thread_id: str, title: str) -> Thread | None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE harness_threads SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (title, thread_id),
+            )
+            row = connection.execute(
+                """
+                SELECT id, title, workspace_path, model_name, created_at, updated_at
+                FROM harness_threads WHERE id = ?
+                """,
+                (thread_id,),
+            ).fetchone()
+            connection.commit()
+        return self._thread_from_row(row) if row else None
+
     def append_turn(
         self, *, thread_id: str, role: str, content: str, run_id: str | None = None
     ) -> None:
