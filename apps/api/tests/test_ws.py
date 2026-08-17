@@ -17,6 +17,55 @@ def _create_repo(repo_path: Path) -> None:
     )
 
 
+def _receive_failure(websocket) -> dict[str, object]:
+    failure = websocket.receive_json()
+    assert failure["kind"] == "run.failed"
+    return failure
+
+
+def test_run_websocket_rejects_invalid_requests(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HARNESS_WORKSPACE_ROOT", str(tmp_path))
+    get_settings.cache_clear()
+
+    invalid_requests = [
+        ("not json", "Request must contain valid JSON."),
+        ([], "Request must be a JSON object."),
+        ({}, "Task is required to start a run."),
+        ({"task": None}, "Task is required to start a run."),
+        ({"task": "inspect", "workspace_path": 1}, "Workspace path must be a string."),
+        ({"task": "inspect", "workspace_path": "../outside"}, "Workspace path escapes"),
+        ({"task": "inspect", "workspace_path": "missing"}, "Workspace path does not exist"),
+    ]
+
+    with TestClient(app) as client:
+        for request, expected_error in invalid_requests:
+            with client.websocket_connect("/ws/run") as websocket:
+                assert websocket.receive_json()["kind"] == "session.ready"
+                if isinstance(request, str):
+                    websocket.send_text(request)
+                else:
+                    websocket.send_json(request)
+                failure = _receive_failure(websocket)
+                assert expected_error in str(failure["error"])
+
+
+def test_run_websocket_reports_missing_gemini_key(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HARNESS_WORKSPACE_ROOT", str(tmp_path))
+    get_settings.cache_clear()
+
+    with patch(
+        "agent_harness_api.ws.build_runtime",
+        side_effect=ValueError("GEMINI_API_KEY is not set."),
+    ):
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws/run") as websocket:
+                assert websocket.receive_json()["kind"] == "session.ready"
+                websocket.send_json({"task": "inspect", "workspace_path": "."})
+                failure = _receive_failure(websocket)
+
+    assert "GEMINI_API_KEY is not set" in str(failure["error"])
+
+
 def test_run_websocket_streams_runtime_events(tmp_path: Path, monkeypatch) -> None:
     workspace_root = tmp_path / "workspace"
     repo_path = workspace_root / "demo"

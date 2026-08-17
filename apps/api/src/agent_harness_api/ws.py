@@ -73,18 +73,33 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
         request = await websocket.receive_json()
     except WebSocketDisconnect:
         return
+    except ValueError:
+        await _fail_run(websocket, "Request must contain valid JSON.")
+        return
 
-    prompt = str(request.get("task", "")).strip()
-    workspace_path = str(request.get("workspace_path", ".")).strip() or "."
+    if not isinstance(request, dict):
+        await _fail_run(websocket, "Request must be a JSON object.")
+        return
 
-    if not prompt:
+    task = request.get("task")
+    workspace_path = request.get("workspace_path", ".")
+
+    if not isinstance(task, str) or not (prompt := task.strip()):
         await _fail_run(websocket, "Task is required to start a run.")
         return
+
+    if not isinstance(workspace_path, str):
+        await _fail_run(websocket, "Workspace path must be a string.")
+        return
+    workspace_path = workspace_path.strip() or "."
 
     try:
         target_path = resolve_workspace_path(settings.workspace_root, workspace_path)
     except ValueError as exc:
         await _fail_run(websocket, str(exc))
+        return
+    if not target_path.is_dir():
+        await _fail_run(websocket, "Workspace path does not exist or is not a directory.")
         return
 
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -95,12 +110,16 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
         _push_message(loop, queue, {"kind": "runtime.event", "event": event.as_dict()})
 
     emitter.subscribe(on_event)
-    runtime = build_runtime(
-        target_path,
-        emitter,
-        api_key=settings.gemini_api_key,
-        model_name=settings.gemini_model,
-    )
+    try:
+        runtime = build_runtime(
+            target_path,
+            emitter,
+            api_key=settings.gemini_api_key,
+            model_name=settings.gemini_model,
+        )
+    except ValueError as exc:
+        await _fail_run(websocket, str(exc))
+        return
 
     def run_agent() -> None:
         try:

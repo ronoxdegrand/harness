@@ -6,8 +6,10 @@ type RunSocketMessage =
   | {
       kind: "run.completed";
       payload: {
+        run_id: string;
         output_text: string;
         status: string;
+        iterations: number;
         finalized_by_iteration_limit: boolean;
       };
     }
