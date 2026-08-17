@@ -47,6 +47,19 @@ def build_runtime(
     )
 
 
+async def _fail_run(websocket: WebSocket, message: str) -> None:
+    await websocket.send_json({"kind": "run.failed", "error": message})
+    await websocket.close()
+
+
+def _push_message(
+    loop: asyncio.AbstractEventLoop,
+    queue: asyncio.Queue[dict[str, Any]],
+    message: dict[str, Any],
+) -> None:
+    loop.call_soon_threadsafe(queue.put_nowait, message)
+
+
 async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None:
     await websocket.accept()
     await websocket.send_json(
@@ -65,17 +78,13 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
     workspace_path = str(request.get("workspace_path", ".")).strip() or "."
 
     if not prompt:
-        await websocket.send_json(
-            {"kind": "run.failed", "error": "Task is required to start a run."}
-        )
-        await websocket.close()
+        await _fail_run(websocket, "Task is required to start a run.")
         return
 
     try:
         target_path = resolve_workspace_path(settings.workspace_root, workspace_path)
     except ValueError as exc:
-        await websocket.send_json({"kind": "run.failed", "error": str(exc)})
-        await websocket.close()
+        await _fail_run(websocket, str(exc))
         return
 
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -83,10 +92,7 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
     emitter = EventEmitter()
 
     def on_event(event: RuntimeEvent) -> None:
-        loop.call_soon_threadsafe(
-            queue.put_nowait,
-            {"kind": "runtime.event", "event": event.as_dict()},
-        )
+        _push_message(loop, queue, {"kind": "runtime.event", "event": event.as_dict()})
 
     emitter.subscribe(on_event)
     runtime = build_runtime(
@@ -99,8 +105,9 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
     def run_agent() -> None:
         try:
             result = runtime.run(prompt, target_path=target_path)
-            loop.call_soon_threadsafe(
-                queue.put_nowait,
+            _push_message(
+                loop,
+                queue,
                 {
                     "kind": "run.completed",
                     "payload": {
@@ -112,11 +119,9 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
                 },
             )
         except Exception as exc:
-            loop.call_soon_threadsafe(
-                queue.put_nowait, {"kind": "run.failed", "error": str(exc)}
-            )
+            _push_message(loop, queue, {"kind": "run.failed", "error": str(exc)})
         finally:
-            loop.call_soon_threadsafe(queue.put_nowait, {"kind": "run.finished"})
+            _push_message(loop, queue, {"kind": "run.finished"})
 
     thread = threading.Thread(target=run_agent, daemon=True)
     thread.start()

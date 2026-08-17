@@ -17,6 +17,21 @@ _SCHEMA_TYPE_MAP: dict[str, type[Any]] = {
 }
 
 
+def _object_schema(
+    properties: dict[str, Any],
+    *,
+    required: list[str] | None = None,
+) -> dict[str, Any]:
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": properties,
+        "additionalProperties": False,
+    }
+    if required:
+        schema["required"] = required
+    return schema
+
+
 @dataclass
 class ToolCall:
     id: str
@@ -116,96 +131,82 @@ def build_default_tool_registry() -> ToolRegistry:
             ToolDefinition(
                 name="read_file",
                 description="Read a UTF-8 text file relative to the workspace root.",
-                input_schema={
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}},
-                    "required": ["path"],
-                    "additionalProperties": False,
-                },
+                input_schema=_object_schema(
+                    {"path": {"type": "string"}},
+                    required=["path"],
+                ),
                 handler=_read_file,
             ),
             ToolDefinition(
                 name="write_file",
                 description="Write UTF-8 text content relative to the workspace root.",
-                input_schema={
-                    "type": "object",
-                    "properties": {
+                input_schema=_object_schema(
+                    {
                         "path": {"type": "string"},
                         "content": {"type": "string"},
                     },
-                    "required": ["path", "content"],
-                    "additionalProperties": False,
-                },
+                    required=["path", "content"],
+                ),
                 handler=_write_file,
             ),
             ToolDefinition(
                 name="list_files",
                 description="List files relative to the workspace root.",
-                input_schema={
-                    "type": "object",
-                    "properties": {
+                input_schema=_object_schema(
+                    {
                         "path": {"type": "string"},
                         "limit": {"type": "integer"},
                     },
-                    "additionalProperties": False,
-                },
+                ),
                 handler=_list_files,
             ),
             ToolDefinition(
                 name="search_files",
                 description="Search files by text or regex pattern within the workspace root.",
-                input_schema={
-                    "type": "object",
-                    "properties": {
+                input_schema=_object_schema(
+                    {
                         "query": {"type": "string"},
                         "path": {"type": "string"},
                         "limit": {"type": "integer"},
                         "regex": {"type": "boolean"},
                     },
-                    "required": ["query"],
-                    "additionalProperties": False,
-                },
+                    required=["query"],
+                ),
                 handler=_search_files,
             ),
             ToolDefinition(
                 name="shell",
                 description="Run a command inside the workspace root or a subdirectory.",
-                input_schema={
-                    "type": "object",
-                    "properties": {
+                input_schema=_object_schema(
+                    {
                         "command": {"type": "string"},
                         "working_directory": {"type": "string"},
                         "timeout_seconds": {"type": "integer"},
                     },
-                    "required": ["command"],
-                    "additionalProperties": False,
-                },
+                    required=["command"],
+                ),
                 handler=_shell,
             ),
             ToolDefinition(
                 name="git_status",
                 description="Return git status output for the workspace.",
-                input_schema={
-                    "type": "object",
-                    "properties": {
+                input_schema=_object_schema(
+                    {
                         "path": {"type": "string"},
                         "timeout_seconds": {"type": "integer"},
                     },
-                    "additionalProperties": False,
-                },
+                ),
                 handler=_git_status,
             ),
             ToolDefinition(
                 name="git_diff",
                 description="Return git diff output for the workspace.",
-                input_schema={
-                    "type": "object",
-                    "properties": {
+                input_schema=_object_schema(
+                    {
                         "path": {"type": "string"},
                         "timeout_seconds": {"type": "integer"},
                     },
-                    "additionalProperties": False,
-                },
+                ),
                 handler=_git_diff,
             ),
         ]
@@ -323,30 +324,48 @@ def _search_files(arguments: dict[str, Any], root: Path) -> ToolResult:
     )
 
 
-def _shell(arguments: dict[str, Any], root: Path) -> ToolResult:
-    command = arguments["command"]
-    timeout_seconds = int(arguments.get("timeout_seconds", 30))
-    working_directory = _resolve_path(root, arguments.get("working_directory", "."))
-    completed = subprocess.run(
+def _output_from_completed(completed: subprocess.CompletedProcess[str]) -> str:
+    return "\n".join(part for part in (completed.stdout, completed.stderr) if part).strip()
+
+
+def _run_command(
+    command: str | list[str],
+    *,
+    cwd: Path,
+    timeout_seconds: int,
+    shell: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
         command,
-        cwd=working_directory,
-        shell=True,
+        cwd=cwd,
+        shell=shell,
         capture_output=True,
         text=True,
         timeout=timeout_seconds,
     )
-    output = completed.stdout
-    if completed.stderr:
-        output = f"{output}\n{completed.stderr}".strip()
+
+
+def _shell(arguments: dict[str, Any], root: Path) -> ToolResult:
+    command = arguments["command"]
+    timeout_seconds = int(arguments.get("timeout_seconds", 30))
+    working_directory = _resolve_path(root, arguments.get("working_directory", "."))
+    completed = _run_command(
+        command,
+        cwd=working_directory,
+        shell=True,
+        timeout_seconds=timeout_seconds,
+    )
 
     return ToolResult(
         success=completed.returncode == 0,
-        output=output,
+        output=_output_from_completed(completed),
         metadata={
             "returncode": completed.returncode,
-            "working_directory": str(working_directory.relative_to(root).as_posix())
-            if working_directory != root
-            else ".",
+            "working_directory": (
+                working_directory.relative_to(root).as_posix()
+                if working_directory != root
+                else "."
+            ),
         },
         error=None
         if completed.returncode == 0
@@ -356,19 +375,14 @@ def _shell(arguments: dict[str, Any], root: Path) -> ToolResult:
 
 def _git_status(arguments: dict[str, Any], root: Path) -> ToolResult:
     working_directory = _resolve_path(root, arguments.get("path", "."))
-    completed = subprocess.run(
+    completed = _run_command(
         ["git", "status", "--short"],
         cwd=working_directory,
-        capture_output=True,
-        text=True,
-        timeout=int(arguments.get("timeout_seconds", 30)),
+        timeout_seconds=int(arguments.get("timeout_seconds", 30)),
     )
-    output = completed.stdout
-    if completed.stderr:
-        output = f"{output}\n{completed.stderr}".strip()
     return ToolResult(
         success=completed.returncode == 0,
-        output=output,
+        output=_output_from_completed(completed),
         metadata={"returncode": completed.returncode},
         error=None
         if completed.returncode == 0
@@ -379,19 +393,14 @@ def _git_status(arguments: dict[str, Any], root: Path) -> ToolResult:
 def _git_diff(arguments: dict[str, Any], root: Path) -> ToolResult:
     target = arguments.get("path", ".")
     _resolve_path(root, target)
-    completed = subprocess.run(
+    completed = _run_command(
         ["git", "diff", "--", target],
         cwd=root,
-        capture_output=True,
-        text=True,
-        timeout=int(arguments.get("timeout_seconds", 30)),
+        timeout_seconds=int(arguments.get("timeout_seconds", 30)),
     )
-    output = completed.stdout
-    if completed.stderr:
-        output = f"{output}\n{completed.stderr}".strip()
     return ToolResult(
         success=completed.returncode == 0,
-        output=output,
+        output=_output_from_completed(completed),
         metadata={"returncode": completed.returncode, "path": target},
         error=None if completed.returncode == 0 else f"git diff exited with {completed.returncode}",
     )

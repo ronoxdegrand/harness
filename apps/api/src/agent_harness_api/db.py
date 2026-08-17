@@ -8,23 +8,13 @@ def get_database_path() -> Path:
     return get_settings().sqlite_path
 
 
-def _ensure_column(
-    connection: sqlite3.Connection, table_name: str, column_name: str, column_sql: str
-) -> None:
-    columns = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
-    existing = {row[1] for row in columns}
-    if column_name not in existing:
-        connection.execute(
-            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}"
-        )
-
-
 def initialize_database() -> Path:
     db_path = get_database_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     with sqlite3.connect(db_path) as connection:
-        connection.execute("""
+        connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS harness_runs (
                 id TEXT PRIMARY KEY,
                 status TEXT NOT NULL,
@@ -37,8 +27,8 @@ def initialize_database() -> Path:
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
-            """)
-        _ensure_column(connection, "harness_runs", "model_name", "TEXT")
+            """
+        )
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS harness_events (
@@ -63,6 +53,9 @@ def initialize_database() -> Path:
             )
             """
         )
+        columns = connection.execute("PRAGMA table_info(harness_runs)").fetchall()
+        if "model_name" not in {row[1] for row in columns}:
+            connection.execute("ALTER TABLE harness_runs ADD COLUMN model_name TEXT")
         connection.commit()
 
     return db_path
