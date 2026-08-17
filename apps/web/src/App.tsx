@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, Fragment, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -19,6 +19,7 @@ type RunSocketMessage =
   | { kind: "run.finished" };
 
 type RuntimeEvent = {
+  run_id?: string;
   type: string;
   payload: Record<string, unknown>;
   created_at?: string;
@@ -33,6 +34,7 @@ type ThreadSummary = {
 
 type ThreadTurn = {
   id: number;
+  run_id: string | null;
   role: "user" | "assistant";
   content: string;
   created_at: string;
@@ -69,6 +71,11 @@ function formatTimestamp(timestamp: string) {
   }).format(new Date(isoTimestamp));
 }
 
+function eventRunId(event: RuntimeEvent) {
+  const runId = event.run_id ?? event.payload.run_id;
+  return typeof runId === "string" ? runId : null;
+}
+
 export default function App() {
   const [task, setTask] = useState("");
   const [workspacePath, setWorkspacePath] = useState(".");
@@ -78,16 +85,22 @@ export default function App() {
   const [threadTurns, setThreadTurns] = useState<ThreadTurn[]>([]);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [assistantText, setAssistantText] = useState("");
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [activityRunId, setActivityRunId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [finalizedByIterationLimit, setFinalizedByIterationLimit] = useState(false);
   const [error, setError] = useState("");
   const socketRef = useRef<WebSocket | null>(null);
-  const feedBottomRef = useRef<HTMLDivElement | null>(null);
+  const conversationBottomRef = useRef<HTMLDivElement | null>(null);
+  const activityBottomRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    feedBottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [events, assistantText, status, error]);
+    conversationBottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    if (activityOpen) {
+      activityBottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+  }, [activityOpen, events, assistantText, status, error]);
 
   useEffect(() => {
     return () => {
@@ -125,6 +138,8 @@ export default function App() {
       setEvents(payload.events);
       setAssistantText("");
       setEditingTitle(false);
+      setActivityOpen(false);
+      setActivityRunId(null);
     } catch {
       setError("Could not open this thread.");
     }
@@ -137,6 +152,8 @@ export default function App() {
     setEvents([]);
     setAssistantText("");
     setEditingTitle(false);
+    setActivityOpen(false);
+    setActivityRunId(null);
     setFinalizedByIterationLimit(false);
     setError("");
     setStatus("idle");
@@ -177,11 +194,19 @@ export default function App() {
     setStatus("connecting");
     setEvents([]);
     setAssistantText("");
+    setActivityOpen(false);
+    setActivityRunId(null);
     setFinalizedByIterationLimit(false);
     setError("");
     setThreadTurns((current) => [
       ...current,
-      { id: Date.now(), role: "user", content: task, created_at: new Date().toISOString() },
+      {
+        id: Date.now(),
+        run_id: null,
+        role: "user",
+        content: task,
+        created_at: new Date().toISOString(),
+      },
     ]);
 
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
@@ -287,9 +312,17 @@ export default function App() {
     };
   }
 
+  const visibleEvents = activityRunId
+    ? events.filter((runtimeEvent) => eventRunId(runtimeEvent) === activityRunId)
+    : events;
+
   return (
     <main className="bg-[#f7f7f5] text-[#1b1b1a] lg:h-screen lg:overflow-hidden">
-      <section className="mx-auto grid max-w-[1800px] lg:h-screen lg:grid-cols-[272px_minmax(0,1fr)_340px]">
+      <section
+        className={`mx-auto grid max-w-[1800px] lg:h-screen ${
+          activityOpen ? "lg:grid-cols-[272px_minmax(0,1fr)_340px]" : "lg:grid-cols-[272px_minmax(0,1fr)]"
+        }`}
+      >
         <aside className="flex min-h-0 flex-col border-b border-[#e7e7e1] bg-[#f6f6f2] lg:border-b-0 lg:border-r">
           <header className="flex h-14 shrink-0 items-center border-b border-[#e7e7e1] px-3">
             <button
@@ -408,32 +441,55 @@ export default function App() {
           <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
             <div className="mx-auto w-full max-w-3xl space-y-3">
               {threadTurns.length ? (
-                threadTurns.map((turn) => (
-                  <article
-                    className={
-                      turn.role === "assistant"
-                        ? "message-in flex gap-3"
-                        : "message-in ml-auto max-w-[82%] rounded-2xl bg-[#ecece7] px-4 py-3"
-                    }
-                    key={turn.id}
-                  >
-                    {turn.role === "assistant" ? (
-                      <div className="border-l-2 border-[#d8d8d1] pl-3">
-                        <AssistantMarkdown content={turn.content} />
-                        <time className="mt-2 block text-xs text-[#85857e]" dateTime={turn.created_at}>
-                          {formatTimestamp(turn.created_at)}
-                        </time>
-                      </div>
-                    ) : (
-                      <div>
-                        <p className="whitespace-pre-wrap text-sm leading-7">{turn.content}</p>
-                        <time className="mt-2 block text-xs text-[#85857e]" dateTime={turn.created_at}>
-                          {formatTimestamp(turn.created_at)}
-                        </time>
-                      </div>
-                    )}
-                  </article>
-                ))
+                threadTurns.map((turn) => {
+                  const eventCount = turn.run_id
+                    ? events.filter((runtimeEvent) => eventRunId(runtimeEvent) === turn.run_id).length
+                    : events.length;
+
+                  return (
+                    <Fragment key={turn.id}>
+                      <article
+                        className={
+                          turn.role === "assistant"
+                            ? "message-in flex gap-3"
+                            : "message-in ml-auto max-w-[82%] rounded-2xl bg-[#ecece7] px-4 py-3"
+                        }
+                      >
+                        {turn.role === "assistant" ? (
+                          <div className="border-l-2 border-[#d8d8d1] pl-3">
+                            <AssistantMarkdown content={turn.content} />
+                            <time className="mt-2 block text-xs text-[#85857e]" dateTime={turn.created_at}>
+                              {formatTimestamp(turn.created_at)}
+                            </time>
+                          </div>
+                        ) : (
+                          <div>
+                            <p className="whitespace-pre-wrap text-sm leading-7">{turn.content}</p>
+                            <time className="mt-2 block text-xs text-[#85857e]" dateTime={turn.created_at}>
+                              {formatTimestamp(turn.created_at)}
+                            </time>
+                          </div>
+                        )}
+                      </article>
+                      {turn.role === "user" ? (
+                        <div className="flex items-center gap-3 py-0.5">
+                          <span className="h-px flex-1 bg-[#e7e7e1]" />
+                          <button
+                            className="cursor-pointer rounded-md px-2 py-1 text-xs font-medium text-[#777770] transition hover:bg-[#f0f0eb] hover:text-[#20201e]"
+                            type="button"
+                            onClick={() => {
+                              setActivityRunId(turn.run_id);
+                              setActivityOpen(true);
+                            }}
+                          >
+                            Activity{eventCount ? ` (${eventCount})` : ""}
+                          </button>
+                          <span className="h-px flex-1 bg-[#e7e7e1]" />
+                        </div>
+                      ) : null}
+                    </Fragment>
+                  );
+                })
               ) : null}
               {status === "running" && assistantText ? (
                 <article className="message-in border-l-2 border-[#d8d8d1] pl-3">
@@ -445,6 +501,7 @@ export default function App() {
                   Iteration limit reached. This response was generated from the work completed so far.
                 </p>
               ) : null}
+              <div ref={conversationBottomRef} />
             </div>
           </div>
 
@@ -478,17 +535,30 @@ export default function App() {
           </form>
         </section>
 
+        {activityOpen ? (
         <aside className="flex min-h-0 flex-col border-t border-[#e7e7e1] bg-[#f6f6f2] lg:h-screen lg:border-t-0 lg:border-l">
           <header className="flex h-14 shrink-0 items-center justify-between border-b border-[#e1e1db] px-3">
             <div>
               <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#888880]">Run inspector</p>
               <p className="mt-1 text-sm font-semibold">Activity</p>
             </div>
-            <span className="rounded-full bg-[#e5e5de] px-2 py-1 text-xs text-[#65655e]">{events.length}</span>
+            <div className="flex items-center gap-2">
+              <span className="rounded-full bg-[#e5e5de] px-2 py-1 text-xs text-[#65655e]">{visibleEvents.length}</span>
+              <button
+                aria-label="Hide activity"
+                className="grid size-7 cursor-pointer place-items-center rounded-md text-[#777770] transition hover:bg-[#e8e8e2] hover:text-[#20201e]"
+                type="button"
+                onClick={() => setActivityOpen(false)}
+              >
+                <svg aria-hidden="true" className="size-4" fill="none" viewBox="0 0 24 24">
+                  <path d="m7 7 10 10M17 7 7 17" stroke="currentColor" strokeLinecap="round" strokeWidth="1.7" />
+                </svg>
+              </button>
+            </div>
           </header>
           <div className="max-h-[45vh] min-h-0 flex-1 space-y-3 overflow-y-auto p-3 lg:max-h-none">
-            {events.length ? (
-              events.map((runtimeEvent, index) => {
+            {visibleEvents.length ? (
+              visibleEvents.map((runtimeEvent, index) => {
                 const isToolEvent = runtimeEvent.type.startsWith("tool.");
                 const toolCall = runtimeEvent.payload.tool_call as
                   | { name?: string; arguments?: Record<string, unknown> }
@@ -547,9 +617,10 @@ export default function App() {
                 Tool calls, model events, and run details will appear here.
               </p>
             )}
-            <div ref={feedBottomRef} />
+            <div ref={activityBottomRef} />
           </div>
         </aside>
+        ) : null}
       </section>
     </main>
   );
