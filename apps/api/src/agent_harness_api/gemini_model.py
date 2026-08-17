@@ -27,7 +27,7 @@ class GeminiModelProvider(ModelProvider):
                 "GEMINI_API_KEY is not set. Add it to your environment or .env file before running the app."
             )
 
-    def complete(self, context: Context) -> ModelResponse:
+    def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
         prompt = next(
             (message.content for message in context.messages if message.role == "user"),
             "",
@@ -35,7 +35,7 @@ class GeminiModelProvider(ModelProvider):
         if not prompt:
             return ModelResponse(output_text="")
 
-        payload = self._build_payload(prompt, context.messages)
+        payload = self._build_payload(prompt, context.messages, final_response=final_response)
         response = httpx.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_name}:generateContent",
             params={"key": self.api_key},
@@ -57,7 +57,9 @@ class GeminiModelProvider(ModelProvider):
 
         return ModelResponse(output_text=text, deltas=[text] if text else [])
 
-    def _build_payload(self, prompt: str, messages: list[Any]) -> dict[str, Any]:
+    def _build_payload(
+        self, prompt: str, messages: list[Any], *, final_response: bool = False
+    ) -> dict[str, Any]:
         contents: list[dict[str, Any]] = []
         for message in messages:
             role = message.role
@@ -82,21 +84,31 @@ class GeminiModelProvider(ModelProvider):
                 )
 
         contents.append({"role": "user", "parts": [{"text": prompt}]})
-        return {
+        system_instruction = (
+            "You are an autonomous coding agent. Use the available tools to inspect the repository, "
+            "execute tests, and answer the user's task. "
+            "When the task requires repo inspection or command execution, call a tool directly instead of "
+            "describing the action. Prefer structured function calls for file reads, searches, and shell commands. "
+            "Only respond with plain text when no tool call is needed or after tool results have been collected."
+        )
+        if final_response:
+            system_instruction = (
+                "Produce the final answer for the user from the work and tool results already in context. "
+                "Do not request more tools or describe future work. State what was done, relevant verification, "
+                "and any remaining limitation concisely."
+            )
+
+        payload = {
             "system_instruction": {
-                "parts": [
-                    {
-                        "text": (
-                            "You are an autonomous coding agent. Use the available tools to inspect the repository, "
-                            "execute tests, and answer the user's task. "
-                            "When the task requires repo inspection or command execution, call a tool directly instead of "
-                            "describing the action. Prefer structured function calls for file reads, searches, and shell commands. "
-                            "Only respond with plain text when no tool call is needed or after tool results have been collected."
-                        )
-                    }
-                ]
+                "parts": [{"text": system_instruction}]
             },
-            "tools": [
+            "contents": contents,
+            "generationConfig": {
+                "temperature": 0.2,
+            },
+        }
+        if not final_response:
+            payload["tools"] = [
                 {
                     "functionDeclarations": [
                         {
@@ -107,12 +119,8 @@ class GeminiModelProvider(ModelProvider):
                         for tool in self.tool_registry._tools.values()
                     ]
                 }
-            ],
-            "contents": contents,
-            "generationConfig": {
-                "temperature": 0.2,
-            },
-        }
+            ]
+        return payload
 
     def _convert_schema(self, schema: dict[str, Any]) -> dict[str, Any]:
         if schema.get("type") == "object":

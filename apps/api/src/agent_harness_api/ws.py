@@ -115,6 +115,7 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
                         "status": result.status,
                         "output_text": result.output_text,
                         "iterations": result.iterations,
+                        "finalized_by_iteration_limit": result.finalized_by_iteration_limit,
                     },
                 },
             )

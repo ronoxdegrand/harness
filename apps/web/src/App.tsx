@@ -3,7 +3,14 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 type RunSocketMessage =
   | { kind: "session.ready"; payload: { workspace_root: string } }
   | { kind: "runtime.event"; event: RuntimeEvent }
-  | { kind: "run.completed"; payload: { output_text: string; status: string } }
+  | {
+      kind: "run.completed";
+      payload: {
+        output_text: string;
+        status: string;
+        finalized_by_iteration_limit: boolean;
+      };
+    }
   | { kind: "run.failed"; error: string }
   | { kind: "run.finished" };
 
@@ -31,6 +38,7 @@ export default function App() {
   const [workspaceRoot, setWorkspaceRoot] = useState("");
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [assistantText, setAssistantText] = useState("");
+  const [finalizedByIterationLimit, setFinalizedByIterationLimit] = useState(false);
   const [error, setError] = useState("");
   const socketRef = useRef<WebSocket | null>(null);
   const feedBottomRef = useRef<HTMLDivElement | null>(null);
@@ -52,6 +60,7 @@ export default function App() {
     setStatus("connecting");
     setEvents([]);
     setAssistantText("");
+    setFinalizedByIterationLimit(false);
     setError("");
 
     const socket = new WebSocket(getWebSocketUrl());
@@ -117,6 +126,7 @@ export default function App() {
 
       if (payload.kind === "run.completed") {
         setStatus(payload.payload.status);
+        setFinalizedByIterationLimit(payload.payload.finalized_by_iteration_limit);
         if (payload.payload.output_text.trim()) {
           setAssistantText(payload.payload.output_text);
         }
@@ -219,6 +229,11 @@ export default function App() {
                 <p className="mt-2 whitespace-pre-wrap text-sm leading-6">
                   {assistantText || "Waiting for streamed model output..."}
                 </p>
+                {finalizedByIterationLimit ? (
+                  <p className="mt-3 border-l-2 border-amber-300 pl-3 text-xs leading-5 text-amber-100">
+                    Iteration limit reached. This response was generated from the work completed so far.
+                  </p>
+                ) : null}
               </article>
             </div>
           </div>

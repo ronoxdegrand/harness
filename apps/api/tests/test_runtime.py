@@ -17,8 +17,16 @@ from agent_harness_api.tools import ToolCall, ToolExecutor, build_default_tool_r
 class ScriptedModelProvider:
     def __init__(self, python_executable: str) -> None:
         self.python_executable = python_executable
+        self.final_response_flags: list[bool] = []
 
-    def complete(self, context: Context) -> ModelResponse:
+    def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
+        self.final_response_flags.append(final_response)
+        if final_response:
+            return ModelResponse(
+                deltas=["Summarizing completion"],
+                output_text="Fixed the subtraction bug and confirmed the test suite passes.",
+            )
+
         tool_messages = [message for message in context.messages if message.role == "tool"]
         if not tool_messages:
             return ModelResponse(
@@ -109,14 +117,11 @@ class ScriptedModelProvider:
                 ],
             )
 
-        return ModelResponse(
-            deltas=["Summarizing completion"],
-            output_text="Fixed the subtraction bug and confirmed the test suite passes.",
-        )
+        return ModelResponse(tool_calls=[ToolCall(id="call-extra", name="list_files")])
 
 
 class EmptyModelProvider:
-    def complete(self, context: Context) -> ModelResponse:
+    def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
         return ModelResponse()
 
 
@@ -179,8 +184,9 @@ def test_agent_runtime_executes_single_agent_loop(tmp_path: Path, monkeypatch) -
     emitter.subscribe(captured_events.append)
 
     registry = build_default_tool_registry()
+    model = ScriptedModelProvider(sys.executable)
     runtime = AgentRuntime(
-        model=ScriptedModelProvider(sys.executable),
+        model=model,
         tool_registry=registry,
         tool_executor=ToolExecutor(registry),
         store=RunStore(database_path),
@@ -197,6 +203,8 @@ def test_agent_runtime_executes_single_agent_loop(tmp_path: Path, monkeypatch) -
     assert result.status == "completed"
     assert "test suite passes" in result.output_text
     assert "return a - b" in (broken_repo / "math_utils.py").read_text(encoding="utf-8")
+    assert model.final_response_flags == [False] * 7 + [True]
+    assert result.finalized_by_iteration_limit is True
 
     event_types = [event.type for event in captured_events]
     assert "turn.started" in event_types

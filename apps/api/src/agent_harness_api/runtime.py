@@ -18,6 +18,7 @@ class RunResult:
     status: str
     output_text: str
     iterations: int
+    finalized_by_iteration_limit: bool
 
 
 class AgentRuntime:
@@ -78,7 +79,15 @@ class AgentRuntime:
                     iteration=iteration,
                     model_name=self.model_name,
                 )
-                response = self.model.complete(context)
+                response = self.model.complete(
+                    context,
+                    final_response=iteration == iteration_limit,
+                )
+
+                if iteration == iteration_limit and response.tool_calls:
+                    if not response.output_text:
+                        raise RuntimeError("Final iteration must return an output message.")
+                    response.tool_calls = []
 
                 for delta in response.deltas:
                     self._emit(
@@ -123,6 +132,7 @@ class AgentRuntime:
                         status="completed",
                         output_text=response.output_text,
                         iterations=iteration,
+                        finalized_by_iteration_limit=iteration == iteration_limit,
                     )
 
                 for call in response.tool_calls:
@@ -167,4 +177,3 @@ class AgentRuntime:
     def _emit(self, run_id: str, event_type: str, **payload: object) -> None:
         event = self.events.emit(event_type, run_id=run_id, **payload)
         self.store.append_event(run_id, event.type, event.payload)
-

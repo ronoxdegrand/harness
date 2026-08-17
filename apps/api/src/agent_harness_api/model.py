@@ -15,6 +15,5 @@ class ModelResponse:
 
 
 class ModelProvider(Protocol):
-    def complete(self, context: Context) -> ModelResponse:
+    def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
         ...
-

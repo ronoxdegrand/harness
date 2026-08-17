@@ -100,3 +100,4 @@ def test_run_websocket_streams_runtime_events(tmp_path: Path, monkeypatch) -> No
     assert "output_text" not in model_completed_payloads[0]
     assert final_payload is not None
     assert final_payload["status"] == "completed"
+    assert final_payload["finalized_by_iteration_limit"] is False
