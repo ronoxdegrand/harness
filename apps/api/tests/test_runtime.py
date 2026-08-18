@@ -230,7 +230,7 @@ def test_agent_runtime_executes_single_agent_loop(tmp_path: Path, monkeypatch) -
 
     connection = sqlite3.connect(database_path)
     run_row = connection.execute(
-        "SELECT status, final_output FROM harness_runs WHERE id = ?",
+        "SELECT status, final_output, finalized_by_iteration_limit FROM harness_runs WHERE id = ?",
         (result.run_id,),
     ).fetchone()
     event_count = connection.execute(
@@ -243,7 +243,7 @@ def test_agent_runtime_executes_single_agent_loop(tmp_path: Path, monkeypatch) -
     ).fetchone()
     connection.close()
 
-    assert run_row == ("completed", result.output_text)
+    assert run_row == ("completed", result.output_text, 1)
     assert event_count is not None and event_count[0] > 0
     assert snapshot_count is not None and snapshot_count[0] >= 2
 

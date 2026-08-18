@@ -156,12 +156,16 @@ class RunStore:
             )
             connection.commit()
 
-    def list_turns(self, thread_id: str) -> list[dict[str, str | int | None]]:
+    def list_turns(self, thread_id: str) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, run_id, role, content, created_at
-                FROM harness_turns WHERE thread_id = ? ORDER BY id
+                SELECT harness_turns.id, harness_turns.run_id, harness_turns.role,
+                       harness_turns.content, harness_turns.created_at,
+                       COALESCE(harness_runs.finalized_by_iteration_limit, 0)
+                FROM harness_turns
+                LEFT JOIN harness_runs ON harness_runs.id = harness_turns.run_id
+                WHERE harness_turns.thread_id = ? ORDER BY harness_turns.id
                 """,
                 (thread_id,),
             ).fetchall()
@@ -172,6 +176,7 @@ class RunStore:
                 "role": row[2],
                 "content": row[3],
                 "created_at": row[4],
+                "finalized_by_iteration_limit": bool(row[5]),
             }
             for row in rows
         ]
@@ -227,15 +232,17 @@ class RunStore:
             )
             connection.commit()
 
-    def complete_run(self, run_id: str, output_text: str) -> None:
+    def complete_run(
+        self, run_id: str, output_text: str, *, finalized_by_iteration_limit: bool
+    ) -> None:
         with self._connect() as connection:
             connection.execute(
                 """
                 UPDATE harness_runs
-                SET status = ?, final_output = ?, updated_at = CURRENT_TIMESTAMP
+                SET status = ?, final_output = ?, finalized_by_iteration_limit = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                ("completed", output_text, run_id),
+                ("completed", output_text, finalized_by_iteration_limit, run_id),
             )
             connection.commit()
 

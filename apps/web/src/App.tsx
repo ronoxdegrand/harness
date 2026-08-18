@@ -1,6 +1,9 @@
 import { FormEvent, Fragment, useEffect, useRef, useState } from "react";
+import { LoaderCircle, PanelLeft, PanelRight, Pencil, Plus, Send } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+
+import { Badge, Button, Card, Input, Separator, Textarea } from "@/components/ui";
 
 type RunSocketMessage =
   | { kind: "session.ready"; payload: { workspace_root: string } }
@@ -35,6 +38,7 @@ type ThreadSummary = {
 type ThreadTurn = {
   id: number;
   run_id: string | null;
+  finalized_by_iteration_limit: boolean;
   role: "user" | "assistant";
   content: string;
   created_at: string;
@@ -76,6 +80,14 @@ function eventRunId(event: RuntimeEvent) {
   return typeof runId === "string" ? runId : null;
 }
 
+function countIterations(events: RuntimeEvent[]) {
+  return new Set(
+    events
+      .map((event) => event.payload.iteration)
+      .filter((iteration): iteration is number => typeof iteration === "number"),
+  ).size;
+}
+
 export default function App() {
   const [task, setTask] = useState("");
   const [workspacePath, setWorkspacePath] = useState(".");
@@ -87,20 +99,32 @@ export default function App() {
   const [assistantText, setAssistantText] = useState("");
   const [activityOpen, setActivityOpen] = useState(false);
   const [activityRunId, setActivityRunId] = useState<string | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarPreviewOpen, setSidebarPreviewOpen] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [finalizedByIterationLimit, setFinalizedByIterationLimit] = useState(false);
   const [error, setError] = useState("");
   const socketRef = useRef<WebSocket | null>(null);
+  const taskInputRef = useRef<HTMLTextAreaElement | null>(null);
   const conversationBottomRef = useRef<HTMLDivElement | null>(null);
   const activityBottomRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    conversationBottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    conversationBottomRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
     if (activityOpen) {
-      activityBottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+      activityBottomRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
     }
   }, [activityOpen, events, assistantText, status, error]);
+
+  useEffect(() => {
+    const input = taskInputRef.current;
+    if (!input) {
+      return;
+    }
+    input.style.height = "auto";
+    input.style.height = `${input.scrollHeight}px`;
+  }, [task]);
 
   useEffect(() => {
     return () => {
@@ -125,7 +149,7 @@ export default function App() {
     }
   }
 
-  async function openThread(threadId: string) {
+  async function openThread(threadId: string, preserveIterationLimit = false) {
     try {
       const response = await fetch(`/threads/${threadId}`);
       if (!response.ok) {
@@ -140,6 +164,9 @@ export default function App() {
       setEditingTitle(false);
       setActivityOpen(false);
       setActivityRunId(null);
+      if (!preserveIterationLimit) {
+        setFinalizedByIterationLimit(false);
+      }
     } catch {
       setError("Could not open this thread.");
     }
@@ -203,6 +230,7 @@ export default function App() {
       {
         id: Date.now(),
         run_id: null,
+        finalized_by_iteration_limit: false,
         role: "user",
         content: task,
         created_at: new Date().toISOString(),
@@ -288,7 +316,7 @@ export default function App() {
         if (payload.payload.output_text.trim()) {
           setAssistantText(payload.payload.output_text);
         }
-        void openThread(payload.payload.thread_id);
+        void openThread(payload.payload.thread_id, true);
         void refreshThreads();
         return;
       }
@@ -315,176 +343,253 @@ export default function App() {
   const visibleEvents = activityRunId
     ? events.filter((runtimeEvent) => eventRunId(runtimeEvent) === activityRunId)
     : events;
+  const sidebarPinnedOpen = !sidebarCollapsed;
+  const sidebarOpen = sidebarPinnedOpen || sidebarPreviewOpen;
+  const eventGroups: Array<{
+    iteration: number | null;
+    createdAt?: string;
+    events: RuntimeEvent[];
+  }> = [];
+  for (const runtimeEvent of visibleEvents) {
+    const iteration = runtimeEvent.payload.iteration;
+    const groupIteration = typeof iteration === "number" ? iteration : null;
+    const lastGroup = eventGroups.at(-1);
+    if (lastGroup?.iteration === groupIteration) {
+      lastGroup.events.push(runtimeEvent);
+    } else {
+      eventGroups.push({
+        iteration: groupIteration,
+        createdAt: runtimeEvent.created_at,
+        events: [runtimeEvent],
+      });
+    }
+  }
+  const iterationCount = countIterations(visibleEvents);
 
   return (
-    <main className="bg-[#f7f7f5] text-[#1b1b1a] lg:h-screen lg:overflow-hidden">
+    <main className="bg-background text-foreground lg:h-screen lg:overflow-hidden">
       <section
-        className={`mx-auto grid max-w-[1800px] lg:h-screen ${
-          activityOpen ? "lg:grid-cols-[272px_minmax(0,1fr)_340px]" : "lg:grid-cols-[272px_minmax(0,1fr)]"
+        className={`relative mx-auto grid max-w-[1800px] lg:h-screen ${
+          sidebarPinnedOpen
+            ? activityOpen
+              ? "lg:grid-cols-[272px_minmax(0,1fr)_340px]"
+              : "lg:grid-cols-[272px_minmax(0,1fr)]"
+            : activityOpen
+              ? "lg:grid-cols-[minmax(0,1fr)_340px]"
+              : "lg:grid-cols-[minmax(0,1fr)]"
         }`}
       >
-        <aside className="flex min-h-0 flex-col border-b border-[#e7e7e1] bg-[#f6f6f2] lg:border-b-0 lg:border-r">
-          <header className="flex h-14 shrink-0 items-center border-b border-[#e7e7e1] px-3">
-            <button
-              className="flex w-full cursor-pointer items-center gap-2 rounded-lg border border-[#d9d9d2] bg-white px-3 py-2 text-sm font-semibold text-[#20201e] transition hover:bg-[#fdfdfb]"
-              type="button"
-              onClick={startNewThread}
-            >
-              <span className="text-lg font-normal leading-none">+</span> New chat
-            </button>
+        {sidebarOpen ? (
+          <aside
+            className={`flex min-h-0 flex-col border-b bg-sidebar lg:border-b-0 lg:border-r ${
+              sidebarPinnedOpen ? "" : "sidebar-preview lg:absolute lg:inset-y-0 lg:left-0 lg:z-20 lg:w-[272px] lg:shadow-[12px_0_30px_rgba(31,31,30,0.12)]"
+            }`}
+            onMouseLeave={() => {
+              if (!sidebarPinnedOpen) {
+                setSidebarPreviewOpen(false);
+              }
+            }}
+          >
+          <header className="flex h-14 shrink-0 items-center gap-1.5 border-b px-3">
+                <Button
+                  aria-label={sidebarPreviewOpen ? "Pin sidebar" : "Collapse sidebar"}
+                  className="size-10 shrink-0 bg-card"
+                  size="icon-lg"
+                  variant="outline"
+                  type="button"
+                  onClick={() => {
+                    if (sidebarPreviewOpen) {
+                      setSidebarCollapsed(false);
+                      setSidebarPreviewOpen(false);
+                    } else {
+                      setSidebarCollapsed(true);
+                    }
+                  }}
+                >
+                  <PanelLeft aria-hidden="true" className="size-4" />
+                </Button>
+                <Button
+                  className="h-10 flex-1 justify-start bg-card px-3"
+                  variant="outline"
+                  type="button"
+                  onClick={startNewThread}
+                >
+                  <Plus aria-hidden="true" className="size-4" /> New chat
+                </Button>
           </header>
 
           <div className="flex min-h-0 flex-1 flex-col p-3">
-            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#777770]">
-              Recent threads
-            </p>
-            <nav className="mt-3 space-y-1 overflow-y-auto pr-1">
+            <nav className="space-y-1 overflow-y-auto pr-1">
               {threads.length ? (
                 threads.map((thread) => (
-                  <button
-                    className={`block w-full cursor-pointer rounded-md px-3 py-2 text-left transition ${
+                  <Button
+                    className={`h-auto w-full justify-start rounded-lg px-3 py-2.5 text-left ${
                       activeThread?.id === thread.id
-                        ? "bg-[#e8e8e2] text-[#20201e]"
-                        : "text-[#5d5d57] hover:bg-[#ecece7] hover:text-[#20201e]"
+                        ? "bg-accent text-accent-foreground"
+                        : "text-muted-foreground hover:bg-accent/70 hover:text-foreground"
                     }`}
                     key={thread.id}
                     type="button"
+                    variant="ghost"
                     onClick={() => void openThread(thread.id)}
                   >
                     <span className="block truncate text-sm">{thread.title}</span>
-                    <span className="mt-0.5 block text-xs text-[#85857e]">
+                    <span className="mt-1 block text-xs text-muted-foreground">
                       {formatTimestamp(thread.updated_at)}
                     </span>
-                  </button>
+                  </Button>
                 ))
               ) : (
-                <p className="px-3 py-4 text-sm text-[#777770]">Your chats will appear here.</p>
+                <p className="px-3 py-4 text-sm text-muted-foreground">Your chats will appear here.</p>
               )}
             </nav>
           </div>
-        </aside>
+          </aside>
+        ) : null}
 
-        <section className="flex min-h-0 min-w-0 flex-col bg-[#fcfcfa] lg:h-screen">
-          <header className="flex h-14 shrink-0 items-center justify-between border-b border-[#e7e7e1] px-3">
+        <section className="flex min-h-0 min-w-0 flex-col bg-background lg:h-screen">
+          <header className="flex h-14 shrink-0 items-center border-b px-3">
+            {!sidebarPinnedOpen ? (
+              <div className="mr-2 flex shrink-0 items-center gap-1">
+                <Button
+                  aria-label="Expand sidebar"
+                  className="size-10 bg-card"
+                  size="icon-lg"
+                  type="button"
+                  variant="outline"
+                  onMouseEnter={() => setSidebarPreviewOpen(true)}
+                >
+                  <PanelLeft aria-hidden="true" className="size-4" />
+                </Button>
+                <Button
+                  aria-label="New chat"
+                  className="size-10 bg-card"
+                  size="icon-lg"
+                  type="button"
+                  variant="outline"
+                  onClick={startNewThread}
+                >
+                  <Plus aria-hidden="true" className="size-4" />
+                </Button>
+              </div>
+            ) : null}
             <div className="min-w-0">
-              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#8b8b84]">Conversation</p>
               {editingTitle ? (
-                <form className="mt-1 flex items-center gap-2" onSubmit={renameActiveThread}>
-                  <input
+                <form className="flex items-center gap-2" onSubmit={renameActiveThread}>
+                  <Input
                     autoFocus
-                    className="min-w-0 rounded-md border border-[#cfcfc8] bg-white px-2 py-1 text-sm font-semibold outline-none focus:border-[#777770]"
+                    className="h-8 min-w-0 bg-card text-sm font-semibold"
                     maxLength={80}
                     value={titleDraft}
                     onChange={(event) => setTitleDraft(event.target.value)}
                   />
-                  <button className="cursor-pointer text-xs font-semibold text-[#50504b] hover:text-[#1b1b1a]" type="submit">
+                  <Button className="h-7 px-2" size="sm" type="submit" variant="ghost">
                     Save
-                  </button>
-                  <button
-                    className="cursor-pointer text-xs text-[#777770] hover:text-[#1b1b1a]"
+                  </Button>
+                  <Button
+                    className="h-7 px-2 text-muted-foreground"
+                    size="sm"
                     type="button"
+                    variant="ghost"
                     onClick={() => setEditingTitle(false)}
                   >
                     Cancel
-                  </button>
+                  </Button>
                 </form>
               ) : (
-                <div className="mt-1 flex items-center gap-2">
-                  <h2 className="truncate text-xl font-semibold tracking-tight">
+                <div className="flex items-center gap-2">
+                  <h2 className="truncate text-sm font-semibold">
                     {activeThread?.title || "New chat"}
                   </h2>
                   {activeThread ? (
-                    <button
+                    <Button
                       aria-label="Rename thread"
-                      className="grid size-7 shrink-0 cursor-pointer place-items-center rounded-md text-[#777770] transition hover:bg-[#ecece7] hover:text-[#1b1b1a]"
+                      className="size-7 shrink-0 text-muted-foreground"
+                      size="icon-sm"
                       type="button"
+                      variant="ghost"
                       onClick={() => {
                         setTitleDraft(activeThread.title);
                         setEditingTitle(true);
                       }}
                     >
-                      <svg aria-hidden="true" className="size-4" fill="none" viewBox="0 0 24 24">
-                        <path
-                          d="M13.5 6.5 17.5 10.5M4 20l4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16 4 20Z"
-                          stroke="currentColor"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth="1.7"
-                        />
-                      </svg>
-                    </button>
+                      <Pencil aria-hidden="true" className="size-3.5" />
+                    </Button>
                   ) : null}
                 </div>
               )}
             </div>
-            <div className="flex items-center gap-2 text-xs">
-              {finalizedByIterationLimit ? (
-                <span className="rounded-full bg-amber-100 px-2 py-1 font-semibold text-amber-800">
-                  Limit reached
-                </span>
-              ) : null}
-              <span
-                className={`size-2 rounded-full ${
-                  status === "failed" ? "bg-red-500" : status === "running" ? "bg-amber-500" : "bg-emerald-500"
-                }`}
-              />
-              <span className="capitalize text-[#666660]">{status}</span>
-            </div>
           </header>
 
           {error ? (
-            <div className="mx-auto mt-3 w-[min(100%-2rem,720px)] rounded-lg border border-red-200 bg-red-50 px-3 py-3 text-sm text-red-700">
+            <Card className="mx-auto mt-3 w-[min(100%-2rem,720px)] border-destructive/30 bg-destructive/5 px-3 py-3 text-sm text-destructive shadow-none">
               {error}
-            </div>
+            </Card>
           ) : null}
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
-            <div className="mx-auto w-full max-w-3xl space-y-3">
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">
+            <div className="mx-auto w-full max-w-3xl space-y-4">
               {threadTurns.length ? (
-                threadTurns.map((turn) => {
-                  const eventCount = turn.run_id
-                    ? events.filter((runtimeEvent) => eventRunId(runtimeEvent) === turn.run_id).length
-                    : events.length;
+                threadTurns.map((turn, index) => {
+                  const runEvents = turn.run_id
+                    ? events.filter((runtimeEvent) => eventRunId(runtimeEvent) === turn.run_id)
+                    : events;
+                  const activityIterationCount = countIterations(runEvents);
+                  const isLatestPrompt =
+                    turn.role === "user" && !threadTurns.slice(index + 1).some((item) => item.role === "user");
 
                   return (
                     <Fragment key={turn.id}>
                       <article
                         className={
                           turn.role === "assistant"
-                            ? "message-in flex gap-3"
-                            : "message-in ml-auto max-w-[82%] rounded-2xl bg-[#ecece7] px-4 py-3"
+                            ? "message-in"
+                            : "message-in ml-auto max-w-[82%] rounded-2xl rounded-br-md bg-secondary px-4 py-3.5 text-secondary-foreground"
                         }
                       >
                         {turn.role === "assistant" ? (
-                          <div className="border-l-2 border-[#d8d8d1] pl-3">
+                          <div>
                             <AssistantMarkdown content={turn.content} />
-                            <time className="mt-2 block text-xs text-[#85857e]" dateTime={turn.created_at}>
+                            <time className="mt-2 block text-xs text-muted-foreground" dateTime={turn.created_at}>
                               {formatTimestamp(turn.created_at)}
                             </time>
                           </div>
                         ) : (
                           <div>
                             <p className="whitespace-pre-wrap text-sm leading-7">{turn.content}</p>
-                            <time className="mt-2 block text-xs text-[#85857e]" dateTime={turn.created_at}>
+                            <time className="mt-2 block text-xs text-muted-foreground" dateTime={turn.created_at}>
                               {formatTimestamp(turn.created_at)}
                             </time>
                           </div>
                         )}
                       </article>
                       {turn.role === "user" ? (
-                        <div className="flex items-center gap-3 py-0.5">
-                          <span className="h-px flex-1 bg-[#e7e7e1]" />
-                          <button
-                            className="cursor-pointer rounded-md px-2 py-1 text-xs font-medium text-[#777770] transition hover:bg-[#f0f0eb] hover:text-[#20201e]"
+                        <div className="flex items-center gap-3 py-1">
+                          <Separator className="flex-1" />
+                          <Button
+                            className="h-6 gap-1.5 border border-transparent px-2 text-muted-foreground hover:border-border"
+                            size="xs"
                             type="button"
+                            variant="ghost"
                             onClick={() => {
                               setActivityRunId(turn.run_id);
                               setActivityOpen(true);
                             }}
                           >
-                            Activity{eventCount ? ` (${eventCount})` : ""}
-                          </button>
-                          <span className="h-px flex-1 bg-[#e7e7e1]" />
+                            <span>Activity</span>
+                            <Badge className="h-4 rounded-sm px-1.5 py-px text-[10px] font-semibold">
+                              {activityIterationCount}
+                            </Badge>
+                            <span className="text-muted-foreground/80">
+                              {activityIterationCount === 1 ? "iteration" : "iterations"}
+                            </span>
+                          </Button>
+                          {turn.finalized_by_iteration_limit || (finalizedByIterationLimit && isLatestPrompt) ? (
+                            <Badge className="bg-amber-100 text-amber-800">
+                              Limit reached
+                            </Badge>
+                          ) : null}
+                          <Separator className="flex-1" />
                         </div>
                       ) : null}
                     </Fragment>
@@ -492,134 +597,151 @@ export default function App() {
                 })
               ) : null}
               {status === "running" && assistantText ? (
-                <article className="message-in border-l-2 border-[#d8d8d1] pl-3">
+                <article className="message-in">
                   <AssistantMarkdown content={assistantText} />
                 </article>
-              ) : null}
-              {finalizedByIterationLimit ? (
-                <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
-                  Iteration limit reached. This response was generated from the work completed so far.
-                </p>
               ) : null}
               <div ref={conversationBottomRef} />
             </div>
           </div>
 
-          <form className="border-t border-[#e7e7e1] bg-[#fcfcfa] px-3 py-3" onSubmit={startRun}>
-            <div className="mx-auto max-w-3xl rounded-2xl border border-[#d8d8d1] bg-white p-2 shadow-[0_12px_35px_rgba(31,31,30,0.07)]">
-              <textarea
-                className="min-h-24 w-full resize-none bg-transparent px-3 py-2 text-sm leading-6 outline-none placeholder:text-[#97978f]"
+          <form className="border-t bg-background px-4 py-3 sm:px-5" onSubmit={startRun}>
+            <Card className="mx-auto max-w-3xl rounded-2xl p-2 shadow-sm transition-shadow focus-within:shadow-md">
+              <Textarea
+                ref={taskInputRef}
+                className="min-h-16 max-h-60 resize-none overflow-y-auto border-0 bg-transparent px-3 py-2 text-sm leading-6 shadow-none focus-visible:ring-0"
                 placeholder={'Inspect the repo, search for "AgentRuntime", run tests, and show git diff'}
                 value={task}
                 onChange={(event) => setTask(event.target.value)}
               />
               <div className="flex items-center justify-between gap-3 px-1 pt-1">
-                <label className="min-w-0 text-xs text-[#777770]">
+                <label className="min-w-0 text-xs text-muted-foreground">
                   <span className="sr-only">Workspace path</span>
-                  <input
-                    className="w-36 bg-transparent outline-none placeholder:text-[#a0a09a] sm:w-52"
+                  <Input
+                    className="h-7 w-36 border-0 bg-transparent px-0 text-xs shadow-none focus-visible:ring-0 sm:w-52"
                     value={workspacePath}
                     onChange={(event) => setWorkspacePath(event.target.value)}
                     placeholder="Workspace path"
                   />
                 </label>
-                <button
-                  className="cursor-pointer rounded-xl bg-[#30302d] px-4 py-2 text-xs font-bold text-white transition hover:bg-[#1f1f1e] disabled:cursor-not-allowed disabled:bg-[#b5b5ae]"
+                {status === "connecting" || status === "running" ? (
+                  <span className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                    <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" />
+                    Working
+                  </span>
+                ) : null}
+                <Button
+                  className="h-8 px-3 text-xs font-semibold"
                   disabled={!task.trim() || status === "connecting" || status === "running"}
+                  size="sm"
                   type="submit"
                 >
-                  Send
-                </button>
+                  <Send aria-hidden="true" className="size-3.5" /> Send
+                </Button>
               </div>
-            </div>
+            </Card>
           </form>
         </section>
 
         {activityOpen ? (
-        <aside className="flex min-h-0 flex-col border-t border-[#e7e7e1] bg-[#f6f6f2] lg:h-screen lg:border-t-0 lg:border-l">
-          <header className="flex h-14 shrink-0 items-center justify-between border-b border-[#e1e1db] px-3">
-            <div>
-              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#888880]">Run inspector</p>
-              <p className="mt-1 text-sm font-semibold">Activity</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="rounded-full bg-[#e5e5de] px-2 py-1 text-xs text-[#65655e]">{visibleEvents.length}</span>
-              <button
-                aria-label="Hide activity"
-                className="grid size-7 cursor-pointer place-items-center rounded-md text-[#777770] transition hover:bg-[#e8e8e2] hover:text-[#20201e]"
-                type="button"
-                onClick={() => setActivityOpen(false)}
-              >
-                <svg aria-hidden="true" className="size-4" fill="none" viewBox="0 0 24 24">
-                  <path d="m7 7 10 10M17 7 7 17" stroke="currentColor" strokeLinecap="round" strokeWidth="1.7" />
-                </svg>
-              </button>
-            </div>
-          </header>
-          <div className="max-h-[45vh] min-h-0 flex-1 space-y-3 overflow-y-auto p-3 lg:max-h-none">
-            {visibleEvents.length ? (
-              visibleEvents.map((runtimeEvent, index) => {
-                const isToolEvent = runtimeEvent.type.startsWith("tool.");
-                const toolCall = runtimeEvent.payload.tool_call as
-                  | { name?: string; arguments?: Record<string, unknown> }
-                  | undefined;
-                const result = runtimeEvent.payload.result as
-                  | { output?: string; error?: string }
-                  | undefined;
-
-                return (
-                  <article
-                    key={`${runtimeEvent.type}-${index}`}
-                    className={`rounded-xl border p-3 text-sm ${
-                      runtimeEvent.type === "tool.failed"
-                        ? "border-red-200 bg-red-50"
-                      : runtimeEvent.type === "tool.completed"
-                          ? "border-emerald-200 bg-emerald-50"
-                          : "border-[#e1e1db] bg-[#fcfcfa]"
-                    }`}
-                  >
-                    <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#7c7c75]">
-                      {runtimeEvent.type.replaceAll(".", " ")}
-                    </p>
-                    {runtimeEvent.created_at ? (
-                      <time className="mt-1 block text-xs text-[#85857e]" dateTime={runtimeEvent.created_at}>
-                        {formatTimestamp(runtimeEvent.created_at)}
+          <aside className="flex min-h-0 flex-col border-t bg-sidebar lg:h-screen lg:border-t-0 lg:border-l">
+            <header className="flex h-14 shrink-0 items-center justify-between border-b px-3">
+              <div className="flex items-center gap-2">
+                <Button
+                  aria-label="Collapse activity"
+                  className="size-10 bg-card"
+                  size="icon-lg"
+                  type="button"
+                  variant="outline"
+                  onClick={() => setActivityOpen(false)}
+                >
+                  <PanelRight aria-hidden="true" className="size-4" />
+                </Button>
+                <p className="text-sm font-semibold">Activity</p>
+              </div>
+              <span className="text-xs text-muted-foreground">
+                {iterationCount} {iterationCount === 1 ? "iteration" : "iterations"}
+              </span>
+            </header>
+            <div className="max-h-[45vh] min-h-0 flex-1 space-y-4 overflow-y-auto p-3 lg:max-h-none">
+            {eventGroups.length ? (
+              eventGroups.map((group, groupIndex) => (
+                <section className="space-y-2 border-b pb-4 last:border-b-0 last:pb-0" key={`${group.iteration}-${groupIndex}`}>
+                  <div className="flex items-center justify-between px-1.5">
+                    <div className="flex items-center gap-2">
+                      <p className="text-xs font-semibold">
+                        {group.iteration === null ? "Run" : `Iteration ${group.iteration}`}
+                      </p>
+                      <Badge className="h-5 rounded-sm px-1.5 text-xs">
+                        {group.events.length} {group.events.length === 1 ? "event" : "events"}
+                      </Badge>
+                    </div>
+                    {group.createdAt ? (
+                      <time className="text-xs text-muted-foreground" dateTime={group.createdAt}>
+                        {formatTimestamp(group.createdAt)}
                       </time>
                     ) : null}
+                  </div>
+                  {group.events.map((runtimeEvent, eventIndex) => {
+                    const isToolEvent = runtimeEvent.type.startsWith("tool.");
+                    const toolCall = runtimeEvent.payload.tool_call as
+                      | { name?: string; arguments?: Record<string, unknown> }
+                      | undefined;
+                    const result = runtimeEvent.payload.result as
+                      | { output?: string; error?: string }
+                      | undefined;
+                    const { iteration: _, run_id: __, ...eventPayload } = runtimeEvent.payload;
 
-                    {isToolEvent ? (
-                      <div className="mt-2 space-y-2">
-                        <p className="font-medium text-[#252523]">
-                          {toolCall?.name || "tool"}
+                    return (
+                      <Card
+                        key={`${runtimeEvent.type}-${eventIndex}`}
+                        className={`rounded-lg p-3 text-sm shadow-none ${
+                          runtimeEvent.type === "tool.failed"
+                            ? "border-destructive/30 bg-destructive/5"
+                            : runtimeEvent.type === "tool.completed"
+                              ? "border-emerald-200 bg-emerald-50"
+                              : "bg-card"
+                        }`}
+                      >
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                          {runtimeEvent.type.replaceAll(".", " ")}
                         </p>
-                        <pre className="overflow-x-auto whitespace-pre-wrap text-xs text-[#666660]">
-                          {JSON.stringify(toolCall?.arguments ?? {}, null, 2)}
-                        </pre>
-                        {result?.output ? (
-                          <pre className="overflow-x-auto whitespace-pre-wrap rounded-md border border-[#e5e5de] bg-white p-2 text-xs text-[#55554f]">
-                            {String(result.output).slice(0, 1200)}
+
+                        {isToolEvent ? (
+                          <div className="mt-2 space-y-2">
+                            <p className="font-medium">
+                              {toolCall?.name || "tool"}
+                            </p>
+                            <pre className="overflow-x-auto whitespace-pre-wrap text-xs text-muted-foreground">
+                              {JSON.stringify(toolCall?.arguments ?? {}, null, 2)}
+                            </pre>
+                            {result?.output ? (
+                              <pre className="overflow-x-auto whitespace-pre-wrap rounded-md border bg-muted/40 p-2 text-xs text-muted-foreground">
+                                {String(result.output).slice(0, 1200)}
+                              </pre>
+                            ) : null}
+                            {result?.error ? (
+                              <p className="text-xs text-red-700">{String(result.error)}</p>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs text-muted-foreground">
+                            {JSON.stringify(eventPayload, null, 2)}
                           </pre>
-                        ) : null}
-                        {result?.error ? (
-                          <p className="text-xs text-red-700">{String(result.error)}</p>
-                        ) : null}
-                      </div>
-                    ) : (
-                      <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs text-[#666660]">
-                        {JSON.stringify(runtimeEvent.payload, null, 2)}
-                      </pre>
-                    )}
-                  </article>
-                );
-              })
+                        )}
+                      </Card>
+                    );
+                  })}
+                </section>
+              ))
             ) : (
-              <p className="px-2 py-8 text-center text-sm leading-6 text-[#81817a]">
+              <p className="px-2 py-8 text-center text-sm leading-6 text-muted-foreground">
                 Tool calls, model events, and run details will appear here.
               </p>
             )}
             <div ref={activityBottomRef} />
-          </div>
-        </aside>
+            </div>
+          </aside>
         ) : null}
       </section>
     </main>

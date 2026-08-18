@@ -57,6 +57,7 @@ def initialize_database() -> Path:
                 final_output TEXT,
                 error TEXT,
                 model_name TEXT,
+                finalized_by_iteration_limit INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (thread_id) REFERENCES harness_threads (id)
@@ -93,6 +94,10 @@ def initialize_database() -> Path:
             connection.execute("ALTER TABLE harness_runs ADD COLUMN model_name TEXT")
         if "thread_id" not in column_names:
             connection.execute("ALTER TABLE harness_runs ADD COLUMN thread_id TEXT")
+        if "finalized_by_iteration_limit" not in column_names:
+            connection.execute(
+                "ALTER TABLE harness_runs ADD COLUMN finalized_by_iteration_limit INTEGER NOT NULL DEFAULT 0"
+            )
         connection.commit()
 
     return db_path

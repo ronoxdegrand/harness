@@ -129,13 +129,18 @@ class AgentRuntime:
                         status="completed",
                     )
                     self.store.save_snapshot(active_run_id, iteration, context.snapshot())
-                    self.store.complete_run(active_run_id, response.output_text)
+                    finalized_by_iteration_limit = iteration == iteration_limit
+                    self.store.complete_run(
+                        active_run_id,
+                        response.output_text,
+                        finalized_by_iteration_limit=finalized_by_iteration_limit,
+                    )
                     return RunResult(
                         run_id=active_run_id,
                         status="completed",
                         output_text=response.output_text,
                         iterations=iteration,
-                        finalized_by_iteration_limit=iteration == iteration_limit,
+                        finalized_by_iteration_limit=finalized_by_iteration_limit,
                     )
 
                 for call in response.tool_calls:
