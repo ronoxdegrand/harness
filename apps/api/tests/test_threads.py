@@ -5,6 +5,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from agent_harness_api.config import get_settings
+from agent_harness_api.db import initialize_database
 from agent_harness_api.main import app
 from agent_harness_api.store import RunStore
 
@@ -20,6 +21,27 @@ def _receive_run(websocket) -> tuple[str, dict[str, object]]:
             completed = message["payload"]
         if message["kind"] == "run.finished":
             return thread_id, completed
+
+
+def test_existing_turns_table_adds_model_name(tmp_path: Path, monkeypatch) -> None:
+    database_path = tmp_path / "legacy.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE harness_turns (
+                id INTEGER PRIMARY KEY, thread_id TEXT, run_id TEXT, role TEXT,
+                content TEXT, created_at TEXT
+            )
+            """
+        )
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(database_path))
+    get_settings.cache_clear()
+
+    initialize_database()
+
+    with sqlite3.connect(database_path) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(harness_turns)")}
+    assert "model_name" in columns
 
 
 def test_thread_api_persists_across_app_sessions(tmp_path: Path, monkeypatch) -> None:
@@ -91,13 +113,24 @@ def test_websocket_continues_a_persisted_thread(tmp_path: Path, monkeypatch) -> 
         with TestClient(app) as client:
             with client.websocket_connect("/ws/run") as websocket:
                 assert websocket.receive_json()["kind"] == "session.ready"
-                websocket.send_json({"task": "First message", "workspace_path": "."})
+                websocket.send_json(
+                    {
+                        "task": "First message",
+                        "workspace_path": ".",
+                        "model_name": "gemini-3-flash",
+                    }
+                )
                 thread_id, first_run = _receive_run(websocket)
 
             with client.websocket_connect("/ws/run") as websocket:
                 assert websocket.receive_json()["kind"] == "session.ready"
                 websocket.send_json(
-                    {"task": "Second message", "workspace_path": ".", "thread_id": thread_id}
+                    {
+                        "task": "Second message",
+                        "workspace_path": ".",
+                        "thread_id": thread_id,
+                        "model_name": "gemini-3.5-flash-lite",
+                    }
                 )
                 reopened_thread_id, second_run = _receive_run(websocket)
 
@@ -106,16 +139,31 @@ def test_websocket_continues_a_persisted_thread(tmp_path: Path, monkeypatch) -> 
     assert reopened_thread_id == thread_id
     assert first_run["thread_id"] == thread_id
     assert second_run["thread_id"] == thread_id
-    assert [(turn["role"], turn["content"]) for turn in thread["turns"]] == [
-        ("user", "First message"),
-        ("assistant", "Saved response."),
-        ("user", "Second message"),
-        ("assistant", "Saved response."),
+    assert [(turn["role"], turn["content"], turn["model_name"]) for turn in thread["turns"]] == [
+        ("user", "First message", "gemini-3-flash"),
+        ("assistant", "Saved response.", None),
+        ("user", "Second message", "gemini-3.5-flash-lite"),
+        ("assistant", "Saved response.", None),
     ]
     assert thread["thread"]["title"] == "First message"
+    assert thread["thread"]["model_name"] == "gemini-3.5-flash-lite"
     assert thread["events"]
 
     connection = sqlite3.connect(database_path)
-    run_thread_ids = connection.execute("SELECT thread_id FROM harness_runs ORDER BY created_at, id").fetchall()
+    runs = connection.execute(
+        "SELECT thread_id, model_name FROM harness_runs ORDER BY rowid"
+    ).fetchall()
+    turn_models = connection.execute(
+        "SELECT role, model_name FROM harness_turns ORDER BY id"
+    ).fetchall()
     connection.close()
-    assert run_thread_ids == [(thread_id,), (thread_id,)]
+    assert runs == [
+        (thread_id, "gemini-3-flash"),
+        (thread_id, "gemini-3.5-flash-lite"),
+    ]
+    assert turn_models == [
+        ("user", "gemini-3-flash"),
+        ("assistant", None),
+        ("user", "gemini-3.5-flash-lite"),
+        ("assistant", None),
+    ]

@@ -1,9 +1,21 @@
 import { FormEvent, Fragment, useEffect, useRef, useState } from "react";
-import { LoaderCircle, PanelLeft, PanelRight, Pencil, Plus, Send } from "lucide-react";
+import { Select as SelectPrimitive } from "@base-ui/react/select";
+import { Check, ChevronDown, LoaderCircle, PanelLeft, PanelRight, Pencil, Plus, Send } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { Badge, Button, Card, Input, Separator, Textarea } from "@/components/ui";
+
+const MODEL_OPTIONS = [
+  "gemini-3-flash",
+  "gemini-3-flash-lite",
+  "gemini-3.5-flash",
+  "gemini-3.5-flash-lite",
+];
+
+function selectableModel(model: string) {
+  return MODEL_OPTIONS.includes(model) ? model : MODEL_OPTIONS[0];
+}
 
 type RunSocketMessage =
   | { kind: "session.ready"; payload: { workspace_root: string } }
@@ -31,6 +43,7 @@ type RuntimeEvent = {
 type ThreadSummary = {
   id: string;
   title: string;
+  model_name: string;
   created_at: string;
   updated_at: string;
 };
@@ -38,6 +51,7 @@ type ThreadSummary = {
 type ThreadTurn = {
   id: number;
   run_id: string | null;
+  model_name: string | null;
   finalized_by_iteration_limit: boolean;
   role: "user" | "assistant";
   content: string;
@@ -91,6 +105,8 @@ function countIterations(events: RuntimeEvent[]) {
 export default function App() {
   const [task, setTask] = useState("");
   const [workspacePath, setWorkspacePath] = useState(".");
+  const [modelName, setModelName] = useState(MODEL_OPTIONS[0]);
+  const [lastUsedModel, setLastUsedModel] = useState(MODEL_OPTIONS[0]);
   const [status, setStatus] = useState("idle");
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [activeThread, setActiveThread] = useState<ThreadSummary | null>(null);
@@ -133,10 +149,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    void refreshThreads();
+    void refreshThreads(true);
   }, []);
 
-  async function refreshThreads() {
+  async function refreshThreads(initializeModel = false) {
     try {
       const response = await fetch("/threads");
       if (!response.ok) {
@@ -144,6 +160,11 @@ export default function App() {
       }
       const payload = await readJson<{ threads: ThreadSummary[] }>(response);
       setThreads(payload.threads);
+      if (initializeModel && payload.threads[0]) {
+        const latestModel = selectableModel(payload.threads[0].model_name);
+        setModelName(latestModel);
+        setLastUsedModel(latestModel);
+      }
     } catch {
       setError("Could not load threads. Is the API running?");
     }
@@ -158,6 +179,7 @@ export default function App() {
       }
       const payload = await readJson<ThreadDetail>(response);
       setActiveThread(payload.thread);
+      setModelName(selectableModel(payload.thread.model_name));
       setThreadTurns(payload.turns);
       setEvents(payload.events);
       setAssistantText("");
@@ -185,28 +207,24 @@ export default function App() {
     setError("");
     setStatus("idle");
     setTask("");
+    setModelName(lastUsedModel);
   }
 
   async function renameActiveThread(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!activeThread) {
-      return;
-    }
-
+    if (!activeThread) return;
     try {
       const response = await fetch(`/threads/${activeThread.id}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ title: titleDraft }),
       });
-      if (!response.ok) {
-        setError("Could not rename this thread.");
-        return;
-      }
+      if (!response.ok) throw new Error();
       const thread = await readJson<ThreadSummary>(response);
       setActiveThread(thread);
       setThreads((current) => current.map((item) => (item.id === thread.id ? thread : item)));
       setEditingTitle(false);
+      setError("");
     } catch {
       setError("Could not rename this thread.");
     }
@@ -217,6 +235,7 @@ export default function App() {
     socketRef.current?.close();
 
     const thread = activeThread;
+    setLastUsedModel(modelName);
 
     setStatus("connecting");
     setEvents([]);
@@ -230,6 +249,7 @@ export default function App() {
       {
         id: Date.now(),
         run_id: null,
+        model_name: modelName,
         finalized_by_iteration_limit: false,
         role: "user",
         content: task,
@@ -250,6 +270,7 @@ export default function App() {
           JSON.stringify({
             task,
             workspace_path: workspacePath,
+            model_name: modelName,
             ...(thread ? { thread_id: thread.id } : {}),
           }),
         );
@@ -352,8 +373,8 @@ export default function App() {
   }> = [];
   for (const runtimeEvent of visibleEvents) {
     const iteration = runtimeEvent.payload.iteration;
-    const groupIteration = typeof iteration === "number" ? iteration : null;
     const lastGroup = eventGroups.at(-1);
+    const groupIteration = typeof iteration === "number" ? iteration : (lastGroup?.iteration ?? null);
     if (lastGroup?.iteration === groupIteration) {
       lastGroup.events.push(runtimeEvent);
     } else {
@@ -614,8 +635,8 @@ export default function App() {
                 value={task}
                 onChange={(event) => setTask(event.target.value)}
               />
-              <div className="flex items-center justify-between gap-3 px-1 pt-1">
-                <label className="min-w-0 text-xs text-muted-foreground">
+              <div className="flex flex-wrap items-center gap-2 px-1 pt-1">
+                <label className="mr-auto min-w-0 text-xs text-muted-foreground">
                   <span className="sr-only">Workspace path</span>
                   <Input
                     className="h-7 w-36 border-0 bg-transparent px-0 text-xs shadow-none focus-visible:ring-0 sm:w-52"
@@ -623,6 +644,39 @@ export default function App() {
                     onChange={(event) => setWorkspacePath(event.target.value)}
                     placeholder="Workspace path"
                   />
+                </label>
+                <label className="text-xs text-muted-foreground">
+                  <span className="sr-only">Model</span>
+                  <SelectPrimitive.Root
+                    value={modelName}
+                    onValueChange={(value) => value && setModelName(value as string)}
+                  >
+                    <SelectPrimitive.Trigger className="flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-lg bg-transparent px-2.5 text-xs outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
+                      <SelectPrimitive.Value />
+                      <SelectPrimitive.Icon render={<ChevronDown className="size-4 text-muted-foreground" />} />
+                    </SelectPrimitive.Trigger>
+                    <SelectPrimitive.Portal>
+                      <SelectPrimitive.Positioner alignItemWithTrigger sideOffset={4} className="z-50">
+                        <SelectPrimitive.Popup className="min-w-48 rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10">
+                          <SelectPrimitive.List>
+                            {MODEL_OPTIONS.map((model) => (
+                              <SelectPrimitive.Item
+                                className="relative flex cursor-default items-center rounded-md py-1.5 pr-8 pl-2 text-sm outline-none focus:bg-accent focus:text-accent-foreground"
+                                key={model}
+                                value={model}
+                              >
+                                <SelectPrimitive.ItemText>{model}</SelectPrimitive.ItemText>
+                                <SelectPrimitive.ItemIndicator
+                                  className="absolute right-2"
+                                  render={<Check className="size-4" />}
+                                />
+                              </SelectPrimitive.Item>
+                            ))}
+                          </SelectPrimitive.List>
+                        </SelectPrimitive.Popup>
+                      </SelectPrimitive.Positioner>
+                    </SelectPrimitive.Portal>
+                  </SelectPrimitive.Root>
                 </label>
                 {status === "connecting" || status === "running" ? (
                   <span className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
@@ -684,6 +738,7 @@ export default function App() {
                   </div>
                   {group.events.map((runtimeEvent, eventIndex) => {
                     const isToolEvent = runtimeEvent.type.startsWith("tool.");
+                    const isFailedEvent = runtimeEvent.type.endsWith(".failed");
                     const toolCall = runtimeEvent.payload.tool_call as
                       | { name?: string; arguments?: Record<string, unknown> }
                       | undefined;
@@ -696,14 +751,16 @@ export default function App() {
                       <Card
                         key={`${runtimeEvent.type}-${eventIndex}`}
                         className={`rounded-lg p-3 text-sm shadow-none ${
-                          runtimeEvent.type === "tool.failed"
+                          isFailedEvent
                             ? "border-destructive/30 bg-destructive/5"
                             : runtimeEvent.type === "tool.completed"
                               ? "border-emerald-200 bg-emerald-50"
                               : "bg-card"
                         }`}
                       >
-                        <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                        <p className={`text-[10px] font-semibold uppercase tracking-[0.12em] ${
+                          isFailedEvent ? "text-destructive" : "text-muted-foreground"
+                        }`}>
                           {runtimeEvent.type.replaceAll(".", " ")}
                         </p>
 

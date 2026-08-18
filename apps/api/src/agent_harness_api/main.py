@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, WebSocket
 from pydantic import BaseModel
 
-from .config import get_settings
+from .config import DEFAULT_MODEL, get_settings
 from .db import database_status, initialize_database
 from .store import RunStore, Thread, thread_title_from_prompt
 from .ws import handle_run_websocket, resolve_workspace_path
@@ -67,11 +67,10 @@ async def create_thread(request: ThreadCreateRequest) -> dict[str, object]:
         raise HTTPException(status_code=400, detail="Workspace path does not exist or is not a directory.")
     if not request.title and not request.prompt:
         raise HTTPException(status_code=400, detail="Thread title or first prompt is required.")
-
     store = RunStore()
     thread = store.create_thread(
         workspace_path=workspace_path,
-        model_name=settings.gemini_model,
+        model_name=DEFAULT_MODEL,
         title=request.title or thread_title_from_prompt(request.prompt or ""),
     )
     return _thread_payload(store, thread)

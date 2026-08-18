@@ -153,12 +153,16 @@ def test_runtime_fails_when_model_returns_no_text_or_tools(tmp_path: Path, monke
     get_settings.cache_clear()
     initialize_database()
 
+    captured_events: list[RuntimeEvent] = []
+    emitter = EventEmitter()
+    emitter.subscribe(captured_events.append)
     registry = build_default_tool_registry()
     runtime = AgentRuntime(
         model=EmptyModelProvider(),
         tool_registry=registry,
         tool_executor=ToolExecutor(registry),
         store=RunStore(database_path),
+        event_emitter=emitter,
         max_iterations=2,
         timeout_seconds=30,
     )
@@ -168,6 +172,8 @@ def test_runtime_fails_when_model_returns_no_text_or_tools(tmp_path: Path, monke
         raise AssertionError("Expected a runtime error when the model produced an empty response.")
     except RuntimeError as exc:
         assert "empty response" in str(exc).lower()
+    failure = next(event for event in captured_events if event.type == "turn.failed")
+    assert failure.payload["iteration"] == 1
 
 
 def test_agent_runtime_executes_single_agent_loop(tmp_path: Path, monkeypatch) -> None:

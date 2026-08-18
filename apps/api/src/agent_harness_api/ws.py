@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect
 
-from .config import Settings
+from .config import DEFAULT_MODEL, Settings
 from .context import Context
 from .events import EventEmitter, RuntimeEvent
 from .gemini_model import GeminiModelProvider
@@ -86,6 +86,7 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
     task = request.get("task")
     workspace_path = request.get("workspace_path", ".")
     requested_thread_id = request.get("thread_id")
+    requested_model = request.get("model_name")
 
     if not isinstance(task, str) or not (prompt := task.strip()):
         await _fail_run(websocket, "Task is required to start a run.")
@@ -95,6 +96,12 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
         await _fail_run(websocket, "Workspace path must be a string.")
         return
     workspace_path = workspace_path.strip() or "."
+
+    if requested_model is not None and (
+        not isinstance(requested_model, str) or not requested_model.strip()
+    ):
+        await _fail_run(websocket, "Model name must be a non-empty string.")
+        return
 
     store = RunStore()
     thread: Thread | None = None
@@ -121,6 +128,10 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
         await _fail_run(websocket, "Workspace path does not exist or is not a directory.")
         return
 
+    model_name = requested_model.strip() if requested_model else (
+        thread.model_name if thread else DEFAULT_MODEL
+    )
+
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     loop = asyncio.get_running_loop()
     emitter = EventEmitter()
@@ -134,7 +145,7 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
             target_path,
             emitter,
             api_key=settings.gemini_api_key,
-            model_name=thread.model_name if thread else settings.gemini_model,
+            model_name=model_name,
         )
     except ValueError as exc:
         await _fail_run(websocket, str(exc))
@@ -143,7 +154,7 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
     if thread is None:
         thread = store.create_thread(
             workspace_path=target_path,
-            model_name=settings.gemini_model,
+            model_name=model_name,
             title=thread_title_from_prompt(prompt),
         )
     await websocket.send_json({"kind": "thread.opened", "payload": {"thread": thread.as_dict()}})
@@ -155,7 +166,13 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
             for turn in store.list_turns(thread.id)
         ]
     )
-    store.append_turn(thread_id=thread.id, role="user", content=prompt, run_id=run_id)
+    store.append_turn(
+        thread_id=thread.id,
+        role="user",
+        content=prompt,
+        run_id=run_id,
+        model_name=model_name,
+    )
 
     def run_agent() -> None:
         try:

@@ -149,7 +149,7 @@ def test_git_tools_and_repo_workflow(tmp_path: Path) -> None:
             name="write_file",
             arguments={
                 "path": "src/math_utils.py",
-                "content": "def subtract(a: int, b: int) -> int:\n    return a - b\n",
+                "content": "def subtract(a: int, b: int) -> int:\n    return a - b\n\n",
             },
         ),
         target_path=workspace,

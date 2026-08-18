@@ -4,6 +4,8 @@ from pathlib import Path
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+DEFAULT_MODEL = "gemini-3-flash"
+
 
 class Settings(BaseSettings):
     app_name: str = "AI Agent Harness API"
@@ -14,11 +16,6 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("GEMINI_API_KEY", "HARNESS_GEMINI_API_KEY"),
     )
-    gemini_model: str = Field(
-        default="gemini-2.0-flash",
-        validation_alias=AliasChoices("GEMINI_MODEL", "HARNESS_GEMINI_MODEL"),
-    )
-
     model_config = SettingsConfigDict(
         env_prefix="HARNESS_",
         env_file=Path(__file__).resolve().parents[4] / ".env",

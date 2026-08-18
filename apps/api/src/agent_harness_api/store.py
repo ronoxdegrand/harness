@@ -138,21 +138,29 @@ class RunStore:
         return self._thread_from_row(row) if row else None
 
     def append_turn(
-        self, *, thread_id: str, role: str, content: str, run_id: str | None = None
+        self,
+        *,
+        thread_id: str,
+        role: str,
+        content: str,
+        run_id: str | None = None,
+        model_name: str | None = None,
     ) -> None:
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO harness_turns (thread_id, run_id, role, content)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO harness_turns (thread_id, run_id, role, content, model_name)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (thread_id, run_id, role, content),
+                (thread_id, run_id, role, content, model_name),
             )
             connection.execute(
                 """
-                UPDATE harness_threads SET updated_at = CURRENT_TIMESTAMP WHERE id = ?
+                UPDATE harness_threads
+                SET updated_at = CURRENT_TIMESTAMP, model_name = COALESCE(?, model_name)
+                WHERE id = ?
                 """,
-                (thread_id,),
+                (model_name, thread_id),
             )
             connection.commit()
 
@@ -161,7 +169,7 @@ class RunStore:
             rows = connection.execute(
                 """
                 SELECT harness_turns.id, harness_turns.run_id, harness_turns.role,
-                       harness_turns.content, harness_turns.created_at,
+                       harness_turns.content, harness_turns.model_name, harness_turns.created_at,
                        COALESCE(harness_runs.finalized_by_iteration_limit, 0)
                 FROM harness_turns
                 LEFT JOIN harness_runs ON harness_runs.id = harness_turns.run_id
@@ -175,8 +183,9 @@ class RunStore:
                 "run_id": row[1],
                 "role": row[2],
                 "content": row[3],
-                "created_at": row[4],
-                "finalized_by_iteration_limit": bool(row[5]),
+                "model_name": row[4],
+                "created_at": row[5],
+                "finalized_by_iteration_limit": bool(row[6]),
             }
             for row in rows
         ]

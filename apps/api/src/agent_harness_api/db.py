@@ -33,6 +33,7 @@ def initialize_database() -> Path:
                 run_id TEXT,
                 role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
                 content TEXT NOT NULL,
+                model_name TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (thread_id) REFERENCES harness_threads (id),
                 FOREIGN KEY (run_id) REFERENCES harness_runs (id)
@@ -98,6 +99,9 @@ def initialize_database() -> Path:
             connection.execute(
                 "ALTER TABLE harness_runs ADD COLUMN finalized_by_iteration_limit INTEGER NOT NULL DEFAULT 0"
             )
+        turn_columns = {row[1] for row in connection.execute("PRAGMA table_info(harness_turns)")}
+        if "model_name" not in turn_columns:
+            connection.execute("ALTER TABLE harness_turns ADD COLUMN model_name TEXT")
         connection.commit()
 
     return db_path

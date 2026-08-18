@@ -70,6 +70,7 @@ class AgentRuntime:
         )
         self.store.save_snapshot(active_run_id, 0, context.snapshot())
 
+        iteration = 0
         try:
             for iteration in range(1, iteration_limit + 1):
                 if time.monotonic() - started_at > timeout_limit:
@@ -172,7 +173,7 @@ class AgentRuntime:
 
             raise RuntimeError(f"Run exceeded max_iterations={iteration_limit}.")
         except Exception as exc:
-            self._emit(active_run_id, "turn.failed", error=str(exc))
+            self._emit(active_run_id, "turn.failed", iteration=iteration or 1, error=str(exc))
             self.store.fail_run(active_run_id, str(exc))
             raise
 
