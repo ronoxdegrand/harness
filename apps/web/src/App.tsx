@@ -1,6 +1,7 @@
 import { FormEvent, Fragment, useEffect, useRef, useState } from "react";
+import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog";
 import { Select as SelectPrimitive } from "@base-ui/react/select";
-import { Check, ChevronDown, LoaderCircle, PanelLeft, PanelRight, Pencil, Plus, Send } from "lucide-react";
+import { Check, ChevronDown, LoaderCircle, PanelLeft, PanelRight, Pencil, Plus, Send, Trash2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -110,6 +111,7 @@ export default function App() {
   const [status, setStatus] = useState("idle");
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [activeThread, setActiveThread] = useState<ThreadSummary | null>(null);
+  const [threadToDelete, setThreadToDelete] = useState<ThreadSummary | null>(null);
   const [threadTurns, setThreadTurns] = useState<ThreadTurn[]>([]);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [assistantText, setAssistantText] = useState("");
@@ -131,7 +133,7 @@ export default function App() {
     if (activityOpen) {
       activityBottomRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
     }
-  }, [activityOpen, events, assistantText, status, error]);
+  }, [activityOpen, events, assistantText, status]);
 
   useEffect(() => {
     const input = taskInputRef.current;
@@ -155,9 +157,7 @@ export default function App() {
   async function refreshThreads(initializeModel = false) {
     try {
       const response = await fetch("/threads");
-      if (!response.ok) {
-        return;
-      }
+      if (!response.ok) throw new Error();
       const payload = await readJson<{ threads: ThreadSummary[] }>(response);
       setThreads(payload.threads);
       if (initializeModel && payload.threads[0]) {
@@ -227,6 +227,21 @@ export default function App() {
       setError("");
     } catch {
       setError("Could not rename this thread.");
+    }
+  }
+
+  async function deleteThread() {
+    if (!threadToDelete) return;
+    try {
+      const response = await fetch(`/threads/${threadToDelete.id}`, { method: "DELETE" });
+      if (!response.ok) throw new Error();
+      setThreads((current) => current.filter((item) => item.id !== threadToDelete.id));
+      if (activeThread?.id === threadToDelete.id) startNewThread();
+      setThreadToDelete(null);
+      setError("");
+    } catch {
+      setThreadToDelete(null);
+      setError("Could not delete this thread.");
     }
   }
 
@@ -443,22 +458,39 @@ export default function App() {
             <nav className="space-y-1 overflow-y-auto pr-1">
               {threads.length ? (
                 threads.map((thread) => (
-                  <Button
-                    className={`h-auto w-full justify-start rounded-lg px-3 py-2.5 text-left ${
-                      activeThread?.id === thread.id
-                        ? "bg-accent text-accent-foreground"
-                        : "text-muted-foreground hover:bg-accent/70 hover:text-foreground"
-                    }`}
-                    key={thread.id}
-                    type="button"
-                    variant="ghost"
-                    onClick={() => void openThread(thread.id)}
-                  >
-                    <span className="block truncate text-sm">{thread.title}</span>
-                    <span className="mt-1 block text-xs text-muted-foreground">
-                      {formatTimestamp(thread.updated_at)}
-                    </span>
-                  </Button>
+                  <div className="group relative" key={thread.id}>
+                    <Button
+                      className={`h-auto w-full justify-start rounded-lg px-3 py-2.5 pr-10 text-left ${
+                        activeThread?.id === thread.id
+                          ? "bg-accent text-accent-foreground"
+                          : "text-muted-foreground hover:bg-accent/70 hover:text-foreground"
+                      }`}
+                      type="button"
+                      variant="ghost"
+                      onClick={() => void openThread(thread.id)}
+                    >
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm">{thread.title}</span>
+                        <span className="mt-1 block text-xs text-muted-foreground">
+                          {formatTimestamp(thread.updated_at)}
+                        </span>
+                      </span>
+                    </Button>
+                    <Button
+                      aria-label={`Delete ${thread.title}`}
+                      className="absolute top-1/2 right-1.5 size-7 -translate-y-1/2 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 hover:text-destructive"
+                      disabled={activeThread?.id === thread.id && (status === "connecting" || status === "running")}
+                      size="icon-sm"
+                      type="button"
+                      variant="ghost"
+                      onClick={() => {
+                        setError("");
+                        setThreadToDelete(thread);
+                      }}
+                    >
+                      <Trash2 aria-hidden="true" className="size-3.5" />
+                    </Button>
+                  </div>
                 ))
               ) : (
                 <p className="px-3 py-4 text-sm text-muted-foreground">Your chats will appear here.</p>
@@ -541,12 +573,6 @@ export default function App() {
               )}
             </div>
           </header>
-
-          {error ? (
-            <Card className="mx-auto mt-3 w-[min(100%-2rem,720px)] border-destructive/30 bg-destructive/5 px-3 py-3 text-sm text-destructive shadow-none">
-              {error}
-            </Card>
-          ) : null}
 
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">
             <div className="mx-auto w-full max-w-3xl space-y-4">
@@ -801,6 +827,41 @@ export default function App() {
           </aside>
         ) : null}
       </section>
+      <AlertDialogPrimitive.Root
+        open={Boolean(threadToDelete || error)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setThreadToDelete(null);
+            setError("");
+          }
+        }}
+      >
+        <AlertDialogPrimitive.Portal>
+          <AlertDialogPrimitive.Backdrop className="fixed inset-0 z-50 bg-black/25 backdrop-blur-[1px]" />
+          <AlertDialogPrimitive.Viewport className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <AlertDialogPrimitive.Popup className="w-full min-w-0 max-w-md overflow-hidden rounded-xl border bg-card p-5 text-card-foreground shadow-xl outline-none">
+              <AlertDialogPrimitive.Title className="text-base font-semibold">
+                {threadToDelete ? "Delete thread?" : "Something went wrong"}
+              </AlertDialogPrimitive.Title>
+              <AlertDialogPrimitive.Description className="mt-2 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] text-sm leading-6 text-muted-foreground">
+                {threadToDelete
+                  ? `This will permanently delete "${threadToDelete.title}" and its activity.`
+                  : error}
+              </AlertDialogPrimitive.Description>
+              <div className="mt-5 flex justify-end gap-2">
+                <AlertDialogPrimitive.Close
+                  render={<Button type="button" variant="outline">{threadToDelete ? "Cancel" : "Dismiss"}</Button>}
+                />
+                {threadToDelete ? (
+                  <Button type="button" variant="destructive" onClick={() => void deleteThread()}>
+                    Delete
+                  </Button>
+                ) : null}
+              </div>
+            </AlertDialogPrimitive.Popup>
+          </AlertDialogPrimitive.Viewport>
+        </AlertDialogPrimitive.Portal>
+      </AlertDialogPrimitive.Root>
     </main>
   );
 }

@@ -137,6 +137,23 @@ class RunStore:
             connection.commit()
         return self._thread_from_row(row) if row else None
 
+    def delete_thread(self, thread_id: str) -> bool:
+        with self._connect() as connection:
+            run_ids = "SELECT id FROM harness_runs WHERE thread_id = ?"
+            connection.execute(
+                f"DELETE FROM harness_snapshots WHERE run_id IN ({run_ids})", (thread_id,)
+            )
+            connection.execute(
+                f"DELETE FROM harness_events WHERE run_id IN ({run_ids})", (thread_id,)
+            )
+            connection.execute("DELETE FROM harness_turns WHERE thread_id = ?", (thread_id,))
+            connection.execute("DELETE FROM harness_runs WHERE thread_id = ?", (thread_id,))
+            deleted = connection.execute(
+                "DELETE FROM harness_threads WHERE id = ?", (thread_id,)
+            ).rowcount
+            connection.commit()
+        return bool(deleted)
+
     def append_turn(
         self,
         *,

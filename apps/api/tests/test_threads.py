@@ -44,6 +44,37 @@ def test_existing_turns_table_adds_model_name(tmp_path: Path, monkeypatch) -> No
     assert "model_name" in columns
 
 
+def test_delete_thread_removes_its_run_data(tmp_path: Path, monkeypatch) -> None:
+    database_path = tmp_path / "delete.db"
+    monkeypatch.setenv("HARNESS_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(database_path))
+    get_settings.cache_clear()
+
+    with TestClient(app) as client:
+        thread_id = client.post(
+            "/threads", json={"workspace_path": ".", "title": "Delete me"}
+        ).json()["thread"]["id"]
+        store = RunStore()
+        store.create_run(
+            run_id="delete-run",
+            thread_id=thread_id,
+            target_path=tmp_path,
+            max_iterations=1,
+            timeout_seconds=1,
+        )
+        store.append_turn(thread_id=thread_id, role="user", content="hello", run_id="delete-run")
+        store.append_event("delete-run", "turn.started", {"iteration": 1})
+        store.save_snapshot("delete-run", 1, [])
+
+        assert client.delete(f"/threads/{thread_id}").status_code == 204
+        assert client.get(f"/threads/{thread_id}").status_code == 404
+        assert client.delete(f"/threads/{thread_id}").status_code == 404
+
+    with sqlite3.connect(database_path) as connection:
+        for table in ("harness_threads", "harness_turns", "harness_runs", "harness_events", "harness_snapshots"):
+            assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+
+
 def test_thread_api_persists_across_app_sessions(tmp_path: Path, monkeypatch) -> None:
     database_path = tmp_path / "threads.db"
     monkeypatch.setenv("HARNESS_WORKSPACE_ROOT", str(tmp_path))

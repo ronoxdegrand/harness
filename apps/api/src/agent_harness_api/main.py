@@ -99,6 +99,12 @@ async def rename_thread(thread_id: str, request: ThreadRenameRequest) -> dict[st
     return thread.as_dict()
 
 
+@app.delete("/threads/{thread_id}", status_code=204)
+async def delete_thread(thread_id: str) -> None:
+    if not RunStore().delete_thread(thread_id):
+        raise HTTPException(status_code=404, detail="Thread not found.")
+
+
 @app.websocket("/ws/run")
 async def run_websocket(websocket: WebSocket) -> None:
     await handle_run_websocket(websocket, get_settings())
