@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from .context import Context
 from .db import get_database_path
 
 
@@ -230,6 +231,23 @@ class RunStore:
             }
             for row in rows
         ]
+
+    def get_thread_context(self, thread_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT harness_snapshots.messages
+                FROM harness_snapshots
+                JOIN harness_runs ON harness_runs.id = harness_snapshots.run_id
+                WHERE harness_runs.thread_id = ?
+                ORDER BY harness_snapshots.id DESC
+                LIMIT 1
+                """,
+                (thread_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return Context.from_snapshot(json.loads(row[0])).inspect()
 
     def append_event(self, run_id: str, event_type: str, payload: dict[str, Any]) -> None:
         with self._connect() as connection:

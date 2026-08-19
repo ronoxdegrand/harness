@@ -68,6 +68,7 @@ class AgentRuntime:
             model_name=self.model_name,
             thread_id=thread_id,
         )
+        self._emit(active_run_id, "context.updated", context=context.inspect())
         self.store.save_snapshot(active_run_id, 0, context.snapshot())
 
         iteration = 0
@@ -121,6 +122,12 @@ class AgentRuntime:
 
                 if response.output_text:
                     context.add_assistant(response.output_text)
+                    self._emit(
+                        active_run_id,
+                        "context.updated",
+                        iteration=iteration,
+                        context=context.inspect(),
+                    )
 
                 if not response.tool_calls:
                     self._emit(
@@ -153,6 +160,12 @@ class AgentRuntime:
                     )
                     result = self.tool_executor.execute(call, target_path=resolved_target)
                     context.add_tool_result(call, result)
+                    self._emit(
+                        active_run_id,
+                        "context.updated",
+                        iteration=iteration,
+                        context=context.inspect(),
+                    )
 
                     event_type = "tool.completed" if result.success else "tool.failed"
                     self._emit(

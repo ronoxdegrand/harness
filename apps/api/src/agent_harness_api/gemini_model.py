@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import httpx
 
 from .context import Context
 from .model import ModelProvider, ModelResponse
-from .tools import ToolCall, ToolResult
+from .tools import ToolCall
 
 
 class GeminiModelProvider(ModelProvider):
@@ -28,14 +27,11 @@ class GeminiModelProvider(ModelProvider):
             )
 
     def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
-        prompt = next(
-            (message.content for message in context.messages if message.role == "user"),
-            "",
-        )
-        if not prompt:
+        messages = context.messages
+        if not any(message.role == "user" for message in messages):
             return ModelResponse(output_text="")
 
-        payload = self._build_payload(prompt, context.messages, final_response=final_response)
+        payload = self._build_payload(messages, final_response=final_response)
         response = httpx.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_name}:generateContent",
             params={"key": self.api_key},
@@ -58,7 +54,7 @@ class GeminiModelProvider(ModelProvider):
         return ModelResponse(output_text=text, deltas=[text] if text else [])
 
     def _build_payload(
-        self, prompt: str, messages: list[Any], *, final_response: bool = False
+        self, messages: list[Any], *, final_response: bool = False
     ) -> dict[str, Any]:
         contents: list[dict[str, Any]] = []
         for message in messages:
@@ -68,7 +64,6 @@ class GeminiModelProvider(ModelProvider):
             elif role == "assistant":
                 contents.append({"role": "model", "parts": [{"text": message.content}]})
             elif role == "tool":
-                tool_result = ToolResult(**json.loads(message.content))
                 contents.append(
                     {
                         "role": "user",
@@ -76,14 +71,13 @@ class GeminiModelProvider(ModelProvider):
                             {
                                 "text": (
                                     f"Tool result for {message.name}: "
-                                    f"{json.dumps(tool_result.as_dict(), default=str)}"
+                                    f"{message.content}"
                                 )
                             }
                         ],
                     }
                 )
 
-        contents.append({"role": "user", "parts": [{"text": prompt}]})
         system_instruction = (
             "You are an autonomous coding agent. Use the available tools to inspect the repository, "
             "execute tests, and answer the user's task. "

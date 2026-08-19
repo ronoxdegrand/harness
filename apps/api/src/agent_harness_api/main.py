@@ -24,6 +24,7 @@ def _thread_payload(store: RunStore, thread: Thread) -> dict[str, object]:
         "thread": thread.as_dict(),
         "turns": store.list_turns(thread.id),
         "events": store.list_thread_events(thread.id),
+        "context": store.get_thread_context(thread.id),
     }
 
 

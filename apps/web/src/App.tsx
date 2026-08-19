@@ -1,7 +1,7 @@
 import { type CSSProperties, FormEvent, Fragment, type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from "react";
 import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog";
 import { Select as SelectPrimitive } from "@base-ui/react/select";
-import { Check, ChevronUp, Copy, LoaderCircle, PanelLeft, PanelRight, Pencil, Plus, Send, Trash2 } from "lucide-react";
+import { Check, ChevronUp, Copy, Layers3, LoaderCircle, Minimize2, PanelLeft, Pencil, Plus, Send, Trash2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -15,8 +15,10 @@ const MODEL_OPTIONS = [
 ];
 const DEFAULT_SIDEBAR_WIDTH = 272;
 const DEFAULT_ACTIVITY_WIDTH = 340;
+const DEFAULT_CONTEXT_WIDTH = 340;
 const MAX_SIDEBAR_WIDTH = 600;
 const MAX_ACTIVITY_WIDTH = 720;
+const MAX_CONTEXT_WIDTH = 720;
 
 function selectableModel(model: string) {
   return MODEL_OPTIONS.includes(model) ? model : MODEL_OPTIONS[0];
@@ -63,10 +65,27 @@ type ThreadTurn = {
   created_at: string;
 };
 
+type ContextState = {
+  token_budget: number;
+  estimated_tokens: number;
+  estimate_method: string;
+  messages: Array<{
+    index: number;
+    role: string;
+    name: string | null;
+    tokens: number;
+    included: boolean;
+    pinned: boolean;
+    truncated: boolean;
+    preview: string;
+  }>;
+};
+
 type ThreadDetail = {
   thread: ThreadSummary;
   turns: ThreadTurn[];
   events: RuntimeEvent[];
+  context: ContextState | null;
 };
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -134,8 +153,10 @@ export default function App() {
   const [threadToDelete, setThreadToDelete] = useState<ThreadSummary | null>(null);
   const [threadTurns, setThreadTurns] = useState<ThreadTurn[]>([]);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
+  const [threadContext, setThreadContext] = useState<ContextState | null>(null);
   const [assistantText, setAssistantText] = useState("");
   const [activityOpen, setActivityOpen] = useState(false);
+  const [contextOpen, setContextOpen] = useState(true);
   const [activityRunId, setActivityRunId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarPreviewOpen, setSidebarPreviewOpen] = useState(false);
@@ -144,6 +165,9 @@ export default function App() {
   );
   const [activityWidth, setActivityWidth] = useState(() =>
     Math.min(Math.max(Number(localStorage.getItem("activity-width")) || DEFAULT_ACTIVITY_WIDTH, 280), MAX_ACTIVITY_WIDTH),
+  );
+  const [contextWidth, setContextWidth] = useState(() =>
+    Math.min(Math.max(Number(localStorage.getItem("context-width")) || DEFAULT_CONTEXT_WIDTH, 280), MAX_CONTEXT_WIDTH),
   );
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -154,7 +178,7 @@ export default function App() {
   const taskInputRef = useRef<HTMLTextAreaElement | null>(null);
   const conversationBottomRef = useRef<HTMLDivElement | null>(null);
   const activityBottomRef = useRef<HTMLDivElement | null>(null);
-  const resizeRef = useRef<{ panel: "sidebar" | "activity"; startX: number; startWidth: number } | null>(null);
+  const resizeRef = useRef<{ panel: "sidebar" | "activity" | "context"; startX: number; startWidth: number } | null>(null);
 
   useEffect(() => {
     conversationBottomRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
@@ -185,6 +209,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("activity-width", String(activityWidth));
   }, [activityWidth]);
+
+  useEffect(() => {
+    localStorage.setItem("context-width", String(contextWidth));
+  }, [contextWidth]);
 
   useEffect(() => {
     void refreshThreads(true);
@@ -218,11 +246,12 @@ export default function App() {
       setModelName(selectableModel(payload.thread.model_name));
       setThreadTurns(payload.turns);
       setEvents(payload.events);
+      setThreadContext(payload.context);
       setAssistantText("");
       setEditingTitle(false);
-      setActivityOpen(false);
-      setActivityRunId(null);
       if (!preserveIterationLimit) {
+        setActivityOpen(false);
+        setActivityRunId(null);
         setFinalizedByIterationLimit(false);
       }
     } catch {
@@ -235,6 +264,7 @@ export default function App() {
     setActiveThread(null);
     setThreadTurns([]);
     setEvents([]);
+    setThreadContext(null);
     setAssistantText("");
     setEditingTitle(false);
     setActivityOpen(false);
@@ -293,10 +323,11 @@ export default function App() {
     socketRef.current?.close();
 
     const thread = activeThread;
+    const submittedTask = task;
     setLastUsedModel(modelName);
 
     setStatus("connecting");
-    setEvents([]);
+    setTask("");
     setAssistantText("");
     setActivityOpen(false);
     setActivityRunId(null);
@@ -310,7 +341,7 @@ export default function App() {
         model_name: modelName,
         finalized_by_iteration_limit: false,
         role: "user",
-        content: task,
+        content: submittedTask,
         created_at: new Date().toISOString(),
       },
     ]);
@@ -326,7 +357,7 @@ export default function App() {
         setStatus("running");
         socket.send(
           JSON.stringify({
-            task,
+            task: submittedTask,
             workspace_path: workspacePath,
             model_name: modelName,
             ...(thread ? { thread_id: thread.id } : {}),
@@ -344,6 +375,13 @@ export default function App() {
 
       if (payload.kind === "runtime.event") {
         setEvents((current) => [...current, payload.event]);
+
+        if (payload.event.type === "context.updated") {
+          const context = payload.event.payload.context;
+          if (context && typeof context === "object") {
+            setThreadContext(context as ContextState);
+          }
+        }
 
         if (payload.event.type === "model.delta") {
           const delta = String(payload.event.payload.delta ?? "");
@@ -420,13 +458,13 @@ export default function App() {
     };
   }
 
-  function startResize(panel: "sidebar" | "activity", event: ReactPointerEvent<HTMLDivElement>) {
+  function startResize(panel: "sidebar" | "activity" | "context", event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     resizeRef.current = {
       panel,
       startX: event.clientX,
-      startWidth: panel === "sidebar" ? sidebarWidth : activityWidth,
+      startWidth: panel === "sidebar" ? sidebarWidth : panel === "activity" ? activityWidth : contextWidth,
     };
   }
 
@@ -435,10 +473,10 @@ export default function App() {
     if (!resize) return;
     const delta = event.clientX - resize.startX;
     const width = resize.startWidth + (resize.panel === "sidebar" ? delta : -delta);
-    (resize.panel === "sidebar" ? setSidebarWidth : setActivityWidth)(
+    (resize.panel === "sidebar" ? setSidebarWidth : resize.panel === "activity" ? setActivityWidth : setContextWidth)(
       Math.min(
         Math.max(width, resize.panel === "sidebar" ? 220 : 280),
-        resize.panel === "sidebar" ? MAX_SIDEBAR_WIDTH : MAX_ACTIVITY_WIDTH,
+        resize.panel === "sidebar" ? MAX_SIDEBAR_WIDTH : resize.panel === "activity" ? MAX_ACTIVITY_WIDTH : MAX_CONTEXT_WIDTH,
       ),
     );
   }
@@ -468,6 +506,14 @@ export default function App() {
     }
   }
   const iterationCount = countIterations(visibleEvents);
+  const contextUsage = threadContext
+    ? Math.min((threadContext.estimated_tokens / threadContext.token_budget) * 100, 100)
+    : 0;
+  const layoutColumns = [
+    sidebarPinnedOpen ? "var(--sidebar-width)" : null,
+    "minmax(0,1fr)",
+    contextOpen ? "var(--context-column-width)" : null,
+  ].filter(Boolean).join(" ");
 
   return (
     <main className="bg-background text-foreground lg:h-screen lg:overflow-hidden">
@@ -475,16 +521,10 @@ export default function App() {
         style={{
           "--sidebar-width": `${sidebarWidth}px`,
           "--activity-width": `${activityWidth}px`,
+          "--context-column-width": `${contextWidth}px`,
+          "--layout-columns": layoutColumns,
         } as CSSProperties}
-        className={`relative grid w-full lg:h-screen ${
-          sidebarPinnedOpen
-            ? activityOpen
-              ? "lg:grid-cols-[var(--sidebar-width)_minmax(0,1fr)_var(--activity-width)]"
-              : "lg:grid-cols-[var(--sidebar-width)_minmax(0,1fr)]"
-            : activityOpen
-              ? "lg:grid-cols-[minmax(0,1fr)_var(--activity-width)]"
-              : "lg:grid-cols-[minmax(0,1fr)]"
-        }`}
+        className="relative grid w-full lg:h-screen lg:grid-cols-[var(--layout-columns)]"
       >
         {sidebarOpen ? (
           <aside
@@ -585,8 +625,8 @@ export default function App() {
           </aside>
         ) : null}
 
-        <section className="flex min-h-0 min-w-0 flex-col bg-background lg:h-screen">
-          <header className="relative flex h-14 shrink-0 items-center border-b px-4 sm:px-5">
+        <section className="relative flex min-h-0 min-w-0 flex-col bg-background lg:grid lg:h-screen lg:grid-cols-1 lg:grid-rows-[56px_minmax(0,1fr)_auto]">
+          <header className="relative z-30 col-start-1 row-start-1 flex h-14 shrink-0 items-center border-b bg-background px-4 sm:px-5">
             {!sidebarPinnedOpen ? (
               <div className="absolute left-3 flex shrink-0 items-center gap-1">
                 <Button
@@ -596,6 +636,10 @@ export default function App() {
                   type="button"
                   variant="outline"
                   onMouseEnter={() => setSidebarPreviewOpen(true)}
+                  onClick={() => {
+                    setSidebarCollapsed(false);
+                    setSidebarPreviewOpen(false);
+                  }}
                 >
                   <PanelLeft aria-hidden="true" className="size-4" />
                 </Button>
@@ -611,7 +655,7 @@ export default function App() {
                 </Button>
               </div>
             ) : null}
-            <div className={`mx-auto min-w-0 w-full max-w-3xl ${!sidebarPinnedOpen ? "max-lg:pl-24" : ""}`}>
+            <div className={`mx-auto min-w-0 w-full max-w-3xl ${!sidebarPinnedOpen ? "max-lg:pl-24" : ""} ${!contextOpen ? "pr-12" : ""}`}>
               {editingTitle ? (
                 <form className="flex items-center gap-2" onSubmit={renameActiveThread}>
                   <Input
@@ -655,9 +699,21 @@ export default function App() {
                 </div>
               )}
             </div>
+            {!contextOpen ? (
+              <Button
+                aria-label="Open context"
+                className="absolute right-3 size-10 bg-card"
+                size="icon-lg"
+                type="button"
+                variant="outline"
+                onClick={() => setContextOpen(true)}
+              >
+                <Layers3 aria-hidden="true" className="size-4" />
+              </Button>
+            ) : null}
           </header>
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">
+          <div className="col-start-1 row-start-2 min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">
             <div className="mx-auto w-full max-w-3xl space-y-4">
               {threadTurns.length ? (
                 threadTurns.map((turn, index) => {
@@ -741,7 +797,7 @@ export default function App() {
             </div>
           </div>
 
-          <form className="border-t bg-background px-4 py-3 sm:px-5" onSubmit={startRun}>
+          <form className="relative z-30 col-start-1 row-start-3 border-t bg-background px-4 py-3 sm:px-5" onSubmit={startRun}>
             <Card className="mx-auto max-w-3xl rounded-2xl p-2 shadow-sm transition-shadow focus-within:shadow-md">
               <Textarea
                 ref={taskInputRef}
@@ -810,10 +866,9 @@ export default function App() {
               </div>
             </Card>
           </form>
-        </section>
 
         {activityOpen ? (
-          <aside className="relative flex min-h-0 flex-col border-t bg-sidebar lg:h-screen lg:border-t-0 lg:border-l">
+          <aside className="relative flex min-h-0 flex-col border-t bg-sidebar lg:col-start-1 lg:row-start-2 lg:z-20 lg:w-[var(--activity-width)] lg:justify-self-end lg:self-stretch lg:border-t-0 lg:border-l lg:shadow-[-8px_0_24px_rgba(31,31,30,0.1)]">
             <div
               aria-label="Resize activity panel"
               className="group absolute inset-y-0 -left-1 z-30 hidden w-2 cursor-col-resize touch-none lg:block"
@@ -829,14 +884,14 @@ export default function App() {
             <header className="flex h-14 shrink-0 items-center justify-between border-b px-3">
               <div className="flex items-center gap-2">
                 <Button
-                  aria-label="Collapse activity"
+                  aria-label="Close activity"
                   className="size-10 bg-card"
                   size="icon-lg"
                   type="button"
                   variant="outline"
                   onClick={() => setActivityOpen(false)}
                 >
-                  <PanelRight aria-hidden="true" className="size-4" />
+                  <Minimize2 aria-hidden="true" className="size-4" />
                 </Button>
                 <p className="text-sm font-semibold">Activity</p>
               </div>
@@ -851,7 +906,7 @@ export default function App() {
                   <div className="flex items-center justify-between px-1.5">
                     <div className="flex items-center gap-2">
                       <p className="text-xs font-semibold">
-                        {group.iteration === null ? "Run" : `Iteration ${group.iteration}`}
+                        {group.iteration === null ? "Initialization" : `Iteration ${group.iteration}`}
                       </p>
                       <Badge className="h-5 rounded-sm px-1.5 text-xs">
                         {group.events.length} {group.events.length === 1 ? "event" : "events"}
@@ -925,6 +980,128 @@ export default function App() {
             )}
             <div ref={activityBottomRef} />
             </div>
+          </aside>
+        ) : null}
+        </section>
+
+        {contextOpen ? (
+          <aside className="relative flex min-h-0 flex-col border-t bg-sidebar lg:h-screen lg:border-t-0 lg:border-l">
+            {contextOpen ? (
+              <div
+                aria-label="Resize context panel"
+                className="group absolute inset-y-0 -left-1 z-30 hidden w-2 cursor-col-resize touch-none lg:block"
+                role="separator"
+                onDoubleClick={() => setContextWidth(DEFAULT_CONTEXT_WIDTH)}
+                onPointerCancel={() => (resizeRef.current = null)}
+                onPointerDown={(event) => startResize("context", event)}
+                onPointerMove={resizePanel}
+                onPointerUp={() => (resizeRef.current = null)}
+              >
+                <span className="absolute inset-y-0 left-1/2 w-px bg-transparent group-hover:bg-border" />
+              </div>
+            ) : null}
+            <header className="flex h-14 shrink-0 items-center justify-between border-b px-3">
+              <div className="flex items-center gap-2">
+                <Button
+                  aria-label="Collapse context"
+                  className="size-10 bg-card"
+                  size="icon-lg"
+                  type="button"
+                  variant="outline"
+                  onClick={() => setContextOpen(false)}
+                >
+                  <Layers3 aria-hidden="true" className="size-4" />
+                </Button>
+                {contextOpen ? <p className="text-sm font-semibold">Context</p> : null}
+              </div>
+              {contextOpen ? <span className="text-xs text-muted-foreground">
+                {threadContext
+                  ? `${threadContext.messages.length} entries`
+                  : "Empty"}
+              </span> : null}
+            </header>
+            {contextOpen ? (
+            <div className="max-h-[45vh] min-h-0 flex-1 space-y-4 overflow-y-auto p-3 lg:max-h-none">
+              {threadContext ? (
+                <>
+                  <section className="rounded-lg border bg-card p-3">
+                    <div className="flex items-end justify-between gap-3">
+                      <div>
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                          Harness message budget
+                        </p>
+                        <p className="mt-1 text-lg font-semibold tabular-nums">
+                          ~{threadContext.estimated_tokens.toLocaleString()}
+                          <span className="text-sm font-normal text-muted-foreground">
+                            {" "}/ {threadContext.token_budget.toLocaleString()}
+                          </span>
+                        </p>
+                      </div>
+                      <span className="text-xs tabular-nums text-muted-foreground">{Math.round(contextUsage)}%</span>
+                    </div>
+                    <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted">
+                      <div className="h-full rounded-full bg-foreground transition-[width]" style={{ width: `${contextUsage}%` }} />
+                    </div>
+                    <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
+                      {threadContext.estimate_method}. Message bodies only; this is not the model tokenizer.
+                    </p>
+                  </section>
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-lg border bg-card p-3 text-[10px] text-muted-foreground">
+                    <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-blue-500" />Pinned</span>
+                    <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-emerald-500" />Included</span>
+                    <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-amber-500" />Truncated</span>
+                    <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-muted-foreground" />Excluded</span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {threadContext.messages.map((message) => (
+                      <div
+                        className={`rounded-lg border bg-card p-3 ${message.included ? "" : "opacity-45"}`}
+                        key={message.index}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className={`size-2 rounded-full ${
+                            !message.included
+                              ? "bg-muted-foreground"
+                              : message.truncated
+                                ? "bg-amber-500"
+                                : message.pinned
+                                  ? "bg-blue-500"
+                                  : "bg-emerald-500"
+                          }`} />
+                          <span className="text-[10px] font-semibold uppercase tracking-[0.12em]">
+                            {message.name || message.role}
+                          </span>
+                          <span className="ml-auto text-[10px] tabular-nums text-muted-foreground">
+                            ~{message.tokens.toLocaleString()} tok
+                          </span>
+                        </div>
+                        <p className="mt-2 line-clamp-3 text-xs leading-5 text-muted-foreground">
+                          {message.preview || "Empty message"}
+                        </p>
+                        {message.pinned || message.truncated || !message.included ? (
+                          <p className={`mt-2 text-[10px] font-semibold uppercase tracking-[0.1em] ${
+                            !message.included
+                              ? "text-muted-foreground"
+                              : message.truncated
+                                ? "text-amber-700"
+                                : "text-blue-700"
+                          }`}>
+                            {message.truncated
+                              ? message.pinned ? "Pinned | truncated" : "Truncated to fit"
+                              : message.pinned ? "Latest instruction | pinned" : "Outside window"}
+                          </p>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <p className="px-2 py-8 text-center text-sm leading-6 text-muted-foreground">
+                  Context will appear when a run starts.
+                </p>
+              )}
+            </div>
+            ) : null}
           </aside>
         ) : null}
       </section>

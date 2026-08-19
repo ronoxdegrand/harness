@@ -280,3 +280,46 @@ def test_runtime_resume_loads_latest_snapshot(tmp_path: Path, monkeypatch) -> No
 
     context = runtime.resume("resume-run")
     assert json.loads(json.dumps(context.snapshot())) == snapshot
+
+
+def test_context_keeps_the_newest_messages_within_budget() -> None:
+    context = Context(token_budget=4)
+    context.add_user("task")
+    context.add_assistant("12345678901234567890")
+
+    assert [message.content for message in context.messages] == ["task", "123456789012"]
+    assert context.inspect() == {
+        "token_budget": 4,
+        "estimated_tokens": 4,
+        "estimate_method": "message characters divided by 4",
+        "messages": [
+            {
+                "index": 1,
+                "role": "user",
+                "name": None,
+                "tokens": 1,
+                "included": True,
+                "pinned": True,
+                "truncated": False,
+                "preview": "task",
+            },
+            {
+                "index": 2,
+                "role": "assistant",
+                "name": None,
+                "tokens": 3,
+                "included": True,
+                "pinned": False,
+                "truncated": True,
+                "preview": "123456789012",
+            },
+        ],
+    }
+
+
+def test_context_truncates_a_message_larger_than_the_budget() -> None:
+    context = Context(token_budget=2)
+    context.add_user("123456789")
+
+    assert context.messages[0].content == "12345678"
+    assert context.inspect()["messages"][0]["truncated"] is True
