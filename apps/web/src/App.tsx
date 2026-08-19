@@ -1,7 +1,7 @@
-import { FormEvent, Fragment, useEffect, useRef, useState } from "react";
+import { type CSSProperties, FormEvent, Fragment, type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from "react";
 import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog";
 import { Select as SelectPrimitive } from "@base-ui/react/select";
-import { Check, ChevronDown, LoaderCircle, PanelLeft, PanelRight, Pencil, Plus, Send, Trash2 } from "lucide-react";
+import { Check, ChevronUp, Copy, LoaderCircle, PanelLeft, PanelRight, Pencil, Plus, Send, Trash2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -13,6 +13,10 @@ const MODEL_OPTIONS = [
   "gemini-3.5-flash",
   "gemini-3.5-flash-lite",
 ];
+const DEFAULT_SIDEBAR_WIDTH = 272;
+const DEFAULT_ACTIVITY_WIDTH = 340;
+const MAX_SIDEBAR_WIDTH = 600;
+const MAX_ACTIVITY_WIDTH = 720;
 
 function selectableModel(model: string) {
   return MODEL_OPTIONS.includes(model) ? model : MODEL_OPTIONS[0];
@@ -80,6 +84,22 @@ function AssistantMarkdown({ content }: { content: string }) {
   );
 }
 
+function CopyButton({ content, className }: { content: string; className: string }) {
+  return (
+    <Button
+      aria-label="Copy message"
+      className={`size-7 text-muted-foreground opacity-60 hover:opacity-100 ${className}`}
+      size="icon-sm"
+      title="Copy message"
+      type="button"
+      variant="ghost"
+      onClick={() => navigator.clipboard.writeText(content).catch(() => undefined)}
+    >
+      <Copy aria-hidden="true" className="size-3.5" />
+    </Button>
+  );
+}
+
 function formatTimestamp(timestamp: string) {
   const isoTimestamp = timestamp.includes("T") ? timestamp : `${timestamp.replace(" ", "T")}Z`;
   return new Intl.DateTimeFormat(undefined, {
@@ -119,14 +139,22 @@ export default function App() {
   const [activityRunId, setActivityRunId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarPreviewOpen, setSidebarPreviewOpen] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(() =>
+    Math.min(Math.max(Number(localStorage.getItem("sidebar-width")) || DEFAULT_SIDEBAR_WIDTH, 220), MAX_SIDEBAR_WIDTH),
+  );
+  const [activityWidth, setActivityWidth] = useState(() =>
+    Math.min(Math.max(Number(localStorage.getItem("activity-width")) || DEFAULT_ACTIVITY_WIDTH, 280), MAX_ACTIVITY_WIDTH),
+  );
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
+  const [newThreadTitle, setNewThreadTitle] = useState<string | null>(null);
   const [finalizedByIterationLimit, setFinalizedByIterationLimit] = useState(false);
   const [error, setError] = useState("");
   const socketRef = useRef<WebSocket | null>(null);
   const taskInputRef = useRef<HTMLTextAreaElement | null>(null);
   const conversationBottomRef = useRef<HTMLDivElement | null>(null);
   const activityBottomRef = useRef<HTMLDivElement | null>(null);
+  const resizeRef = useRef<{ panel: "sidebar" | "activity"; startX: number; startWidth: number } | null>(null);
 
   useEffect(() => {
     conversationBottomRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
@@ -149,6 +177,14 @@ export default function App() {
       socketRef.current?.close();
     };
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem("sidebar-width", String(sidebarWidth));
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    localStorage.setItem("activity-width", String(activityWidth));
+  }, [activityWidth]);
 
   useEffect(() => {
     void refreshThreads(true);
@@ -207,17 +243,24 @@ export default function App() {
     setError("");
     setStatus("idle");
     setTask("");
+    setNewThreadTitle(null);
     setModelName(lastUsedModel);
   }
 
   async function renameActiveThread(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!activeThread) return;
+    const title = titleDraft.trim();
+    if (!title) return;
+    if (!activeThread) {
+      setNewThreadTitle(title);
+      setEditingTitle(false);
+      return;
+    }
     try {
       const response = await fetch(`/threads/${activeThread.id}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ title: titleDraft }),
+        body: JSON.stringify({ title }),
       });
       if (!response.ok) throw new Error();
       const thread = await readJson<ThreadSummary>(response);
@@ -287,6 +330,7 @@ export default function App() {
             workspace_path: workspacePath,
             model_name: modelName,
             ...(thread ? { thread_id: thread.id } : {}),
+            ...(!thread && newThreadTitle ? { title: newThreadTitle } : {}),
           }),
         );
         return;
@@ -376,6 +420,29 @@ export default function App() {
     };
   }
 
+  function startResize(panel: "sidebar" | "activity", event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    resizeRef.current = {
+      panel,
+      startX: event.clientX,
+      startWidth: panel === "sidebar" ? sidebarWidth : activityWidth,
+    };
+  }
+
+  function resizePanel(event: ReactPointerEvent<HTMLDivElement>) {
+    const resize = resizeRef.current;
+    if (!resize) return;
+    const delta = event.clientX - resize.startX;
+    const width = resize.startWidth + (resize.panel === "sidebar" ? delta : -delta);
+    (resize.panel === "sidebar" ? setSidebarWidth : setActivityWidth)(
+      Math.min(
+        Math.max(width, resize.panel === "sidebar" ? 220 : 280),
+        resize.panel === "sidebar" ? MAX_SIDEBAR_WIDTH : MAX_ACTIVITY_WIDTH,
+      ),
+    );
+  }
+
   const visibleEvents = activityRunId
     ? events.filter((runtimeEvent) => eventRunId(runtimeEvent) === activityRunId)
     : events;
@@ -405,20 +472,24 @@ export default function App() {
   return (
     <main className="bg-background text-foreground lg:h-screen lg:overflow-hidden">
       <section
-        className={`relative mx-auto grid max-w-[1800px] lg:h-screen ${
+        style={{
+          "--sidebar-width": `${sidebarWidth}px`,
+          "--activity-width": `${activityWidth}px`,
+        } as CSSProperties}
+        className={`relative grid w-full lg:h-screen ${
           sidebarPinnedOpen
             ? activityOpen
-              ? "lg:grid-cols-[272px_minmax(0,1fr)_340px]"
-              : "lg:grid-cols-[272px_minmax(0,1fr)]"
+              ? "lg:grid-cols-[var(--sidebar-width)_minmax(0,1fr)_var(--activity-width)]"
+              : "lg:grid-cols-[var(--sidebar-width)_minmax(0,1fr)]"
             : activityOpen
-              ? "lg:grid-cols-[minmax(0,1fr)_340px]"
+              ? "lg:grid-cols-[minmax(0,1fr)_var(--activity-width)]"
               : "lg:grid-cols-[minmax(0,1fr)]"
         }`}
       >
         {sidebarOpen ? (
           <aside
-            className={`flex min-h-0 flex-col border-b bg-sidebar lg:border-b-0 lg:border-r ${
-              sidebarPinnedOpen ? "" : "sidebar-preview lg:absolute lg:inset-y-0 lg:left-0 lg:z-20 lg:w-[272px] lg:shadow-[12px_0_30px_rgba(31,31,30,0.12)]"
+            className={`relative flex min-h-0 flex-col border-b bg-sidebar lg:border-b-0 lg:border-r ${
+              sidebarPinnedOpen ? "" : "sidebar-preview lg:absolute lg:inset-y-0 lg:left-0 lg:z-20 lg:w-[var(--sidebar-width)] lg:shadow-[12px_0_30px_rgba(31,31,30,0.12)]"
             }`}
             onMouseLeave={() => {
               if (!sidebarPinnedOpen) {
@@ -454,8 +525,8 @@ export default function App() {
                 </Button>
           </header>
 
-          <div className="flex min-h-0 flex-1 flex-col p-3">
-            <nav className="space-y-1 overflow-y-auto pr-1">
+          <div className="flex min-h-0 flex-1 flex-col py-3 pl-3">
+            <nav className="space-y-1 overflow-y-auto pr-3">
               {threads.length ? (
                 threads.map((thread) => (
                   <div className="group relative" key={thread.id}>
@@ -497,13 +568,27 @@ export default function App() {
               )}
             </nav>
           </div>
+          {sidebarPinnedOpen ? (
+            <div
+              aria-label="Resize sidebar"
+              className="group absolute inset-y-0 -right-1 z-30 hidden w-2 cursor-col-resize touch-none lg:block"
+              role="separator"
+              onDoubleClick={() => setSidebarWidth(DEFAULT_SIDEBAR_WIDTH)}
+              onPointerCancel={() => (resizeRef.current = null)}
+              onPointerDown={(event) => startResize("sidebar", event)}
+              onPointerMove={resizePanel}
+              onPointerUp={() => (resizeRef.current = null)}
+            >
+              <span className="absolute inset-y-0 left-1/2 w-px bg-transparent group-hover:bg-border" />
+            </div>
+          ) : null}
           </aside>
         ) : null}
 
         <section className="flex min-h-0 min-w-0 flex-col bg-background lg:h-screen">
-          <header className="flex h-14 shrink-0 items-center border-b px-3">
+          <header className="relative flex h-14 shrink-0 items-center border-b px-4 sm:px-5">
             {!sidebarPinnedOpen ? (
-              <div className="mr-2 flex shrink-0 items-center gap-1">
+              <div className="absolute left-3 flex shrink-0 items-center gap-1">
                 <Button
                   aria-label="Expand sidebar"
                   className="size-10 bg-card"
@@ -526,7 +611,7 @@ export default function App() {
                 </Button>
               </div>
             ) : null}
-            <div className="min-w-0">
+            <div className={`mx-auto min-w-0 w-full max-w-3xl ${!sidebarPinnedOpen ? "max-lg:pl-24" : ""}`}>
               {editingTitle ? (
                 <form className="flex items-center gap-2" onSubmit={renameActiveThread}>
                   <Input
@@ -550,25 +635,23 @@ export default function App() {
                   </Button>
                 </form>
               ) : (
-                <div className="flex items-center gap-2">
+                <div className={`flex items-center gap-2 ${activeThread ? "" : "justify-center"}`}>
                   <h2 className="truncate text-sm font-semibold">
-                    {activeThread?.title || "New chat"}
+                    {activeThread?.title || newThreadTitle || "New chat"}
                   </h2>
-                  {activeThread ? (
-                    <Button
-                      aria-label="Rename thread"
-                      className="size-7 shrink-0 text-muted-foreground"
-                      size="icon-sm"
-                      type="button"
-                      variant="ghost"
-                      onClick={() => {
-                        setTitleDraft(activeThread.title);
-                        setEditingTitle(true);
-                      }}
-                    >
-                      <Pencil aria-hidden="true" className="size-3.5" />
-                    </Button>
-                  ) : null}
+                  <Button
+                    aria-label="Rename thread"
+                    className="size-7 shrink-0 text-muted-foreground"
+                    size="icon-sm"
+                    type="button"
+                    variant="ghost"
+                    onClick={() => {
+                      setTitleDraft(activeThread?.title || newThreadTitle || "New chat");
+                      setEditingTitle(true);
+                    }}
+                  >
+                    <Pencil aria-hidden="true" className="size-3.5" />
+                  </Button>
                 </div>
               )}
             </div>
@@ -590,10 +673,11 @@ export default function App() {
                       <article
                         className={
                           turn.role === "assistant"
-                            ? "message-in"
-                            : "message-in ml-auto max-w-[82%] rounded-2xl rounded-br-md bg-secondary px-4 py-3.5 text-secondary-foreground"
+                            ? "message-in relative pr-10"
+                            : "message-in relative ml-auto max-w-[82%] rounded-2xl rounded-br-md bg-secondary px-4 py-3.5 pr-10 text-secondary-foreground"
                         }
                       >
+                        <CopyButton className={turn.role === "assistant" ? "absolute top-0 right-0" : "absolute top-2 right-2"} content={turn.content} />
                         {turn.role === "assistant" ? (
                           <div>
                             <AssistantMarkdown content={turn.content} />
@@ -619,6 +703,10 @@ export default function App() {
                             type="button"
                             variant="ghost"
                             onClick={() => {
+                              if (activityOpen && activityRunId === turn.run_id) {
+                                setActivityOpen(false);
+                                return;
+                              }
                               setActivityRunId(turn.run_id);
                               setActivityOpen(true);
                             }}
@@ -644,7 +732,8 @@ export default function App() {
                 })
               ) : null}
               {status === "running" && assistantText ? (
-                <article className="message-in">
+                <article className="message-in relative pr-10">
+                  <CopyButton className="absolute top-0 right-0" content={assistantText} />
                   <AssistantMarkdown content={assistantText} />
                 </article>
               ) : null}
@@ -679,7 +768,7 @@ export default function App() {
                   >
                     <SelectPrimitive.Trigger className="flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-lg bg-transparent px-2.5 text-xs outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
                       <SelectPrimitive.Value />
-                      <SelectPrimitive.Icon render={<ChevronDown className="size-4 text-muted-foreground" />} />
+                      <SelectPrimitive.Icon render={<ChevronUp className="size-4 text-muted-foreground" />} />
                     </SelectPrimitive.Trigger>
                     <SelectPrimitive.Portal>
                       <SelectPrimitive.Positioner alignItemWithTrigger sideOffset={4} className="z-50">
@@ -724,7 +813,19 @@ export default function App() {
         </section>
 
         {activityOpen ? (
-          <aside className="flex min-h-0 flex-col border-t bg-sidebar lg:h-screen lg:border-t-0 lg:border-l">
+          <aside className="relative flex min-h-0 flex-col border-t bg-sidebar lg:h-screen lg:border-t-0 lg:border-l">
+            <div
+              aria-label="Resize activity panel"
+              className="group absolute inset-y-0 -left-1 z-30 hidden w-2 cursor-col-resize touch-none lg:block"
+              role="separator"
+              onDoubleClick={() => setActivityWidth(DEFAULT_ACTIVITY_WIDTH)}
+              onPointerCancel={() => (resizeRef.current = null)}
+              onPointerDown={(event) => startResize("activity", event)}
+              onPointerMove={resizePanel}
+              onPointerUp={() => (resizeRef.current = null)}
+            >
+              <span className="absolute inset-y-0 left-1/2 w-px bg-transparent group-hover:bg-border" />
+            </div>
             <header className="flex h-14 shrink-0 items-center justify-between border-b px-3">
               <div className="flex items-center gap-2">
                 <Button

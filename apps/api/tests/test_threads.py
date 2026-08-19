@@ -149,6 +149,7 @@ def test_websocket_continues_a_persisted_thread(tmp_path: Path, monkeypatch) -> 
                         "task": "First message",
                         "workspace_path": ".",
                         "model_name": "gemini-3-flash",
+                        "title": "My custom title",
                     }
                 )
                 thread_id, first_run = _receive_run(websocket)
@@ -176,7 +177,7 @@ def test_websocket_continues_a_persisted_thread(tmp_path: Path, monkeypatch) -> 
         ("user", "Second message", "gemini-3.5-flash-lite"),
         ("assistant", "Saved response.", None),
     ]
-    assert thread["thread"]["title"] == "First message"
+    assert thread["thread"]["title"] == "My custom title"
     assert thread["thread"]["model_name"] == "gemini-3.5-flash-lite"
     assert thread["events"]
 

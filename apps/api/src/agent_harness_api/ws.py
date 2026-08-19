@@ -87,6 +87,7 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
     workspace_path = request.get("workspace_path", ".")
     requested_thread_id = request.get("thread_id")
     requested_model = request.get("model_name")
+    requested_title = request.get("title")
 
     if not isinstance(task, str) or not (prompt := task.strip()):
         await _fail_run(websocket, "Task is required to start a run.")
@@ -101,6 +102,15 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
         not isinstance(requested_model, str) or not requested_model.strip()
     ):
         await _fail_run(websocket, "Model name must be a non-empty string.")
+        return
+
+    if requested_title is not None and (
+        not isinstance(requested_title, str) or not requested_title.strip()
+    ):
+        await _fail_run(websocket, "Thread title must be a non-empty string.")
+        return
+    if isinstance(requested_title, str) and len(requested_title.strip()) > 80:
+        await _fail_run(websocket, "Thread title must be 80 characters or fewer.")
         return
 
     store = RunStore()
@@ -155,7 +165,7 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
         thread = store.create_thread(
             workspace_path=target_path,
             model_name=model_name,
-            title=thread_title_from_prompt(prompt),
+            title=requested_title.strip() if requested_title else thread_title_from_prompt(prompt),
         )
     await websocket.send_json({"kind": "thread.opened", "payload": {"thread": thread.as_dict()}})
 
