@@ -34,6 +34,10 @@ def test_run_websocket_rejects_invalid_requests(tmp_path: Path, monkeypatch) -> 
         ({"task": None}, "Task is required to start a run."),
         ({"task": "inspect", "workspace_path": 1}, "Workspace path must be a string."),
         ({"task": "inspect", "model_name": " "}, "Model name must be a non-empty string."),
+        ({"task": "inspect", "api_key": " "}, "API key must be a non-empty string."),
+        ({"task": "inspect", "max_iterations": 0}, "Max iterations must be an integer"),
+        ({"task": "inspect", "max_iterations": 51}, "Max iterations must be an integer"),
+        ({"task": "inspect", "max_iterations": "8"}, "Max iterations must be an integer"),
         ({"task": "inspect", "workspace_path": "../outside"}, "Workspace path escapes"),
         ({"task": "inspect", "workspace_path": "missing"}, "Workspace path does not exist"),
     ]
@@ -72,13 +76,13 @@ def test_run_websocket_streams_runtime_events(tmp_path: Path, monkeypatch) -> No
     repo_path = workspace_root / "demo"
     _create_repo(repo_path)
     monkeypatch.setenv("HARNESS_WORKSPACE_ROOT", str(workspace_root))
-    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     get_settings.cache_clear()
 
     call_count = {"value": 0}
 
     def fake_post(*args, **kwargs):
         call_count["value"] += 1
+        assert kwargs["params"]["key"] == "ui-key"
 
         class FakeResponse:
             def raise_for_status(self):
@@ -120,6 +124,8 @@ def test_run_websocket_streams_runtime_events(tmp_path: Path, monkeypatch) -> No
                     {
                         "task": 'inspect the repo, search for "test_ok", run tests, and show git diff',
                         "workspace_path": "demo",
+                        "api_key": "ui-key",
+                        "max_iterations": 4,
                     }
                 )
 

@@ -1,7 +1,8 @@
 import { type CSSProperties, FormEvent, Fragment, type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from "react";
 import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog";
+import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { Select as SelectPrimitive } from "@base-ui/react/select";
-import { Check, ChevronUp, Copy, Layers3, LoaderCircle, Minimize2, PanelLeft, Pencil, Plus, Send, Trash2 } from "lucide-react";
+import { Check, ChevronUp, Copy, Layers3, LoaderCircle, Minimize2, PanelLeft, Pencil, Plus, Send, Settings2, Trash2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -146,8 +147,13 @@ export default function App() {
   const [task, setTask] = useState("");
   const [workspacePath, setWorkspacePath] = useState(".");
   const [modelName, setModelName] = useState(MODEL_OPTIONS[0]);
+  const [apiKey, setApiKey] = useState(() => sessionStorage.getItem("gemini-api-key") || "");
+  const [maxIterations, setMaxIterations] = useState(() =>
+    Math.min(Math.max(Number(localStorage.getItem("max-iterations")) || 8, 1), 50),
+  );
   const [lastUsedModel, setLastUsedModel] = useState(MODEL_OPTIONS[0]);
   const [status, setStatus] = useState("idle");
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [activeThread, setActiveThread] = useState<ThreadSummary | null>(null);
   const [threadToDelete, setThreadToDelete] = useState<ThreadSummary | null>(null);
@@ -213,6 +219,14 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("context-width", String(contextWidth));
   }, [contextWidth]);
+
+  useEffect(() => {
+    sessionStorage.setItem("gemini-api-key", apiKey);
+  }, [apiKey]);
+
+  useEffect(() => {
+    localStorage.setItem("max-iterations", String(maxIterations));
+  }, [maxIterations]);
 
   useEffect(() => {
     void refreshThreads(true);
@@ -360,6 +374,8 @@ export default function App() {
             task: submittedTask,
             workspace_path: workspacePath,
             model_name: modelName,
+            max_iterations: maxIterations,
+            ...(apiKey.trim() ? { api_key: apiKey.trim() } : {}),
             ...(thread ? { thread_id: thread.id } : {}),
             ...(!thread && newThreadTitle ? { title: newThreadTitle } : {}),
           }),
@@ -660,7 +676,7 @@ export default function App() {
                 </Button>
               </div>
             ) : null}
-            <div className={`mx-auto min-w-0 w-full max-w-3xl ${!sidebarPinnedOpen ? "max-lg:pl-24" : ""} ${!contextOpen ? "pr-12" : ""}`}>
+            <div className={`mx-auto min-w-0 w-full max-w-3xl ${!sidebarPinnedOpen ? "max-lg:pl-24" : ""} ${!contextOpen ? "pr-24" : "pr-12"}`}>
               {editingTitle ? (
                 <form className="flex items-center gap-2" onSubmit={renameActiveThread}>
                   <Input
@@ -704,18 +720,80 @@ export default function App() {
                 </div>
               )}
             </div>
-            {!contextOpen ? (
-              <Button
-                aria-label="Open context"
-                className="absolute right-3 size-10 bg-card"
-                size="icon-lg"
-                type="button"
-                variant="outline"
-                onClick={() => setContextOpen(true)}
-              >
-                <Layers3 aria-hidden="true" className="size-4" />
-              </Button>
-            ) : null}
+            <div className="absolute right-3 flex items-center gap-1">
+              <DialogPrimitive.Root open={settingsOpen} onOpenChange={setSettingsOpen}>
+                <DialogPrimitive.Trigger
+                  render={
+                    <Button
+                      aria-label="Settings"
+                      className="size-10 bg-card"
+                      size="icon-lg"
+                      type="button"
+                      variant="outline"
+                    >
+                      <Settings2 aria-hidden="true" className="size-4" />
+                    </Button>
+                  }
+                />
+                <DialogPrimitive.Portal>
+                  <DialogPrimitive.Backdrop
+                    className="fixed inset-0 z-40 bg-black/10"
+                    onClick={() => setSettingsOpen(false)}
+                  />
+                  <DialogPrimitive.Viewport className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center p-4">
+                    <DialogPrimitive.Popup className="pointer-events-auto w-full max-w-sm rounded-xl border bg-card p-4 text-card-foreground shadow-xl outline-none">
+                      <DialogPrimitive.Title className="text-sm font-semibold">Settings</DialogPrimitive.Title>
+                      <DialogPrimitive.Description className="mt-1 text-xs leading-5 text-muted-foreground">
+                        Applied to new runs.
+                      </DialogPrimitive.Description>
+                      <div className="mt-4 space-y-4">
+                        <label className="block space-y-1.5 text-xs font-medium">
+                          <span>Gemini API key</span>
+                          <Input
+                            autoComplete="off"
+                            placeholder="Use server key when empty"
+                            type="password"
+                            value={apiKey}
+                            onChange={(event) => setApiKey(event.target.value)}
+                          />
+                          <span className="block font-normal leading-4 text-muted-foreground">
+                            Kept only in this browser tab.
+                          </span>
+                        </label>
+                        <label className="block space-y-1.5 text-xs font-medium">
+                          <span>Max iterations</span>
+                          <Input
+                            max={50}
+                            min={1}
+                            type="number"
+                            value={maxIterations}
+                            onChange={(event) => {
+                              const value = Number(event.target.value);
+                              if (Number.isInteger(value)) setMaxIterations(Math.min(Math.max(value, 1), 50));
+                            }}
+                          />
+                        </label>
+                      </div>
+                      <div className="mt-5 flex justify-end">
+                        <DialogPrimitive.Close render={<Button type="button">Done</Button>} />
+                      </div>
+                    </DialogPrimitive.Popup>
+                  </DialogPrimitive.Viewport>
+                </DialogPrimitive.Portal>
+              </DialogPrimitive.Root>
+              {!contextOpen ? (
+                <Button
+                  aria-label="Open context"
+                  className="size-10 bg-card"
+                  size="icon-lg"
+                  type="button"
+                  variant="outline"
+                  onClick={() => setContextOpen(true)}
+                >
+                  <Layers3 aria-hidden="true" className="size-4" />
+                </Button>
+              ) : null}
+            </div>
           </header>
 
           <div className="col-start-1 row-start-2 min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">
@@ -1127,8 +1205,21 @@ export default function App() {
         }}
       >
         <AlertDialogPrimitive.Portal>
-          <AlertDialogPrimitive.Backdrop className="fixed inset-0 z-50 bg-black/25 backdrop-blur-[1px]" />
-          <AlertDialogPrimitive.Viewport className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <AlertDialogPrimitive.Backdrop
+            className="fixed inset-0 z-50 bg-black/25 backdrop-blur-[1px]"
+            onClick={() => {
+              setThreadToDelete(null);
+              setError("");
+            }}
+          />
+          <AlertDialogPrimitive.Viewport
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            onPointerDown={(event) => {
+              if (event.target !== event.currentTarget) return;
+              setThreadToDelete(null);
+              setError("");
+            }}
+          >
             <AlertDialogPrimitive.Popup className="w-full min-w-0 max-w-md overflow-hidden rounded-xl border bg-card p-5 text-card-foreground shadow-xl outline-none">
               <AlertDialogPrimitive.Title className="text-base font-semibold">
                 {threadToDelete ? "Delete thread?" : "Something went wrong"}

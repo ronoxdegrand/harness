@@ -32,6 +32,7 @@ def build_runtime(
     *,
     api_key: str | None,
     model_name: str,
+    max_iterations: int,
 ) -> AgentRuntime:
     registry = build_default_tool_registry()
     return AgentRuntime(
@@ -44,7 +45,7 @@ def build_runtime(
         tool_executor=ToolExecutor(registry),
         store=RunStore(),
         event_emitter=emitter,
-        max_iterations=8,
+        max_iterations=max_iterations,
         timeout_seconds=120,
     )
 
@@ -88,6 +89,8 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
     requested_thread_id = request.get("thread_id")
     requested_model = request.get("model_name")
     requested_title = request.get("title")
+    requested_api_key = request.get("api_key")
+    requested_max_iterations = request.get("max_iterations")
 
     if not isinstance(task, str) or not (prompt := task.strip()):
         await _fail_run(websocket, "Task is required to start a run.")
@@ -102,6 +105,20 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
         not isinstance(requested_model, str) or not requested_model.strip()
     ):
         await _fail_run(websocket, "Model name must be a non-empty string.")
+        return
+
+    if requested_api_key is not None and (
+        not isinstance(requested_api_key, str) or not requested_api_key.strip()
+    ):
+        await _fail_run(websocket, "API key must be a non-empty string.")
+        return
+
+    if requested_max_iterations is not None and (
+        isinstance(requested_max_iterations, bool)
+        or not isinstance(requested_max_iterations, int)
+        or not 1 <= requested_max_iterations <= 50
+    ):
+        await _fail_run(websocket, "Max iterations must be an integer between 1 and 50.")
         return
 
     if requested_title is not None and (
@@ -154,8 +171,9 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
         runtime = build_runtime(
             target_path,
             emitter,
-            api_key=settings.gemini_api_key,
+            api_key=requested_api_key.strip() if requested_api_key else settings.gemini_api_key,
             model_name=model_name,
+            max_iterations=requested_max_iterations or 8,
         )
     except ValueError as exc:
         await _fail_run(websocket, str(exc))
