@@ -41,4 +41,4 @@ npm run package:desktop
 npm run smoke:packaged
 ```
 
-Unsigned packages are written to `apps/desktop/release`. Version tags trigger the cross-platform release workflow.
+Unsigned packages are written to `apps/desktop/release`. Before tagging, set the shared version, for example with `npm run version:set -- 1.2.3`; matching version tags trigger the cross-platform release workflow.
