@@ -1,0 +1,20 @@
+{
+  "name": "@ai-agent-harness/desktop",
+  "version": "0.1.0",
+  "description": "Desktop shell for AI Agent Harness.",
+  "author": "ronoxdegrand",
+  "private": true,
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test tests/*.test.js",
+    "package": "electron-builder --publish never"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.9"
+  },
+  "devDependencies": {
+    "electron": "43.4.1",
+    "electron-builder": "26.15.3"
+  }
+}

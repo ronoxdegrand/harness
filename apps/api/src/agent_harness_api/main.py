@@ -1,10 +1,13 @@
 from contextlib import asynccontextmanager
+import secrets
 
-from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi import FastAPI, HTTPException, Request, WebSocket
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .config import DEFAULT_MODEL, get_settings
-from .db import database_status, initialize_database
+from .db import LATEST_SCHEMA_VERSION, database_status, initialize_database
 from .store import RunStore, Thread, thread_title_from_prompt
 from .ws import handle_run_websocket, resolve_workspace_path
 
@@ -38,8 +41,18 @@ settings = get_settings()
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
 
+@app.middleware("http")
+async def authenticate(request: Request, call_next):
+    token = get_settings().auth_token
+    authorization = request.headers.get("authorization", "")
+    if token and not secrets.compare_digest(authorization, f"Bearer {token}"):
+        return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    return await call_next(request)
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
+    settings = get_settings()
     return {
         "status": "ok",
         "service": settings.app_name,
@@ -47,9 +60,28 @@ async def health() -> dict[str, str]:
     }
 
 
+@app.get("/health/ready")
+async def health_ready() -> dict[str, str | int]:
+    settings = get_settings()
+    return {
+        "status": "ready",
+        "version": settings.app_version,
+        "schema_version": LATEST_SCHEMA_VERSION,
+    }
+
+
 @app.get("/health/db")
-async def health_db() -> dict[str, str | bool]:
+async def health_db() -> dict[str, str | bool | int]:
     return database_status()
+
+
+@app.post("/shutdown", status_code=202)
+async def shutdown(request: Request) -> dict[str, str]:
+    callback = getattr(request.app.state, "request_shutdown", None)
+    if callback is None:
+        raise HTTPException(status_code=409, detail="Managed shutdown is not available.")
+    callback()
+    return {"status": "shutting_down"}
 
 
 @app.get("/threads")
@@ -108,4 +140,17 @@ async def delete_thread(thread_id: str) -> None:
 
 @app.websocket("/ws/run")
 async def run_websocket(websocket: WebSocket) -> None:
-    await handle_run_websocket(websocket, get_settings())
+    settings = get_settings()
+    authorization = websocket.headers.get("authorization", "")
+    query_token = websocket.query_params.get("token", "")
+    if settings.auth_token and not (
+        secrets.compare_digest(authorization, f"Bearer {settings.auth_token}")
+        or secrets.compare_digest(query_token, settings.auth_token)
+    ):
+        await websocket.close(code=1008, reason="Unauthorized")
+        return
+    await handle_run_websocket(websocket, settings)
+
+
+if settings.web_dist_path and settings.web_dist_path.is_dir():
+    app.mount("/", StaticFiles(directory=settings.web_dist_path, html=True), name="web")

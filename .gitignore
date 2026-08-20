@@ -22,11 +22,17 @@ build/
 !.env.example
 
 *.db
+*.db-journal
 *.db-shm
 *.db-wal
+*.db.backup-*
 apps/api/data/
 *.egg-info/
 .eggs/
 
 coverage/
 htmlcov/
+
+apps/desktop/release/
+apps/desktop/resources/backend/
+*.spec

@@ -1,0 +1,81 @@
+name: Desktop release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            name: windows-x64
+            builder: --win --x64
+          - runner: macos-13
+            name: macos-x64
+            builder: --mac --x64
+          - runner: macos-14
+            name: macos-arm64
+            builder: --mac --arm64
+          - runner: ubuntu-latest
+            name: linux-x64
+            builder: --linux --x64
+    runs-on: ${{ matrix.runner }}
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      VERSION_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.12"
+          enable-cache: true
+      - run: npm ci
+      - run: uv sync --all-packages --all-groups --frozen
+      - run: npm run check:versions
+      - run: uv run --package agent-harness-api pytest apps/api/tests -q
+      - run: npm run typecheck:web
+      - run: npm run test:desktop
+      - run: npm run build:web
+      - run: npm run build:sidecar
+      - run: npm --workspace apps/desktop run package -- ${{ matrix.builder }}
+      - if: runner.os != 'Linux'
+        run: node scripts/smoke-packaged.js
+      - if: runner.os == 'Linux'
+        run: xvfb-run -a node scripts/smoke-packaged.js
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.name }}
+          if-no-files-found: error
+          path: |
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
+            apps/desktop/release/*.AppImage
+            apps/desktop/release/*.blockmap
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: release
+          merge-multiple: true
+      - run: node scripts/generate-update-metadata.js release "${GITHUB_REF_NAME#v}"
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release/*

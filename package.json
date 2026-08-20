@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "workspaces": [
-    "apps/web"
+    "apps/web",
+    "apps/desktop"
   ],
   "scripts": {
     "dev:api": "node ./scripts/dev.js start-api",
@@ -11,7 +12,12 @@
     "stop:api": "node ./scripts/dev.js stop-api",
     "stop:web": "node ./scripts/dev.js stop-web",
     "build:web": "npm --workspace apps/web run build",
-    "typecheck:web": "npm --workspace apps/web run typecheck"
+    "typecheck:web": "npm --workspace apps/web run typecheck",
+    "test:api": "uv run --package agent-harness-api pytest apps/api/tests -q --basetemp=.tmp/pytest -p no:cacheprovider",
+    "test:desktop": "npm --workspace apps/desktop test",
+    "check:versions": "node scripts/check-versions.js",
+    "build:sidecar": "node scripts/build-sidecar.js",
+    "smoke:packaged": "node scripts/smoke-packaged.js",
+    "package:desktop": "npm run check:versions && npm run build:web && npm run build:sidecar && npm --workspace apps/desktop run package"
   }
 }
-

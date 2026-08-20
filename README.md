@@ -1,17 +1,44 @@
 # AI Agent Harness
 
-A small playground for experimenting with an AI coding agent that can inspect a local repo, run tools, and stream its work to a browser UI.
-
-This is an in-progress side project. I am mostly messing around and learning as I go.
+A small coding-agent harness with a React UI, FastAPI backend, and optional Electron shell.
 
 ![AI Agent Harness showing the thread list, active chat, activity inspector, and model picker](image.png)
 
-## Run it
+## Setup
 
 ```bash
 npm install
+uv sync --all-packages --all-groups
+```
+
+## Browser development
+
+Run these in separate terminals:
+
+```bash
 npm run dev:api
 npm run dev:web
 ```
 
-Open the web app at `http://localhost:5173`. The API runs at `http://127.0.0.1:8000`.
+Open `http://localhost:5173`.
+
+## Desktop development
+
+```bash
+npm run build:web
+npm --workspace apps/desktop start
+```
+
+Electron uses the repository as its default workspace in development. Rebuild the web app after UI changes.
+
+## Verify and package
+
+```bash
+npm run test:api
+npm run test:desktop
+npm run typecheck:web
+npm run package:desktop
+npm run smoke:packaged
+```
+
+Unsigned packages are written to `apps/desktop/release`. Version tags trigger the cross-platform release workflow.

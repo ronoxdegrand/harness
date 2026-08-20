@@ -1,0 +1,36 @@
+appId: com.ronoxdegrand.harness
+productName: AI Agent Harness
+artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+asar: true
+directories:
+  output: release
+  buildResources: build
+files:
+  - src/**/*
+  - package.json
+extraResources:
+  - from: resources/backend/agent-harness-api
+    to: backend
+  - from: ../web/dist
+    to: web
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+mac:
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+    - target: zip
+      arch: [x64, arm64]
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+nsis:
+  deleteAppDataOnUninstall: false
+publish:
+  provider: github
+  owner: ronoxdegrand
+  repo: harness
+generateUpdatesFilesForAllChannels: true

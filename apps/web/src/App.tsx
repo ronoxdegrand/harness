@@ -2,7 +2,7 @@ import { type CSSProperties, FormEvent, Fragment, type PointerEvent as ReactPoin
 import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { Select as SelectPrimitive } from "@base-ui/react/select";
-import { Check, ChevronUp, Copy, Layers3, LoaderCircle, Minimize2, PanelLeft, Pencil, Plus, Send, Settings2, Trash2 } from "lucide-react";
+import { Check, ChevronUp, Copy, Layers3, LoaderCircle, Minimize2, PanelLeft, Pencil, Plus, RefreshCw, Send, Settings2, Trash2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -160,6 +160,7 @@ export default function App() {
   const [status, setStatus] = useState("idle");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [updateVersion, setUpdateVersion] = useState<string>();
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [activeThread, setActiveThread] = useState<ThreadSummary | null>(null);
   const [threadToDelete, setThreadToDelete] = useState<ThreadSummary | null>(null);
@@ -213,6 +214,12 @@ export default function App() {
     return () => {
       socketRef.current?.close();
     };
+  }, []);
+
+  useEffect(() => {
+    if (!window.harnessDesktop) return;
+    void window.harnessDesktop.getUpdateReady().then(setUpdateVersion);
+    return window.harnessDesktop.onUpdateReady(setUpdateVersion);
   }, []);
 
   useEffect(() => {
@@ -783,6 +790,17 @@ export default function App() {
               )}
             </div>
             <div className="absolute right-3 flex items-center gap-1">
+              {updateVersion ? (
+                <Button
+                  className="h-10 gap-2 bg-card"
+                  type="button"
+                  variant="outline"
+                  onClick={() => void window.harnessDesktop?.restartToUpdate()}
+                >
+                  <RefreshCw aria-hidden="true" className="size-4" />
+                  Restart to update
+                </Button>
+              ) : null}
               <DialogPrimitive.Root open={settingsOpen} onOpenChange={setSettingsOpen}>
                 <DialogPrimitive.Trigger
                   render={
