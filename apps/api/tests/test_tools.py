@@ -44,6 +44,9 @@ def test_filesystem_tools_respect_workspace_root(tmp_path: Path) -> None:
     executor = ToolExecutor(build_default_tool_registry())
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    (workspace / ".env").write_text("SECRET=value", encoding="utf-8")
+    (workspace / ".cache").mkdir()
+    (workspace / ".cache" / "state.json").write_text("{}", encoding="utf-8")
 
     write_result = executor.execute(
         ToolCall(
@@ -61,6 +64,14 @@ def test_filesystem_tools_respect_workspace_root(tmp_path: Path) -> None:
         ToolCall(id="list", name="list_files", arguments={"path": ".", "limit": 10}),
         target_path=workspace,
     )
+    hidden_list_result = executor.execute(
+        ToolCall(
+            id="list-hidden",
+            name="list_files",
+            arguments={"path": ".", "limit": 10, "include_hidden": True},
+        ),
+        target_path=workspace,
+    )
     escape_result = executor.execute(
         ToolCall(
             id="escape",
@@ -73,6 +84,10 @@ def test_filesystem_tools_respect_workspace_root(tmp_path: Path) -> None:
     assert write_result.success is True
     assert read_result.output == "keep within root"
     assert "notes/todo.txt" in list_result.output
+    assert ".env" not in list_result.output
+    assert ".cache/state.json" not in list_result.output
+    assert ".env" in hidden_list_result.output
+    assert ".cache/state.json" in hidden_list_result.output
     assert escape_result.success is False
     assert "escapes the workspace root" in (escape_result.error or "")
 

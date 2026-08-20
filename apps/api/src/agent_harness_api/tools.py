@@ -151,11 +151,15 @@ def build_default_tool_registry() -> ToolRegistry:
             ),
             ToolDefinition(
                 name="list_files",
-                description="List files relative to the workspace root.",
+                description=(
+                    "List files relative to the workspace root. Dot-prefixed files and directories "
+                    "are excluded unless include_hidden is true."
+                ),
                 input_schema=_object_schema(
                     {
                         "path": {"type": "string"},
                         "limit": {"type": "integer"},
+                        "include_hidden": {"type": "boolean"},
                     },
                 ),
                 handler=_list_files,
@@ -276,9 +280,15 @@ def _write_file(arguments: dict[str, Any], root: Path) -> ToolResult:
 def _list_files(arguments: dict[str, Any], root: Path) -> ToolResult:
     relative_root = arguments.get("path", ".")
     search_root = _resolve_path(root, relative_root)
-    entries = sorted(
-        path.relative_to(root).as_posix() for path in search_root.rglob("*") if path.is_file()
-    )
+    include_hidden = bool(arguments.get("include_hidden", False))
+    entries = []
+    for path in search_root.rglob("*"):
+        relative_path = path.relative_to(root)
+        if path.is_file() and (
+            include_hidden or not any(part.startswith(".") for part in relative_path.parts)
+        ):
+            entries.append(relative_path.as_posix())
+    entries.sort()
     limit = int(arguments.get("limit", 200))
     return ToolResult(
         success=True,
@@ -287,6 +297,7 @@ def _list_files(arguments: dict[str, Any], root: Path) -> ToolResult:
             "count": len(entries),
             "returned": min(limit, len(entries)),
             "path": str(search_root.relative_to(root).as_posix()) if search_root != root else ".",
+            "include_hidden": include_hidden,
         },
     )
 
