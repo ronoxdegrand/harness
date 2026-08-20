@@ -34,7 +34,7 @@ async function main() {
     HARNESS_DESKTOP_USER_DATA: desktopData,
   };
   delete desktopEnvironment.ELECTRON_RUN_AS_NODE;
-  const electron = spawn(desktop, [], {
+  const electron = spawn(desktop, process.platform === "linux" ? ["--no-sandbox"] : [], {
     env: desktopEnvironment,
     stdio: "inherit",
     windowsHide: true,

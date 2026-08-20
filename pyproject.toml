@@ -1,6 +1,6 @@
 [project]
 name = "ai-agent-harness"
-version = "0.1.1"
+version = "0.1.2"
 description = "Monorepo root for an AI agent harness."
 requires-python = ">=3.12"
 dependencies = []

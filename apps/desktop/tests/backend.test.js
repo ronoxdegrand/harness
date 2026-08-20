@@ -72,3 +72,22 @@ test("shutdown requests graceful sidecar termination", async () => {
   assert.equal(request.url, "http://127.0.0.1:4567/shutdown");
   assert.equal(request.options.headers.authorization, "Bearer secret");
 });
+
+test("shutdown bounds an unresponsive graceful request", async () => {
+  const child = new EventEmitter();
+  child.exitCode = null;
+  await stopBackend(
+    { child, baseUrl: "http://127.0.0.1:4567", token: "secret" },
+    (_url, { signal }) =>
+      new Promise((_, reject) => {
+        signal.addEventListener("abort", () => {
+          child.exitCode = 0;
+          child.emit("exit", 0);
+          reject(signal.reason);
+        });
+      }),
+    undefined,
+    1,
+  );
+  assert.equal(child.exitCode, 0);
+});

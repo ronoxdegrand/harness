@@ -52,12 +52,13 @@ async function killProcessTree(child, spawnImpl = spawn) {
   }
 }
 
-async function stopBackend(backend, fetchImpl = fetch, spawnImpl = spawn) {
+async function stopBackend(backend, fetchImpl = fetch, spawnImpl = spawn, requestTimeoutMs = 5000) {
   if (!backend || backend.child.exitCode !== null) return;
   try {
     await fetchImpl(`${backend.baseUrl}/shutdown`, {
       method: "POST",
       headers: { authorization: `Bearer ${backend.token}` },
+      signal: AbortSignal.timeout(requestTimeoutMs),
     });
   } catch {
     // The bounded process-tree fallback handles an unresponsive sidecar.
