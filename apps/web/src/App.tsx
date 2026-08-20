@@ -20,6 +20,10 @@ const DEFAULT_CONTEXT_WIDTH = 340;
 const MAX_SIDEBAR_WIDTH = 600;
 const MAX_ACTIVITY_WIDTH = 720;
 const MAX_CONTEXT_WIDTH = 720;
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform);
+const SHORTCUT_KEY = IS_MAC ? "Meta" : "Control";
+const SHORTCUT_LABEL = IS_MAC ? "Cmd" : "Ctrl";
+const ALT_LABEL = IS_MAC ? "Option" : "Alt";
 
 function selectableModel(model: string) {
   return MODEL_OPTIONS.includes(model) ? model : MODEL_OPTIONS[0];
@@ -151,9 +155,11 @@ export default function App() {
   const [maxIterations, setMaxIterations] = useState(() =>
     Math.min(Math.max(Number(localStorage.getItem("max-iterations")) || 8, 1), 50),
   );
+  const [sendOnEnter, setSendOnEnter] = useState(() => localStorage.getItem("send-on-enter") !== "false");
   const [lastUsedModel, setLastUsedModel] = useState(MODEL_OPTIONS[0]);
   const [status, setStatus] = useState("idle");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [activeThread, setActiveThread] = useState<ThreadSummary | null>(null);
   const [threadToDelete, setThreadToDelete] = useState<ThreadSummary | null>(null);
@@ -184,6 +190,7 @@ export default function App() {
   const taskInputRef = useRef<HTMLTextAreaElement | null>(null);
   const conversationBottomRef = useRef<HTMLDivElement | null>(null);
   const activityBottomRef = useRef<HTMLDivElement | null>(null);
+  const shortcutTimerRef = useRef<number | null>(null);
   const resizeRef = useRef<{ panel: "sidebar" | "activity" | "context"; startX: number; startWidth: number } | null>(null);
 
   useEffect(() => {
@@ -227,6 +234,60 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("max-iterations", String(maxIterations));
   }, [maxIterations]);
+
+  useEffect(() => {
+    localStorage.setItem("send-on-enter", String(sendOnEnter));
+  }, [sendOnEnter]);
+
+  useEffect(() => {
+    function closeShortcuts() {
+      if (shortcutTimerRef.current !== null) window.clearTimeout(shortcutTimerRef.current);
+      shortcutTimerRef.current = null;
+      setShortcutsOpen(false);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === SHORTCUT_KEY) {
+        if (!event.repeat && shortcutTimerRef.current === null) {
+          shortcutTimerRef.current = window.setTimeout(() => {
+            shortcutTimerRef.current = null;
+            setShortcutsOpen(true);
+          }, 1500);
+        }
+        return;
+      }
+
+      const modifierHeld = IS_MAC ? event.metaKey : event.ctrlKey;
+      if (modifierHeld && shortcutTimerRef.current !== null) {
+        window.clearTimeout(shortcutTimerRef.current);
+        shortcutTimerRef.current = null;
+      }
+      if (event.key === "Escape") setActivityOpen(false);
+      if (!modifierHeld || event.key.toLowerCase() !== "b") return;
+
+      event.preventDefault();
+      if (event.altKey) {
+        setContextOpen((open) => !open);
+      } else {
+        setSidebarCollapsed((collapsed) => !collapsed);
+        setSidebarPreviewOpen(false);
+      }
+    }
+
+    function handleKeyUp(event: KeyboardEvent) {
+      if (event.key === SHORTCUT_KEY) closeShortcuts();
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    window.addEventListener("blur", closeShortcuts);
+    return () => {
+      if (shortcutTimerRef.current !== null) window.clearTimeout(shortcutTimerRef.current);
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+      window.removeEventListener("blur", closeShortcuts);
+    };
+  }, []);
 
   useEffect(() => {
     void refreshThreads(true);
@@ -334,6 +395,7 @@ export default function App() {
 
   async function startRun(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!task.trim() || status === "connecting" || status === "running") return;
     socketRef.current?.close();
 
     const thread = activeThread;
@@ -773,6 +835,30 @@ export default function App() {
                             }}
                           />
                         </label>
+                        <div className="space-y-1.5 text-xs font-medium">
+                          <span>Message input</span>
+                          <div className="grid grid-cols-2 gap-2">
+                            <Button
+                              size="sm"
+                              type="button"
+                              variant={sendOnEnter ? "default" : "outline"}
+                              onClick={() => setSendOnEnter(true)}
+                            >
+                              Enter sends
+                            </Button>
+                            <Button
+                              size="sm"
+                              type="button"
+                              variant={sendOnEnter ? "outline" : "default"}
+                              onClick={() => setSendOnEnter(false)}
+                            >
+                              Shift+Enter sends
+                            </Button>
+                          </div>
+                          <span className="block font-normal leading-4 text-muted-foreground">
+                            The other shortcut inserts a new line.
+                          </span>
+                        </div>
                       </div>
                       <div className="mt-5 flex justify-end">
                         <DialogPrimitive.Close render={<Button type="button">Done</Button>} />
@@ -888,6 +974,13 @@ export default function App() {
                 placeholder={'Inspect the repo, search for "AgentRuntime", run tests, and show git diff'}
                 value={task}
                 onChange={(event) => setTask(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+                  const shouldSend = sendOnEnter ? !event.shiftKey : event.shiftKey;
+                  if (!shouldSend) return;
+                  event.preventDefault();
+                  event.currentTarget.form?.requestSubmit();
+                }}
               />
               <div className="flex flex-wrap items-center gap-2 px-1 pt-1">
                 <label className="mr-auto min-w-0 text-xs text-muted-foreground">
@@ -1195,6 +1288,44 @@ export default function App() {
           </aside>
         ) : null}
       </section>
+      {shortcutsOpen ? (
+        <div className="pointer-events-none fixed inset-0 z-[70] flex items-center justify-center bg-black/15 p-4 backdrop-blur-[1px]">
+          <Card className="w-full max-w-sm rounded-xl p-0 shadow-xl">
+            <div className="border-b px-4 py-3">
+              <p className="text-sm font-semibold">Keyboard shortcuts</p>
+              <p className="mt-1 text-xs text-muted-foreground">Release {SHORTCUT_LABEL} to close.</p>
+            </div>
+            <div className="divide-y px-4">
+              <div className="flex items-center justify-between gap-4 py-3 text-sm">
+                <span>Close Activity</span>
+                <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">Esc</kbd>
+              </div>
+              <div className="flex items-center justify-between gap-4 py-3 text-sm">
+                <span>Toggle threads</span>
+                <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">{SHORTCUT_LABEL} + B</kbd>
+              </div>
+              <div className="flex items-center justify-between gap-4 py-3 text-sm">
+                <span>Toggle Context</span>
+                <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">
+                  {SHORTCUT_LABEL} + {ALT_LABEL} + B
+                </kbd>
+              </div>
+              <div className="flex items-center justify-between gap-4 py-3 text-sm">
+                <span>Send message</span>
+                <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">
+                  {sendOnEnter ? "Enter" : "Shift + Enter"}
+                </kbd>
+              </div>
+              <div className="flex items-center justify-between gap-4 py-3 text-sm">
+                <span>New line</span>
+                <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">
+                  {sendOnEnter ? "Shift + Enter" : "Enter"}
+                </kbd>
+              </div>
+            </div>
+          </Card>
+        </div>
+      ) : null}
       <AlertDialogPrimitive.Root
         open={Boolean(threadToDelete || error)}
         onOpenChange={(open) => {
