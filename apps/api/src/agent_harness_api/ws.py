@@ -167,9 +167,11 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
             model_name=model_name,
             title=requested_title.strip() if requested_title else thread_title_from_prompt(prompt),
         )
-    await websocket.send_json({"kind": "thread.opened", "payload": {"thread": thread.as_dict()}})
-
     run_id = str(uuid.uuid4())
+    await websocket.send_json(
+        {"kind": "thread.opened", "payload": {"thread": thread.as_dict(), "run_id": run_id}}
+    )
+
     history = Context.from_snapshot(
         [
             {"role": turn["role"], "content": turn["content"], "name": None, "tool_call_id": None}

@@ -13,6 +13,7 @@ from agent_harness_api.store import RunStore
 def _receive_run(websocket) -> tuple[str, dict[str, object]]:
     opened = websocket.receive_json()
     assert opened["kind"] == "thread.opened"
+    assert opened["payload"]["run_id"]
     thread_id = opened["payload"]["thread"]["id"]
 
     while True:

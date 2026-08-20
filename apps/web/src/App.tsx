@@ -26,7 +26,7 @@ function selectableModel(model: string) {
 
 type RunSocketMessage =
   | { kind: "session.ready"; payload: { workspace_root: string } }
-  | { kind: "thread.opened"; payload: { thread: ThreadSummary } }
+  | { kind: "thread.opened"; payload: { thread: ThreadSummary; run_id: string } }
   | { kind: "runtime.event"; event: RuntimeEvent }
   | {
       kind: "run.completed";
@@ -103,13 +103,13 @@ function AssistantMarkdown({ content }: { content: string }) {
   );
 }
 
-function CopyButton({ content, className }: { content: string; className: string }) {
+function CopyButton({ content, className, label = "Copy message" }: { content: string; className: string; label?: string }) {
   return (
     <Button
-      aria-label="Copy message"
+      aria-label={label}
       className={`size-7 text-muted-foreground opacity-60 hover:opacity-100 ${className}`}
       size="icon-sm"
-      title="Copy message"
+      title={label}
       type="button"
       variant="ghost"
       onClick={() => navigator.clipboard.writeText(content).catch(() => undefined)}
@@ -369,6 +369,11 @@ export default function App() {
 
       if (payload.kind === "thread.opened") {
         setActiveThread(payload.payload.thread);
+        setThreadTurns((current) => {
+          const pending = current.at(-1);
+          if (pending?.role !== "user" || pending.run_id !== null) return current;
+          return [...current.slice(0, -1), { ...pending, run_id: payload.payload.run_id }];
+        });
         void refreshThreads();
         return;
       }
@@ -895,9 +900,16 @@ export default function App() {
                 </Button>
                 <p className="text-sm font-semibold">Activity</p>
               </div>
-              <span className="text-xs text-muted-foreground">
-                {iterationCount} {iterationCount === 1 ? "iteration" : "iterations"}
-              </span>
+              <div className="flex items-center gap-1">
+                <span className="text-xs text-muted-foreground">
+                  {iterationCount} {iterationCount === 1 ? "iteration" : "iterations"}
+                </span>
+                <CopyButton
+                  className=""
+                  content={JSON.stringify(visibleEvents, null, 2)}
+                  label="Copy activity"
+                />
+              </div>
             </header>
             <div className="max-h-[45vh] min-h-0 flex-1 space-y-4 overflow-y-auto p-3 lg:max-h-none">
             {eventGroups.length ? (
