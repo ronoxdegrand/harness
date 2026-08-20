@@ -108,7 +108,8 @@ async function start() {
     if (path.resolve(reportedWorkspace) !== path.resolve(workspaceRoot)) {
       throw new Error("Desktop backend used the wrong workspace root.");
     }
-    app.quit();
+    await shutdownBackend();
+    app.exit(0);
     return;
   }
 

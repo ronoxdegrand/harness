@@ -17,7 +17,7 @@ jobs:
           - runner: windows-latest
             name: windows-x64
             builder: --win --x64
-          - runner: macos-13
+          - runner: macos-15-intel
             name: macos-x64
             builder: --mac --x64
           - runner: macos-14
@@ -31,12 +31,12 @@ jobs:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
       VERSION_TAG: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           version: "0.8.12"
           enable-cache: true
@@ -53,7 +53,7 @@ jobs:
         run: node scripts/smoke-packaged.js
       - if: runner.os == 'Linux'
         run: xvfb-run -a node scripts/smoke-packaged.js
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: desktop-${{ matrix.name }}
           if-no-files-found: error
@@ -68,8 +68,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v7
         with:
           pattern: desktop-*
           path: release

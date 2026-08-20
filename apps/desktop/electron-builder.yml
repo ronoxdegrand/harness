@@ -24,6 +24,9 @@ mac:
     - target: zip
       arch: [x64, arm64]
 linux:
+  executableName: ai-agent-harness
+  syncDesktopName: true
+  category: Development
   target:
     - target: AppImage
       arch: [x64]
