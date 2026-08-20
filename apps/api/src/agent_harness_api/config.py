@@ -10,7 +10,7 @@ DEFAULT_MODEL = "gemini-3-flash"
 class Settings(BaseSettings):
     app_name: str = "AI Agent Harness API"
     app_env: str = "development"
-    app_version: str = "0.1.5"
+    app_version: str = "0.1.6"
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=0, le=65535)
     auth_token: str | None = None

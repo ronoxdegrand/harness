@@ -12,8 +12,14 @@ let mainWindow;
 let quitting = false;
 let updateVersion;
 
-if (process.env.HARNESS_DESKTOP_USER_DATA) {
-  app.setPath("userData", process.env.HARNESS_DESKTOP_USER_DATA);
+const smokeTest =
+  process.env.HARNESS_DESKTOP_SMOKE_TEST === "1" || process.argv.includes("--harness-smoke-test");
+const userDataArgument = process.argv.find((argument) => argument.startsWith("--harness-user-data="));
+const desktopUserData =
+  process.env.HARNESS_DESKTOP_USER_DATA || userDataArgument?.slice("--harness-user-data=".length);
+if (desktopUserData) app.setPath("userData", desktopUserData);
+if (smokeTest) {
+  fs.writeFileSync(path.join(app.getPath("userData"), "smoke-pid.txt"), String(process.pid));
 }
 
 async function createWindow() {
@@ -78,7 +84,7 @@ async function start() {
     cwd: root,
     env: environment,
   });
-  if (process.env.HARNESS_DESKTOP_SMOKE_TEST === "1") console.log("Packaged smoke: backend ready.");
+  if (smokeTest) console.log("Packaged smoke: backend ready.");
   backend.child.once("exit", (code) => {
     if (!quitting) {
       dialog.showErrorBox("Backend stopped unexpectedly", `The backend exited with code ${code}.`);
@@ -96,7 +102,7 @@ async function start() {
   });
   await createWindow();
 
-  if (process.env.HARNESS_DESKTOP_SMOKE_TEST === "1") {
+  if (smokeTest) {
     console.log("Packaged smoke: renderer ready.");
     const loaded = await mainWindow.webContents.executeJavaScript(
       'Boolean(document.getElementById("root"))',
@@ -123,6 +129,7 @@ async function start() {
     console.log("Packaged smoke: workspace verified.");
     await shutdownBackend();
     console.log("Packaged smoke: backend stopped.");
+    fs.writeFileSync(path.join(app.getPath("userData"), "smoke-success.txt"), "ok");
     process.exit(0);
     return;
   }
@@ -141,7 +148,7 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.whenReady().then(start).catch(async (error) => {
-    if (process.env.HARNESS_DESKTOP_SMOKE_TEST === "1") {
+    if (smokeTest) {
       fs.writeFileSync(path.join(app.getPath("userData"), "smoke-error.txt"), error.stack || String(error));
       await shutdownBackend().catch(() => {});
       process.exit(1);
