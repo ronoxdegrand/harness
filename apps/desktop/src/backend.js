@@ -24,7 +24,7 @@ async function waitForReady(baseUrl, token, expectedVersion, fetchImpl = fetch, 
 }
 
 function waitForExit(child, timeoutMs) {
-  if (child.exitCode !== null) return Promise.resolve(true);
+  if (child.exitCode !== null || child.signalCode != null) return Promise.resolve(true);
   return new Promise((resolve) => {
     const timer = setTimeout(() => resolve(false), timeoutMs);
     child.once("exit", () => {
@@ -35,7 +35,7 @@ function waitForExit(child, timeoutMs) {
 }
 
 async function killProcessTree(child, spawnImpl = spawn) {
-  if (child.exitCode !== null) return;
+  if (child.exitCode !== null || child.signalCode != null) return;
   if (process.platform === "win32") {
     await new Promise((resolve) => {
       spawnImpl("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
@@ -53,7 +53,7 @@ async function killProcessTree(child, spawnImpl = spawn) {
 }
 
 async function stopBackend(backend, fetchImpl = fetch, spawnImpl = spawn, requestTimeoutMs = 5000) {
-  if (!backend || backend.child.exitCode !== null) return;
+  if (!backend || backend.child.exitCode !== null || backend.child.signalCode != null) return;
   try {
     await fetchImpl(`${backend.baseUrl}/shutdown`, {
       method: "POST",

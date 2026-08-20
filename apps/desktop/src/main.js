@@ -68,6 +68,7 @@ async function start() {
     cwd: root,
     env: environment,
   });
+  if (process.env.HARNESS_DESKTOP_SMOKE_TEST === "1") console.log("Packaged smoke: backend ready.");
   backend.child.once("exit", (code) => {
     if (!quitting) {
       dialog.showErrorBox("Backend stopped unexpectedly", `The backend exited with code ${code}.`);
@@ -86,6 +87,7 @@ async function start() {
   await createWindow();
 
   if (process.env.HARNESS_DESKTOP_SMOKE_TEST === "1") {
+    console.log("Packaged smoke: renderer ready.");
     const loaded = await mainWindow.webContents.executeJavaScript(
       'Boolean(document.getElementById("root"))',
     );
@@ -108,8 +110,10 @@ async function start() {
     if (path.resolve(reportedWorkspace) !== path.resolve(workspaceRoot)) {
       throw new Error("Desktop backend used the wrong workspace root.");
     }
+    console.log("Packaged smoke: workspace verified.");
     await shutdownBackend();
-    app.exit(0);
+    console.log("Packaged smoke: backend stopped.");
+    process.exit(0);
     return;
   }
 

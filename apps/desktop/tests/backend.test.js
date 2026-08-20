@@ -91,3 +91,14 @@ test("shutdown bounds an unresponsive graceful request", async () => {
   );
   assert.equal(child.exitCode, 0);
 });
+
+test("shutdown recognizes a sidecar already stopped by a signal", async () => {
+  const child = new EventEmitter();
+  child.exitCode = null;
+  child.signalCode = "SIGKILL";
+  let requested = false;
+  await stopBackend({ child }, async () => {
+    requested = true;
+  });
+  assert.equal(requested, false);
+});

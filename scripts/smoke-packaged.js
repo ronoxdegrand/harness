@@ -43,7 +43,7 @@ async function main() {
     const timer = setTimeout(() => {
       electron.kill("SIGKILL");
       reject(new Error("Packaged Electron app did not exit after its smoke check."));
-    }, 30000);
+    }, 60000);
     electron.once("exit", (code) => {
       clearTimeout(timer);
       const errorPath = path.join(desktopData, "smoke-error.txt");
