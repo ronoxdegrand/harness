@@ -114,7 +114,9 @@ def test_thread_api_persists_across_app_sessions(tmp_path: Path, monkeypatch) ->
             titled_from_prompt.json()["thread"]["id"],
         }
         RunStore().append_turn(thread_id=thread["id"], role="user", content="Newest prompt")
-        assert client.get("/threads").json()["threads"][0]["id"] == thread["id"]
+        listed = client.get("/threads").json()["threads"]
+        assert listed[0]["id"] == thread["id"]
+        thread = listed[0]
 
     get_settings.cache_clear()
     with TestClient(app) as client:

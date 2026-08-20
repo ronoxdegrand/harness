@@ -31,7 +31,17 @@ async function createWindow() {
     },
   });
   mainWindow.once("ready-to-show", () => mainWindow.show());
-  await mainWindow.loadURL(backend.baseUrl);
+  let timeout;
+  try {
+    await Promise.race([
+      mainWindow.loadURL(backend.baseUrl),
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("Renderer did not load in time.")), 20000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function start() {
@@ -130,10 +140,11 @@ async function start() {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.whenReady().then(start).catch((error) => {
+  app.whenReady().then(start).catch(async (error) => {
     if (process.env.HARNESS_DESKTOP_SMOKE_TEST === "1") {
       fs.writeFileSync(path.join(app.getPath("userData"), "smoke-error.txt"), error.stack || String(error));
-      app.exit(1);
+      await shutdownBackend().catch(() => {});
+      process.exit(1);
       return;
     }
     dialog.showErrorBox("AI Agent Harness could not start", error.stack || String(error));

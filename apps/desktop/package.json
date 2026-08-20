@@ -1,7 +1,7 @@
 {
   "name": "@ai-agent-harness/desktop",
   "desktopName": "ai-agent-harness.desktop",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Desktop shell for AI Agent Harness.",
   "author": "ronoxdegrand",
   "private": true,
