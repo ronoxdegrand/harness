@@ -88,6 +88,7 @@ type ContextState = {
     pinned: boolean;
     truncated: boolean;
     preview: string;
+    expandable: boolean;
   }>;
 };
 
@@ -137,6 +138,18 @@ function CopyButton({ content, className, label = "Copy message" }: { content: s
   );
 }
 
+function ShortcutKeys({ keys }: { keys: string[] }) {
+  return (
+    <span className="flex items-center gap-1">
+      {keys.map((key) => (
+        <kbd className="min-w-7 rounded border bg-muted px-2 py-1 text-center font-mono text-xs" key={key}>
+          {key}
+        </kbd>
+      ))}
+    </span>
+  );
+}
+
 function formatTimestamp(timestamp: string) {
   const isoTimestamp = timestamp.includes("T") ? timestamp : `${timestamp.replace(" ", "T")}Z`;
   return new Intl.DateTimeFormat(undefined, {
@@ -182,7 +195,8 @@ export default function App() {
   const [status, setStatus] = useState("idle");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [apiKeyDraft, setApiKeyDraft] = useState(apiKey);
-  const [maxIterationsDraft, setMaxIterationsDraft] = useState(maxIterations);
+  const [maxIterationsDraft, setMaxIterationsDraft] = useState(String(maxIterations));
+  const [maxIterationsError, setMaxIterationsError] = useState("");
   const [sendOnEnterDraft, setSendOnEnterDraft] = useState(sendOnEnter);
   const [uiScaleDraft, setUiScaleDraft] = useState(uiScale);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -194,6 +208,7 @@ export default function App() {
   const [threadTurns, setThreadTurns] = useState<ThreadTurn[]>([]);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [threadContext, setThreadContext] = useState<ContextState | null>(null);
+  const [expandedContextEntries, setExpandedContextEntries] = useState<Record<number, string | null>>({});
   const [assistantText, setAssistantText] = useState("");
   const [activityOpen, setActivityOpen] = useState(false);
   const [contextOpen, setContextOpen] = useState(true);
@@ -261,7 +276,7 @@ export default function App() {
   }, [task]);
 
   useEffect(() => {
-    if (!activeThread && !settingsOpen) taskInputRef.current?.focus();
+    if (!settingsOpen) taskInputRef.current?.focus();
   }, [activeThread, settingsOpen]);
 
   useEffect(() => {
@@ -350,7 +365,7 @@ export default function App() {
     if (!settingsLoaded || apiKey.trim() || apiKeyPromptedRef.current) return;
     apiKeyPromptedRef.current = true;
     setApiKeyDraft(apiKey);
-    setMaxIterationsDraft(maxIterations);
+    setMaxIterationsDraft(String(maxIterations));
     setSendOnEnterDraft(sendOnEnter);
     setUiScaleDraft(uiScale);
     setSettingsOpen(true);
@@ -477,6 +492,7 @@ export default function App() {
       setThreadTurns(payload.turns);
       setEvents(payload.events);
       setThreadContext(payload.context);
+      setExpandedContextEntries({});
       setAssistantText("");
       setEditingTitle(false);
       if (!preserveIterationLimit) {
@@ -496,6 +512,7 @@ export default function App() {
     setThreadTurns([]);
     setEvents([]);
     setThreadContext(null);
+    setExpandedContextEntries({});
     setAssistantText("");
     setEditingTitle(false);
     setActivityOpen(false);
@@ -1021,7 +1038,8 @@ export default function App() {
                 onOpenChange={(open) => {
                   if (open) {
                     setApiKeyDraft(apiKey);
-                    setMaxIterationsDraft(maxIterations);
+                    setMaxIterationsDraft(String(maxIterations));
+                    setMaxIterationsError("");
                     setSendOnEnterDraft(sendOnEnter);
                     setUiScaleDraft(uiScale);
                   }
@@ -1049,10 +1067,21 @@ export default function App() {
                   <DialogPrimitive.Viewport className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center p-4">
                     <DialogPrimitive.Popup className="pointer-events-auto w-full max-w-sm rounded-xl border bg-card p-4 text-card-foreground shadow-xl outline-none">
                       <form
+                        noValidate
                         onSubmit={(event) => {
                           event.preventDefault();
+                          const iterationWarning = Number(maxIterationsDraft);
+                          if (
+                            !maxIterationsDraft.trim()
+                            || !Number.isInteger(iterationWarning)
+                            || iterationWarning < 1
+                            || iterationWarning > 50
+                          ) {
+                            setMaxIterationsError("Enter a whole number from 1 to 50.");
+                            return;
+                          }
                           setApiKey(apiKeyDraft);
-                          setMaxIterations(maxIterationsDraft);
+                          setMaxIterations(iterationWarning);
                           setSendOnEnter(sendOnEnterDraft);
                           setUiScale(uiScaleDraft);
                           void desktop?.setScale(uiScaleDraft);
@@ -1078,17 +1107,23 @@ export default function App() {
                           <label className="block space-y-1.5 text-xs font-medium">
                             <span>Iteration warning</span>
                             <Input
+                              aria-describedby={maxIterationsError ? "iteration-warning-error" : undefined}
+                              aria-invalid={Boolean(maxIterationsError)}
                               max={50}
                               min={1}
+                              required
                               type="number"
                               value={maxIterationsDraft}
                               onChange={(event) => {
-                                const value = Number(event.target.value);
-                                if (Number.isInteger(value)) {
-                                  setMaxIterationsDraft(Math.min(Math.max(value, 1), 50));
-                                }
+                                setMaxIterationsDraft(event.target.value);
+                                setMaxIterationsError("");
                               }}
                             />
+                            {maxIterationsError ? (
+                              <span className="block text-xs font-normal text-destructive" id="iteration-warning-error">
+                                {maxIterationsError}
+                              </span>
+                            ) : null}
                           </label>
                           {desktop ? (
                             <div className="space-y-2 text-xs font-medium">
@@ -1192,23 +1227,31 @@ export default function App() {
                         className={
                           turn.role === "assistant"
                             ? "message-in"
-                            : "message-in ml-auto max-w-[82%] rounded-2xl rounded-br-md bg-secondary px-4 py-3.5 text-secondary-foreground"
+                            : "message-in ml-auto max-w-[82%]"
                         }
                       >
                         {turn.role === "assistant" ? (
                           <div>
                             <AssistantMarkdown content={turn.content} />
-                            <div className="mt-2 flex items-center gap-1">
+                            <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
                               <time className="text-xs text-muted-foreground" dateTime={turn.created_at}>
                                 {formatTimestamp(turn.created_at)}
                               </time>
                               <CopyButton className="!size-4 [&_svg]:!size-2.5" content={turn.content} />
+                              {turn.model_name ? (
+                                <>
+                                  <span aria-hidden="true" className="size-1 rounded-full bg-border" />
+                                  <span>{turn.model_name}</span>
+                                </>
+                              ) : null}
                             </div>
                           </div>
                         ) : (
                           <div>
-                            <p className="whitespace-pre-wrap text-sm leading-7">{turn.content}</p>
-                            <div className="mt-2 flex items-center gap-1">
+                            <div className="rounded-2xl rounded-br-md bg-secondary px-4 py-3.5 text-secondary-foreground">
+                              <p className="whitespace-pre-wrap text-sm leading-6">{turn.content}</p>
+                            </div>
+                            <div className="mt-1 flex items-center justify-end gap-1.5 pr-1 text-xs text-muted-foreground">
                               <time className="text-xs text-muted-foreground" dateTime={turn.created_at}>
                                 {formatTimestamp(turn.created_at)}
                               </time>
@@ -1594,10 +1637,45 @@ export default function App() {
                     <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-muted-foreground" />Excluded</span>
                   </div>
                   <div className="space-y-1.5">
-                    {threadContext.messages.map((message) => (
-                      <div
-                        className={`rounded-lg border bg-card p-3 ${message.included ? "" : "opacity-45"}`}
+                    {threadContext.messages.map((message) => {
+                      const expanded = message.index in expandedContextEntries;
+                      const content = expandedContextEntries[message.index];
+                      return (
+                      <button
+                        aria-expanded={message.expandable ? expanded : undefined}
+                        className={`block w-full rounded-lg border bg-card p-3 text-left ${
+                          message.included ? "" : "opacity-45"
+                        } ${message.expandable ? "cursor-pointer hover:bg-accent/40" : "cursor-default"}`}
+                        disabled={!message.expandable}
                         key={message.index}
+                        type="button"
+                        onClick={async () => {
+                          if (expanded) {
+                            setExpandedContextEntries((current) => {
+                              const { [message.index]: _, ...collapsed } = current;
+                              return collapsed;
+                            });
+                            return;
+                          }
+                          if (!activeThread) return;
+                          setExpandedContextEntries((current) => ({ ...current, [message.index]: null }));
+                          try {
+                            const response = await fetch(`/threads/${activeThread.id}/context/${message.index}`);
+                            if (!response.ok) throw new Error();
+                            const payload = await readJson<{ content: string }>(response);
+                            setExpandedContextEntries((current) =>
+                              message.index in current
+                                ? { ...current, [message.index]: payload.content }
+                                : current,
+                            );
+                          } catch {
+                            setExpandedContextEntries((current) => {
+                              const { [message.index]: _, ...collapsed } = current;
+                              return collapsed;
+                            });
+                            setError("Could not load this context entry.");
+                          }
+                        }}
                       >
                         <div className="flex items-center gap-2">
                           <span className={`size-2 rounded-full ${
@@ -1615,9 +1693,15 @@ export default function App() {
                           <span className="ml-auto text-[10px] tabular-nums text-muted-foreground">
                             ~{message.tokens.toLocaleString()} tok
                           </span>
+                          {message.expandable ? (
+                            <ChevronUp
+                              aria-hidden="true"
+                              className={`size-3.5 text-muted-foreground transition-transform ${expanded ? "" : "rotate-180"}`}
+                            />
+                          ) : null}
                         </div>
-                        <p className="mt-2 line-clamp-3 text-xs leading-5 text-muted-foreground">
-                          {message.preview || "Empty message"}
+                        <p className={`mt-2 text-xs leading-5 text-muted-foreground ${expanded ? "whitespace-pre-wrap break-words" : "line-clamp-3"}`}>
+                          {content === null ? "Loading..." : (content ?? message.preview) || "Empty message"}
                         </p>
                         {message.pinned || message.truncated || !message.included ? (
                           <p className={`mt-2 text-[10px] font-semibold uppercase tracking-[0.1em] ${
@@ -1632,8 +1716,9 @@ export default function App() {
                               : message.pinned ? "Latest instruction | pinned" : "Outside window"}
                           </p>
                         ) : null}
-                      </div>
-                    ))}
+                      </button>
+                      );
+                    })}
                   </div>
                 </>
               ) : (
@@ -1653,62 +1738,69 @@ export default function App() {
               <p className="text-sm font-semibold">Keyboard shortcuts</p>
               <p className="mt-1 text-xs text-muted-foreground">Release {SHORTCUT_LABEL} to close.</p>
             </div>
-            <div className="divide-y px-4">
-              <div className="flex items-center justify-between gap-4 py-3 text-sm">
+            <div className="max-h-[calc(100vh-7rem)] overflow-y-auto px-4 pb-3">
+              <section>
+                <p className="pt-3 pb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                  Threads &amp; panels
+                </p>
+                <div>
+              <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
                 <span>New thread</span>
-                <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">{SHORTCUT_LABEL} + T</kbd>
+                <ShortcutKeys keys={[SHORTCUT_LABEL, "T"]} />
               </div>
-              <div className="flex items-center justify-between gap-4 py-3 text-sm">
+              <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
                 <span>Refresh current thread</span>
-                <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">{SHORTCUT_LABEL} + R</kbd>
+                <ShortcutKeys keys={[SHORTCUT_LABEL, "R"]} />
               </div>
-              <div className="flex items-center justify-between gap-4 py-3 text-sm">
-                <span>Close Activity</span>
-                <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">Esc</kbd>
+              <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
+                <span>Close activity</span>
+                <ShortcutKeys keys={["Esc"]} />
               </div>
-              <div className="flex items-center justify-between gap-4 py-3 text-sm">
+              <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
                 <span>Toggle threads</span>
-                <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">{SHORTCUT_LABEL} + B</kbd>
+                <ShortcutKeys keys={[SHORTCUT_LABEL, "B"]} />
               </div>
-              <div className="flex items-center justify-between gap-4 py-3 text-sm">
-                <span>Toggle Context</span>
-                <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">
-                  {SHORTCUT_LABEL} + {ALT_LABEL} + B
-                </kbd>
+              <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
+                <span>Toggle context</span>
+                <ShortcutKeys keys={[SHORTCUT_LABEL, ALT_LABEL, "B"]} />
               </div>
-              <div className="flex items-center justify-between gap-4 py-3 text-sm">
+                </div>
+              </section>
+              <section className="border-t">
+                <p className="pt-3 pb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                  Message input
+                </p>
+                <div>
+              <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
                 <span>Send message</span>
-                <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">
-                  {sendOnEnter ? "Enter" : "Shift + Enter"}
-                </kbd>
+                <ShortcutKeys keys={sendOnEnter ? ["Enter"] : ["Shift", "Enter"]} />
               </div>
-              <div className="flex items-center justify-between gap-4 py-3 text-sm">
+              <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
                 <span>New line</span>
-                <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">
-                  {sendOnEnter ? "Shift + Enter" : "Enter"}
-                </kbd>
+                <ShortcutKeys keys={sendOnEnter ? ["Shift", "Enter"] : ["Enter"]} />
               </div>
+                </div>
+              </section>
               {desktop ? (
-                <>
-                  <div className="flex items-center justify-between gap-4 py-3 text-sm">
+                <section className="border-t">
+                  <p className="pt-3 pb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                    View
+                  </p>
+                  <div>
+                  <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
                     <span>Zoom in</span>
-                    <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">
-                      {SHORTCUT_LABEL} + =
-                    </kbd>
+                    <ShortcutKeys keys={[SHORTCUT_LABEL, "="]} />
                   </div>
-                  <div className="flex items-center justify-between gap-4 py-3 text-sm">
+                  <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
                     <span>Zoom out</span>
-                    <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">
-                      {SHORTCUT_LABEL} + -
-                    </kbd>
+                    <ShortcutKeys keys={[SHORTCUT_LABEL, "-"]} />
                   </div>
-                  <div className="flex items-center justify-between gap-4 py-3 text-sm">
+                  <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
                     <span>Reset zoom</span>
-                    <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">
-                      {SHORTCUT_LABEL} + 0
-                    </kbd>
+                    <ShortcutKeys keys={[SHORTCUT_LABEL, "0"]} />
                   </div>
-                </>
+                  </div>
+                </section>
               ) : null}
             </div>
           </Card>

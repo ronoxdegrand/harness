@@ -124,6 +124,14 @@ async def get_thread(thread_id: str) -> dict[str, object]:
     return _thread_payload(store, thread)
 
 
+@app.get("/threads/{thread_id}/context/{message_index}")
+async def get_thread_context_entry(thread_id: str, message_index: int) -> dict[str, str]:
+    content = RunStore().get_thread_context_entry(thread_id, message_index)
+    if content is None:
+        raise HTTPException(status_code=404, detail="Context entry not found.")
+    return {"content": content}
+
+
 @app.patch("/threads/{thread_id}")
 async def rename_thread(thread_id: str, request: ThreadRenameRequest) -> dict[str, str]:
     title = request.title.strip()

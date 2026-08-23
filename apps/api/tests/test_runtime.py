@@ -446,6 +446,7 @@ def test_context_keeps_the_newest_messages_within_budget() -> None:
                 "pinned": True,
                 "truncated": False,
                 "preview": "task",
+                "expandable": False,
             },
             {
                 "index": 2,
@@ -456,6 +457,7 @@ def test_context_keeps_the_newest_messages_within_budget() -> None:
                 "pinned": False,
                 "truncated": True,
                 "preview": "123456789012",
+                "expandable": True,
             },
         ],
     }

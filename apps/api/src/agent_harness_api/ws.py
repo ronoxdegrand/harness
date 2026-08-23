@@ -262,6 +262,7 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
                 role="assistant",
                 content=result.output_text,
                 run_id=result.run_id,
+                model_name=model_name,
             )
             _push_message(
                 loop,

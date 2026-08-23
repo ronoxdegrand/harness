@@ -70,6 +70,7 @@ class Context:
                     "pinned": index == pinned,
                     "truncated": index == truncated,
                     "preview": preview[:160],
+                    "expandable": index == truncated or len(preview) > 160 or content.strip() != preview,
                 }
             )
         return {
