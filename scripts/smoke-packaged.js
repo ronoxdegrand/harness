@@ -1,4 +1,4 @@
-const { spawn } = require("node:child_process");
+const { execFileSync, spawn } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -37,7 +37,7 @@ async function main() {
   const electron = spawn(
     process.platform === "darwin" ? "/usr/bin/open" : desktop,
     process.platform === "darwin"
-      ? ["-W", "-n", desktop, "--args", "--harness-smoke-test", `--harness-user-data=${desktopData}`]
+      ? ["-n", desktop, "--args", "--harness-smoke-test", `--harness-user-data=${desktopData}`]
       : process.platform === "linux"
         ? ["--no-sandbox"]
         : [],
@@ -48,29 +48,62 @@ async function main() {
     },
   );
   const errorPath = path.join(desktopData, "smoke-error.txt");
+  const successPath = path.join(desktopData, "smoke-success.txt");
+  const pidPath = path.join(desktopData, "smoke-pid.txt");
+  const stagePath = path.join(desktopData, "smoke-stage.txt");
   await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      const pidPath = path.join(desktopData, "smoke-pid.txt");
-      if (process.platform === "darwin" && fs.existsSync(pidPath)) {
+    let timer;
+    let interval;
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearInterval(interval);
+      error ? reject(error) : resolve();
+    };
+    interval = setInterval(() => {
+      if (fs.existsSync(errorPath)) finish(new Error(fs.readFileSync(errorPath, "utf8")));
+      else if (fs.existsSync(successPath)) finish();
+    }, 100);
+    timer = setTimeout(() => {
+      const stage = fs.existsSync(stagePath) ? fs.readFileSync(stagePath, "utf8") : "not started";
+      let processInfo = "PID not reported";
+      if (fs.existsSync(pidPath)) {
+        const pid = Number(fs.readFileSync(pidPath, "utf8"));
         try {
-          process.kill(Number(fs.readFileSync(pidPath, "utf8")), "SIGKILL");
+          processInfo = execFileSync("/bin/ps", ["-p", String(pid), "-o", "pid=,ppid=,state=,command="], {
+            encoding: "utf8",
+          }).trim();
+        } catch {
+          processInfo = `PID ${pid} is not running`;
+        }
+        try {
+          process.kill(pid, "SIGKILL");
         } catch {
           // The app may have exited between the PID check and the signal.
         }
       }
       electron.kill("SIGKILL");
-      reject(new Error("Packaged Electron app did not exit after its smoke check."));
+      const files = fs.readdirSync(desktopData).join(", ") || "none";
+      finish(
+        new Error(
+          `Packaged Electron smoke timed out. Stage: ${stage}. Process: ${processInfo}. Files: ${files}.`,
+        ),
+      );
     }, 60000);
     electron.once("exit", (code) => {
-      clearTimeout(timer);
-      if (fs.existsSync(errorPath)) reject(new Error(fs.readFileSync(errorPath, "utf8")));
-      else if (code === 0) resolve();
-      else reject(new Error(`Packaged Electron app exited with ${code}.`));
+      if (fs.existsSync(errorPath)) finish(new Error(fs.readFileSync(errorPath, "utf8")));
+      else if (code !== 0) finish(new Error(`Packaged Electron launcher exited with ${code}.`));
+      else if (process.platform !== "darwin") {
+        finish(
+          fs.existsSync(successPath)
+            ? undefined
+            : new Error("Packaged Electron app exited without completing its smoke check."),
+        );
+      }
     });
   });
-  if (!fs.existsSync(path.join(desktopData, "smoke-success.txt"))) {
-    throw new Error("Packaged Electron app exited without completing its smoke check.");
-  }
   if (!fs.existsSync(path.join(desktopData, "harness.db"))) {
     throw new Error("Packaged Electron app did not keep its database under userData.");
   }

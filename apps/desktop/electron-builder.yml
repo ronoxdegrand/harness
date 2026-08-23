@@ -20,9 +20,9 @@ win:
 mac:
   target:
     - target: dmg
-      arch: [x64, arm64]
+      arch: [arm64]
     - target: zip
-      arch: [x64, arm64]
+      arch: [arm64]
 linux:
   executableName: ai-agent-harness
   syncDesktopName: true
