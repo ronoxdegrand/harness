@@ -18,7 +18,7 @@ for (const [manifest, artifacts] of groups) {
   const details = artifacts.map((name) => {
     const contents = fs.readFileSync(path.join(directory, name));
     return {
-      name: name.replace(/ /g, "-"),
+      name,
       size: contents.length,
       sha512: createHash("sha512").update(contents).digest("base64"),
     };

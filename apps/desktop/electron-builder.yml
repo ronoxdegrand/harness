@@ -1,6 +1,6 @@
 appId: com.ronoxdegrand.harness
 productName: AI Agent Harness
-artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+artifactName: ai-agent-harness-${version}-${os}-${arch}.${ext}
 asar: true
 directories:
   output: release
