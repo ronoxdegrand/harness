@@ -389,6 +389,16 @@ export default function App() {
         });
         return;
       }
+      if (modifierHeld && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "t") {
+        event.preventDefault();
+        startNewThread();
+        return;
+      }
+      if (modifierHeld && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "r") {
+        event.preventDefault();
+        if (activeThread) void openThread(activeThread.id, true);
+        return;
+      }
       if (!modifierHeld || event.key.toLowerCase() !== "b") return;
 
       event.preventDefault();
@@ -413,7 +423,7 @@ export default function App() {
       window.removeEventListener("keyup", handleKeyUp);
       window.removeEventListener("blur", closeShortcuts);
     };
-  }, []);
+  }, [activeThread, lastUsedModel, threads, workspacePath]);
 
   useEffect(() => {
     void refreshThreads(true);
@@ -1546,6 +1556,14 @@ export default function App() {
             </div>
             <div className="divide-y px-4">
               <div className="flex items-center justify-between gap-4 py-3 text-sm">
+                <span>New thread</span>
+                <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">{SHORTCUT_LABEL} + T</kbd>
+              </div>
+              <div className="flex items-center justify-between gap-4 py-3 text-sm">
+                <span>Refresh current thread</span>
+                <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">{SHORTCUT_LABEL} + R</kbd>
+              </div>
+              <div className="flex items-center justify-between gap-4 py-3 text-sm">
                 <span>Close Activity</span>
                 <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">Esc</kbd>
               </div>
@@ -1639,6 +1657,9 @@ export default function App() {
                     : error}
                 </AlertDialogPrimitive.Description>
                 <div className="mt-5 flex justify-end gap-2">
+                  {!threadToDelete ? (
+                    <CopyButton className="mr-auto" content={error} label="Copy error" />
+                  ) : null}
                   {threadToDelete ? (
                     <AlertDialogPrimitive.Close
                       render={<Button type="button" variant="outline">Cancel</Button>}
