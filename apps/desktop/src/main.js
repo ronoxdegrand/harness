@@ -104,9 +104,14 @@ async function start() {
 
   if (smokeTest) {
     console.log("Packaged smoke: renderer ready.");
-    const loaded = await mainWindow.webContents.executeJavaScript(
-      'Boolean(document.getElementById("root"))',
-    );
+    const loaded = await mainWindow.webContents.executeJavaScript(`
+      Promise.all([
+        document.fonts.load('16px "Inter Variable"'),
+        document.fonts.load('16px "JetBrains Mono Variable"'),
+      ]).then(([sans, mono]) =>
+        Boolean(document.getElementById("root")) && sans.length > 0 && mono.length > 0
+      )
+    `);
     if (!loaded) throw new Error("Desktop renderer did not load.");
     const reportedWorkspace = await mainWindow.webContents.executeJavaScript(`
       new Promise((resolve, reject) => {
