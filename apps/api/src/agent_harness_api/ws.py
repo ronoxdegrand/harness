@@ -4,7 +4,8 @@ import asyncio
 import threading
 import uuid
 from pathlib import Path
-from typing import Any
+from queue import Queue
+from typing import Any, Callable
 
 from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect
@@ -44,6 +45,7 @@ def build_runtime(
     api_key: str | None,
     model_name: str,
     max_iterations: int,
+    continuation_decider: Callable[[int], bool],
 ) -> AgentRuntime:
     registry = build_default_tool_registry()
     return AgentRuntime(
@@ -58,6 +60,7 @@ def build_runtime(
         event_emitter=emitter,
         max_iterations=max_iterations,
         timeout_seconds=120,
+        continuation_decider=continuation_decider,
     )
 
 
@@ -96,7 +99,7 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
         return
 
     task = request.get("task")
-    workspace_path = request.get("workspace_path", ".")
+    workspace_path = request.get("workspace_path")
     requested_thread_id = request.get("thread_id")
     requested_model = request.get("model_name")
     requested_title = request.get("title")
@@ -106,11 +109,6 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
     if not isinstance(task, str) or not (prompt := task.strip()):
         await _fail_run(websocket, "Task is required to start a run.")
         return
-
-    if not isinstance(workspace_path, str):
-        await _fail_run(websocket, "Workspace path must be a string.")
-        return
-    workspace_path = workspace_path.strip() or "."
 
     if requested_model is not None and (
         not isinstance(requested_model, str) or not requested_model.strip()
@@ -161,6 +159,16 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
             await _fail_run(websocket, "Thread workspace escapes the configured workspace root.")
             return
     else:
+        if workspace_path is None:
+            await _fail_run(websocket, "Workspace path is required for a new thread.")
+            return
+        if not isinstance(workspace_path, str):
+            await _fail_run(websocket, "Workspace path must be a string.")
+            return
+        workspace_path = workspace_path.strip()
+        if not workspace_path:
+            await _fail_run(websocket, "Workspace path is required for a new thread.")
+            return
         try:
             target_path = resolve_workspace_path(
                 settings.workspace_root,
@@ -179,11 +187,27 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
     )
 
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    continuation_decisions: Queue[bool] = Queue()
     loop = asyncio.get_running_loop()
     emitter = EventEmitter()
 
     def on_event(event: RuntimeEvent) -> None:
         _push_message(loop, queue, {"kind": "runtime.event", "event": event.as_dict()})
+
+    def decide_continuation(iteration: int) -> bool:
+        _push_message(
+            loop,
+            queue,
+            {
+                "kind": "run.continuation_required",
+                "payload": {
+                    "iteration": iteration,
+                    "completed_iterations": iteration - 1,
+                    "additional_iterations": requested_max_iterations or 8,
+                },
+            },
+        )
+        return continuation_decisions.get()
 
     emitter.subscribe(on_event)
     try:
@@ -193,6 +217,7 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
             api_key=requested_api_key.strip() if requested_api_key else settings.gemini_api_key,
             model_name=model_name,
             max_iterations=requested_max_iterations or 8,
+            continuation_decider=decide_continuation,
         )
     except ValueError as exc:
         await _fail_run(websocket, str(exc))
@@ -237,6 +262,7 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
                 role="assistant",
                 content=result.output_text,
                 run_id=result.run_id,
+                model_name=model_name,
             )
             _push_message(
                 loop,
@@ -265,6 +291,17 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
         while True:
             message = await queue.get()
             await websocket.send_json(message)
+            if message["kind"] == "run.continuation_required":
+                try:
+                    decision = await websocket.receive_json()
+                except (ValueError, WebSocketDisconnect):
+                    continuation_decisions.put(False)
+                    return
+                continuation_decisions.put(
+                    isinstance(decision, dict)
+                    and decision.get("kind") == "run.continuation_decision"
+                    and decision.get("continue") is True
+                )
             if message["kind"] == "run.finished":
                 break
     except WebSocketDisconnect:

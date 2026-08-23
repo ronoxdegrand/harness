@@ -86,6 +86,10 @@ def test_thread_api_persists_across_app_sessions(tmp_path: Path, monkeypatch) ->
     get_settings.cache_clear()
 
     with TestClient(app) as client:
+        assert client.post("/threads", json={"title": "Missing repository"}).status_code == 422
+        assert client.post(
+            "/threads", json={"workspace_path": " ", "title": "Missing repository"}
+        ).status_code == 400
         invalid = client.post("/threads", json={"workspace_path": "../outside"})
         assert invalid.status_code == 400
 
@@ -160,6 +164,11 @@ def test_websocket_continues_a_persisted_thread(tmp_path: Path, monkeypatch) -> 
                 )
                 thread_id, first_run = _receive_run(websocket)
 
+            context_entry = client.get(f"/threads/{thread_id}/context/1")
+            assert context_entry.status_code == 200
+            assert context_entry.json() == {"content": "First message"}
+            assert client.get(f"/threads/{thread_id}/context/999").status_code == 404
+
             with client.websocket_connect("/ws/run") as websocket:
                 assert websocket.receive_json()["kind"] == "session.ready"
                 websocket.send_json(
@@ -179,9 +188,9 @@ def test_websocket_continues_a_persisted_thread(tmp_path: Path, monkeypatch) -> 
     assert second_run["thread_id"] == thread_id
     assert [(turn["role"], turn["content"], turn["model_name"]) for turn in thread["turns"]] == [
         ("user", "First message", "gemini-3-flash"),
-        ("assistant", "Saved response.", None),
+        ("assistant", "Saved response.", "gemini-3-flash"),
         ("user", "Second message", "gemini-3.5-flash-lite"),
-        ("assistant", "Saved response.", None),
+        ("assistant", "Saved response.", "gemini-3.5-flash-lite"),
     ]
     assert thread["thread"]["title"] == "My custom title"
     assert thread["thread"]["model_name"] == "gemini-3.5-flash-lite"
@@ -201,7 +210,7 @@ def test_websocket_continues_a_persisted_thread(tmp_path: Path, monkeypatch) -> 
     ]
     assert turn_models == [
         ("user", "gemini-3-flash"),
-        ("assistant", None),
+        ("assistant", "gemini-3-flash"),
         ("user", "gemini-3.5-flash-lite"),
-        ("assistant", None),
+        ("assistant", "gemini-3.5-flash-lite"),
     ]

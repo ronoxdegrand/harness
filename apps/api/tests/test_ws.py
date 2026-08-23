@@ -45,6 +45,8 @@ def test_run_websocket_rejects_invalid_requests(tmp_path: Path, monkeypatch) -> 
         ([], "Request must be a JSON object."),
         ({}, "Task is required to start a run."),
         ({"task": None}, "Task is required to start a run."),
+        ({"task": "inspect"}, "Workspace path is required"),
+        ({"task": "inspect", "workspace_path": " "}, "Workspace path is required"),
         ({"task": "inspect", "workspace_path": 1}, "Workspace path must be a string."),
         ({"task": "inspect", "model_name": " "}, "Model name must be a non-empty string."),
         ({"task": "inspect", "api_key": " "}, "API key must be a non-empty string."),
@@ -170,3 +172,72 @@ def test_run_websocket_streams_runtime_events(tmp_path: Path, monkeypatch) -> No
     assert final_payload is not None
     assert final_payload["status"] == "completed"
     assert final_payload["finalized_by_iteration_limit"] is False
+
+
+def test_run_websocket_accepts_iteration_warning_decisions(tmp_path: Path, monkeypatch) -> None:
+    workspace_root = tmp_path / "workspace"
+    repo_path = workspace_root / "demo"
+    _create_repo(repo_path)
+    monkeypatch.setenv("HARNESS_WORKSPACE_ROOT", str(workspace_root))
+    get_settings.cache_clear()
+
+    def fake_post(*args, **kwargs):
+        final_response = kwargs["json"]["system_instruction"]["parts"][0]["text"].startswith(
+            "Produce the final answer"
+        )
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                if final_response:
+                    return {"candidates": [{"content": {"parts": [{"text": "Finished."}]}}]}
+                return {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {"functionCall": {"name": "list_files", "args": {}}}
+                                ]
+                            }
+                        }
+                    ]
+                }
+
+        return FakeResponse()
+
+    warnings: list[int] = []
+    final_payload = None
+    with patch("agent_harness_api.gemini_model.httpx.post", side_effect=fake_post):
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws/run") as websocket:
+                assert websocket.receive_json()["kind"] == "session.ready"
+                websocket.send_json(
+                    {
+                        "task": "keep inspecting",
+                        "workspace_path": "demo",
+                        "api_key": "ui-key",
+                        "max_iterations": 2,
+                    }
+                )
+
+                while True:
+                    message = websocket.receive_json()
+                    if message["kind"] == "run.continuation_required":
+                        warnings.append(message["payload"]["iteration"])
+                        websocket.send_json(
+                            {
+                                "kind": "run.continuation_decision",
+                                "continue": len(warnings) == 1,
+                            }
+                        )
+                    elif message["kind"] == "run.completed":
+                        final_payload = message["payload"]
+                    elif message["kind"] == "run.finished":
+                        break
+
+    assert warnings == [2, 4]
+    assert final_payload is not None
+    assert final_payload["iterations"] == 4
+    assert final_payload["finalized_by_iteration_limit"] is True

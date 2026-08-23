@@ -7,6 +7,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { Badge, Button, Card, Input, Separator, Textarea } from "@/components/ui";
+import webPackage from "../package.json";
 
 const MODEL_OPTIONS = [
   "gemini-3-flash",
@@ -24,6 +25,11 @@ const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform);
 const SHORTCUT_KEY = IS_MAC ? "Meta" : "Control";
 const SHORTCUT_LABEL = IS_MAC ? "Cmd" : "Ctrl";
 const ALT_LABEL = IS_MAC ? "Option" : "Alt";
+type Appearance = "light" | "dark" | "system";
+
+function validAppearance(value: unknown): Appearance {
+  return value === "dark" || value === "system" ? value : "light";
+}
 
 function selectableModel(model: string) {
   return MODEL_OPTIONS.includes(model) ? model : MODEL_OPTIONS[0];
@@ -43,6 +49,10 @@ type RunSocketMessage =
       };
     }
   | { kind: "run.failed"; error: string }
+  | {
+      kind: "run.continuation_required";
+      payload: { iteration: number; completed_iterations: number; additional_iterations: number };
+    }
   | { kind: "run.finished" };
 
 type RuntimeEvent = {
@@ -84,6 +94,7 @@ type ContextState = {
     pinned: boolean;
     truncated: boolean;
     preview: string;
+    expandable: boolean;
   }>;
 };
 
@@ -133,6 +144,18 @@ function CopyButton({ content, className, label = "Copy message" }: { content: s
   );
 }
 
+function ShortcutKeys({ keys }: { keys: string[] }) {
+  return (
+    <span className="flex items-center gap-1">
+      {keys.map((key) => (
+        <kbd className="min-w-7 rounded border bg-muted px-2 py-1 text-center font-mono text-xs" key={key}>
+          {key}
+        </kbd>
+      ))}
+    </span>
+  );
+}
+
 function formatTimestamp(timestamp: string) {
   const isoTimestamp = timestamp.includes("T") ? timestamp : `${timestamp.replace(" ", "T")}Z`;
   return new Intl.DateTimeFormat(undefined, {
@@ -161,7 +184,7 @@ export default function App() {
   const macDesktop = desktop?.platform === "darwin";
   const desktopWindowControls = Boolean(desktop && !macDesktop);
   const [task, setTask] = useState("");
-  const [workspacePath, setWorkspacePath] = useState(".");
+  const [workspacePath, setWorkspacePath] = useState("");
   const [modelName, setModelName] = useState(MODEL_OPTIONS[0]);
   const [apiKey, setApiKey] = useState(() =>
     desktop ? "" : sessionStorage.getItem("gemini-api-key") || "",
@@ -173,25 +196,35 @@ export default function App() {
     () => Boolean(desktop) || localStorage.getItem("send-on-enter") !== "false",
   );
   const [uiScale, setUiScale] = useState(1);
+  const [appearance, setAppearance] = useState<Appearance>(() =>
+    desktop ? "light" : validAppearance(localStorage.getItem("appearance")),
+  );
   const [settingsLoaded, setSettingsLoaded] = useState(!desktop);
   const [lastUsedModel, setLastUsedModel] = useState(MODEL_OPTIONS[0]);
   const [status, setStatus] = useState("idle");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [apiKeyDraft, setApiKeyDraft] = useState(apiKey);
-  const [maxIterationsDraft, setMaxIterationsDraft] = useState(maxIterations);
+  const [maxIterationsDraft, setMaxIterationsDraft] = useState(String(maxIterations));
+  const [maxIterationsError, setMaxIterationsError] = useState("");
   const [sendOnEnterDraft, setSendOnEnterDraft] = useState(sendOnEnter);
   const [uiScaleDraft, setUiScaleDraft] = useState(uiScale);
+  const [appearanceDraft, setAppearanceDraft] = useState<Appearance>(appearance);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [updateVersion, setUpdateVersion] = useState<string>();
+  const [appVersion, setAppVersion] = useState(webPackage.version);
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [activeThread, setActiveThread] = useState<ThreadSummary | null>(null);
+  const [runningThreadId, setRunningThreadId] = useState<string | null>(null);
   const [threadToDelete, setThreadToDelete] = useState<ThreadSummary | null>(null);
   const [threadTurns, setThreadTurns] = useState<ThreadTurn[]>([]);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [threadContext, setThreadContext] = useState<ContextState | null>(null);
+  const [expandedContextEntries, setExpandedContextEntries] = useState<Record<number, string | null>>({});
   const [assistantText, setAssistantText] = useState("");
   const [activityOpen, setActivityOpen] = useState(false);
   const [contextOpen, setContextOpen] = useState(true);
+  const [narrowView, setNarrowView] = useState(() => window.matchMedia("(max-width: 1023px)").matches);
+  const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [activityRunId, setActivityRunId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarPreviewOpen, setSidebarPreviewOpen] = useState(false);
@@ -223,13 +256,21 @@ export default function App() {
   const [titleDraft, setTitleDraft] = useState("");
   const [newThreadTitle, setNewThreadTitle] = useState<string | null>(null);
   const [finalizedByIterationLimit, setFinalizedByIterationLimit] = useState(false);
+  const [continuationRequest, setContinuationRequest] = useState<{
+    iteration: number;
+    completed_iterations: number;
+    additional_iterations: number;
+  } | null>(null);
   const [error, setError] = useState("");
   const socketRef = useRef<WebSocket | null>(null);
+  const activeThreadIdRef = useRef<string | null>(null);
   const taskInputRef = useRef<HTMLTextAreaElement | null>(null);
   const conversationBottomRef = useRef<HTMLDivElement | null>(null);
   const activityBottomRef = useRef<HTMLDivElement | null>(null);
   const shortcutTimerRef = useRef<number | null>(null);
+  const panelPreviewTimerRef = useRef<number | null>(null);
   const apiKeyPromptedRef = useRef(false);
+  const continuationPendingRef = useRef(false);
   const resizeRef = useRef<{ panel: "sidebar" | "activity" | "context"; startX: number; startWidth: number } | null>(null);
 
   useEffect(() => {
@@ -237,7 +278,7 @@ export default function App() {
     if (activityOpen) {
       activityBottomRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
     }
-  }, [activityOpen, events, assistantText, status]);
+  }, [activityOpen, events, assistantText, continuationRequest, status]);
 
   useEffect(() => {
     const input = taskInputRef.current;
@@ -249,13 +290,19 @@ export default function App() {
   }, [task]);
 
   useEffect(() => {
+    if (!settingsOpen) taskInputRef.current?.focus();
+  }, [activeThread, settingsOpen]);
+
+  useEffect(() => {
     return () => {
       socketRef.current?.close();
+      if (panelPreviewTimerRef.current !== null) window.clearTimeout(panelPreviewTimerRef.current);
     };
   }, []);
 
   useEffect(() => {
     if (!desktop) return;
+    void desktop.getVersion().then(setAppVersion);
     void desktop.getUpdateReady().then(setUpdateVersion);
     return desktop.onUpdateReady(setUpdateVersion);
   }, []);
@@ -271,6 +318,7 @@ export default function App() {
         );
         setSendOnEnter(settings.sendOnEnter ?? localStorage.getItem("send-on-enter") !== "false");
         setUiScale(settings.scale ?? 1);
+        setAppearance(validAppearance(settings.appearance));
         setSidebarWidth(
           settings.sidebarWidth ??
             Math.min(
@@ -310,6 +358,7 @@ export default function App() {
           activityWidth,
           contextWidth,
           scale: uiScale,
+          appearance,
         })
         .then(() => {
           sessionStorage.removeItem("gemini-api-key");
@@ -328,17 +377,43 @@ export default function App() {
     localStorage.setItem("sidebar-width", String(sidebarWidth));
     localStorage.setItem("activity-width", String(activityWidth));
     localStorage.setItem("context-width", String(contextWidth));
-  }, [activityWidth, apiKey, contextWidth, desktop, maxIterations, sendOnEnter, settingsLoaded, sidebarWidth, uiScale]);
+    localStorage.setItem("appearance", appearance);
+  }, [activityWidth, apiKey, appearance, contextWidth, desktop, maxIterations, sendOnEnter, settingsLoaded, sidebarWidth, uiScale]);
+
+  useEffect(() => {
+    const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
+    const applyTheme = () => {
+      document.documentElement.dataset.theme =
+        appearance === "system" ? (systemTheme.matches ? "dark" : "light") : appearance;
+    };
+    applyTheme();
+    if (appearance !== "system") return;
+    systemTheme.addEventListener("change", applyTheme);
+    return () => systemTheme.removeEventListener("change", applyTheme);
+  }, [appearance]);
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 1023px)");
+    const update = () => {
+      setNarrowView(media.matches);
+      setSidebarPreviewOpen(false);
+      setContextPreviewOpen(false);
+    };
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
 
   useEffect(() => {
     if (!settingsLoaded || apiKey.trim() || apiKeyPromptedRef.current) return;
     apiKeyPromptedRef.current = true;
     setApiKeyDraft(apiKey);
-    setMaxIterationsDraft(maxIterations);
+    setMaxIterationsDraft(String(maxIterations));
     setSendOnEnterDraft(sendOnEnter);
     setUiScaleDraft(uiScale);
+    setAppearanceDraft(appearance);
     setSettingsOpen(true);
-  }, [apiKey, maxIterations, sendOnEnter, settingsLoaded, uiScale]);
+  }, [apiKey, appearance, maxIterations, sendOnEnter, settingsLoaded, uiScale]);
 
   useEffect(() => {
     if (!desktop) return;
@@ -389,11 +464,22 @@ export default function App() {
         });
         return;
       }
+      if (modifierHeld && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "t") {
+        event.preventDefault();
+        startNewThread();
+        return;
+      }
+      if (modifierHeld && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "r") {
+        event.preventDefault();
+        if (activeThread) void openThread(activeThread.id, true);
+        return;
+      }
       if (!modifierHeld || event.key.toLowerCase() !== "b") return;
 
       event.preventDefault();
       if (event.altKey) {
         setContextOpen((open) => !open);
+        setContextPreviewOpen(false);
       } else {
         setSidebarCollapsed((collapsed) => !collapsed);
         setSidebarPreviewOpen(false);
@@ -413,7 +499,7 @@ export default function App() {
       window.removeEventListener("keyup", handleKeyUp);
       window.removeEventListener("blur", closeShortcuts);
     };
-  }, []);
+  }, [activeThread, lastUsedModel, threads, workspacePath]);
 
   useEffect(() => {
     void refreshThreads(true);
@@ -444,12 +530,14 @@ export default function App() {
         return;
       }
       const payload = await readJson<ThreadDetail>(response);
+      activeThreadIdRef.current = payload.thread.id;
       setActiveThread(payload.thread);
       setWorkspacePath(payload.thread.workspace_path);
       setModelName(selectableModel(payload.thread.model_name));
       setThreadTurns(payload.turns);
       setEvents(payload.events);
       setThreadContext(payload.context);
+      setExpandedContextEntries({});
       setAssistantText("");
       setEditingTitle(false);
       if (!preserveIterationLimit) {
@@ -464,15 +552,19 @@ export default function App() {
 
   function startNewThread() {
     socketRef.current?.close();
+    activeThreadIdRef.current = null;
     setActiveThread(null);
     setThreadTurns([]);
     setEvents([]);
     setThreadContext(null);
+    setExpandedContextEntries({});
     setAssistantText("");
     setEditingTitle(false);
     setActivityOpen(false);
     setActivityRunId(null);
     setFinalizedByIterationLimit(false);
+    continuationPendingRef.current = false;
+    setContinuationRequest(null);
     setError("");
     setStatus("idle");
     setTask("");
@@ -524,19 +616,23 @@ export default function App() {
 
   async function startRun(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!task.trim() || status === "connecting" || status === "running") return;
+    if (!task.trim() || (!activeThread && !workspacePath.trim()) || status === "connecting" || status === "running") return;
     socketRef.current?.close();
 
     const thread = activeThread;
+    let runThreadId = thread?.id ?? null;
     const submittedTask = task;
     setLastUsedModel(modelName);
 
     setStatus("connecting");
+    setRunningThreadId(runThreadId);
     setTask("");
     setAssistantText("");
     setActivityOpen(false);
     setActivityRunId(null);
     setFinalizedByIterationLimit(false);
+    continuationPendingRef.current = false;
+    setContinuationRequest(null);
     setError("");
     setThreadTurns((current) => [
       ...current,
@@ -575,6 +671,9 @@ export default function App() {
       }
 
       if (payload.kind === "thread.opened") {
+        runThreadId = payload.payload.thread.id;
+        activeThreadIdRef.current = runThreadId;
+        setRunningThreadId(runThreadId);
         setActiveThread(payload.payload.thread);
         setWorkspacePath(payload.payload.thread.workspace_path);
         setThreadTurns((current) => {
@@ -587,6 +686,7 @@ export default function App() {
       }
 
       if (payload.kind === "runtime.event") {
+        if (runThreadId && activeThreadIdRef.current !== runThreadId) return;
         setEvents((current) => [...current, payload.event]);
 
         if (payload.event.type === "context.updated") {
@@ -612,7 +712,6 @@ export default function App() {
           const toolName = typeof toolCall?.name === "string" ? toolCall.name : "tool";
           const result = payload.event.payload.result as Record<string, unknown> | undefined;
           const output = typeof result?.output === "string" ? result.output : "Tool failed.";
-          setStatus("failed");
           setError(`Tool failed: ${toolName}. ${output}`);
         }
 
@@ -641,34 +740,61 @@ export default function App() {
         return;
       }
 
+      if (payload.kind === "run.continuation_required") {
+        continuationPendingRef.current = true;
+        setContinuationRequest(payload.payload);
+        return;
+      }
+
       if (payload.kind === "run.completed") {
         setStatus(payload.payload.status);
-        setFinalizedByIterationLimit(payload.payload.finalized_by_iteration_limit);
-        if (payload.payload.output_text.trim()) {
-          setAssistantText(payload.payload.output_text);
+        if (activeThreadIdRef.current === payload.payload.thread_id) {
+          setFinalizedByIterationLimit(payload.payload.finalized_by_iteration_limit);
+          if (payload.payload.output_text.trim()) {
+            setAssistantText(payload.payload.output_text);
+          }
+          void openThread(payload.payload.thread_id, true);
         }
-        void openThread(payload.payload.thread_id, true);
         void refreshThreads();
         return;
       }
 
       if (payload.kind === "run.failed") {
         setStatus("failed");
-        setError(payload.error);
-        setAssistantText((current) => current || "The run failed.");
+        if (activeThreadIdRef.current === runThreadId) {
+          setError(payload.error);
+          setAssistantText((current) => current || "The run failed.");
+        }
         return;
       }
 
       if (payload.kind === "run.finished") {
+        continuationPendingRef.current = false;
+        setContinuationRequest(null);
+        setRunningThreadId(null);
         setStatus((current) => (current === "running" ? "completed" : current));
         socket.close();
       }
     };
 
     socket.onerror = () => {
+      continuationPendingRef.current = false;
+      setContinuationRequest(null);
+      setRunningThreadId(null);
       setStatus("failed");
       setError("WebSocket connection failed.");
     };
+  }
+
+  function answerContinuation(continueRun: boolean) {
+    if (!continuationPendingRef.current) return;
+    continuationPendingRef.current = false;
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(
+        JSON.stringify({ kind: "run.continuation_decision", continue: continueRun }),
+      );
+    }
+    setContinuationRequest(null);
   }
 
   function startResize(panel: "sidebar" | "activity" | "context", event: ReactPointerEvent<HTMLDivElement>) {
@@ -694,11 +820,31 @@ export default function App() {
     );
   }
 
+  function holdPanelPreview() {
+    if (panelPreviewTimerRef.current !== null) window.clearTimeout(panelPreviewTimerRef.current);
+    panelPreviewTimerRef.current = null;
+  }
+
+  function closePanelPreview(setOpen: (open: boolean) => void) {
+    holdPanelPreview();
+    panelPreviewTimerRef.current = window.setTimeout(() => {
+      panelPreviewTimerRef.current = null;
+      setOpen(false);
+    }, 100);
+  }
+
   const visibleEvents = activityRunId
     ? events.filter((runtimeEvent) => eventRunId(runtimeEvent) === activityRunId)
     : events;
-  const sidebarPinnedOpen = !sidebarCollapsed;
+  const repositoryRequired = !activeThread && Boolean(task.trim()) && !workspacePath.trim();
+  const runInProgress = Boolean(runningThreadId);
+  const viewingOtherThreadDuringRun = Boolean(
+    runInProgress && runningThreadId && activeThread?.id !== runningThreadId,
+  );
+  const sidebarPinnedOpen = !narrowView && !sidebarCollapsed;
   const sidebarOpen = sidebarPinnedOpen || sidebarPreviewOpen;
+  const contextPinnedOpen = !narrowView && contextOpen;
+  const contextVisible = contextPinnedOpen || contextPreviewOpen;
   const eventGroups: Array<{
     iteration: number | null;
     createdAt?: string;
@@ -722,14 +868,19 @@ export default function App() {
   const contextUsage = threadContext
     ? Math.min((threadContext.estimated_tokens / threadContext.token_budget) * 100, 100)
     : 0;
+  const settingsDirty = apiKeyDraft !== apiKey
+    || maxIterationsDraft !== String(maxIterations)
+    || sendOnEnterDraft !== sendOnEnter
+    || appearanceDraft !== appearance
+    || Boolean(desktop && uiScaleDraft !== uiScale);
   const layoutColumns = [
     sidebarPinnedOpen ? "var(--sidebar-width)" : null,
     "minmax(0,1fr)",
-    contextOpen ? "var(--context-column-width)" : null,
+    contextPinnedOpen ? "var(--context-column-width)" : null,
   ].filter(Boolean).join(" ");
 
   return (
-    <main className="bg-background text-foreground lg:h-screen lg:overflow-hidden">
+    <main className="h-dvh overflow-hidden bg-background text-foreground">
       <section
         style={{
           "--sidebar-width": `${sidebarWidth}px`,
@@ -737,37 +888,34 @@ export default function App() {
           "--context-column-width": `${contextWidth}px`,
           "--layout-columns": layoutColumns,
         } as CSSProperties}
-        className="relative grid w-full lg:h-screen lg:grid-cols-[var(--layout-columns)]"
+        className="relative grid h-dvh w-full overflow-hidden lg:grid-cols-[var(--layout-columns)]"
       >
         {sidebarOpen ? (
           <aside
-            className={`relative flex min-h-0 flex-col border-b bg-sidebar lg:border-b-0 lg:border-r ${
-              sidebarPinnedOpen ? "" : "sidebar-preview lg:absolute lg:inset-y-0 lg:left-0 lg:z-20 lg:w-[var(--sidebar-width)] lg:shadow-[12px_0_30px_rgba(31,31,30,0.12)]"
+            className={`drawer-left fixed top-14 bottom-0 left-0 z-40 flex w-[var(--sidebar-width)] max-w-[calc(100vw-3rem)] min-h-0 flex-col border-r bg-sidebar shadow-[12px_0_30px_rgba(31,31,30,0.12)] lg:max-w-none ${
+              sidebarPinnedOpen
+                ? "lg:relative lg:inset-y-auto lg:z-auto lg:shadow-none"
+                : "sidebar-preview lg:absolute lg:top-14 lg:bottom-0 lg:left-0 lg:z-20"
             }`}
+            onMouseEnter={holdPanelPreview}
             onMouseLeave={() => {
               if (!sidebarPinnedOpen) {
-                setSidebarPreviewOpen(false);
+                closePanelPreview(setSidebarPreviewOpen);
               }
             }}
           >
-          <header
-            className={`flex h-14 shrink-0 items-center gap-1.5 border-b px-3 ${desktop ? "titlebar-drag" : ""}`}
-            style={macDesktop ? { paddingLeft: `${80 / uiScale}px` } : undefined}
-          >
+          {sidebarPinnedOpen ? (
+            <header
+              className={`flex h-14 shrink-0 items-center gap-1.5 border-b px-3 ${desktop ? "titlebar-drag" : ""}`}
+              style={macDesktop ? { paddingLeft: `${80 / uiScale}px` } : undefined}
+            >
                 <Button
-                  aria-label={sidebarPreviewOpen ? "Pin sidebar" : "Collapse sidebar"}
+                  aria-label="Collapse sidebar"
                   className="size-10 shrink-0 bg-card"
                   size="icon-lg"
                   variant="outline"
                   type="button"
-                  onClick={() => {
-                    if (sidebarPreviewOpen) {
-                      setSidebarCollapsed(false);
-                      setSidebarPreviewOpen(false);
-                    } else {
-                      setSidebarCollapsed(true);
-                    }
-                  }}
+                  onClick={() => setSidebarCollapsed(true)}
                 >
                   <PanelLeft aria-hidden="true" className="size-4" />
                 </Button>
@@ -779,7 +927,8 @@ export default function App() {
                 >
                   <Plus aria-hidden="true" className="size-4" /> New chat
                 </Button>
-          </header>
+            </header>
+          ) : null}
 
           <div className="flex min-h-0 flex-1 flex-col py-3 pl-3">
             <nav className="space-y-1 overflow-y-auto pr-3">
@@ -806,20 +955,29 @@ export default function App() {
                         </span>
                       </span>
                     </Button>
-                    <Button
-                      aria-label={`Delete ${thread.title}`}
-                      className="absolute top-1/2 right-1.5 size-7 -translate-y-1/2 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 hover:text-destructive"
-                      disabled={activeThread?.id === thread.id && (status === "connecting" || status === "running")}
-                      size="icon-sm"
-                      type="button"
-                      variant="ghost"
-                      onClick={() => {
-                        setError("");
-                        setThreadToDelete(thread);
-                      }}
-                    >
-                      <Trash2 aria-hidden="true" className="size-3.5" />
-                    </Button>
+                    {runInProgress && runningThreadId === thread.id ? (
+                      <span
+                        aria-label="Running"
+                        className="absolute top-1/2 right-1.5 flex size-7 -translate-y-1/2 items-center justify-center text-muted-foreground"
+                        role="status"
+                      >
+                        <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" />
+                      </span>
+                    ) : (
+                      <Button
+                        aria-label={`Delete ${thread.title}`}
+                        className="absolute top-1/2 right-1.5 size-7 -translate-y-1/2 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 hover:text-destructive"
+                        size="icon-sm"
+                        type="button"
+                        variant="ghost"
+                        onClick={() => {
+                          setError("");
+                          setThreadToDelete(thread);
+                        }}
+                      >
+                        <Trash2 aria-hidden="true" className="size-3.5" />
+                      </Button>
+                    )}
                   </div>
                 ))
               ) : (
@@ -844,13 +1002,13 @@ export default function App() {
           </aside>
         ) : null}
 
-        <section className="relative flex min-h-0 min-w-0 flex-col bg-background lg:grid lg:h-screen lg:grid-cols-1 lg:grid-rows-[56px_minmax(0,1fr)_auto]">
+        <section className="relative grid h-dvh min-h-0 min-w-0 grid-cols-1 grid-rows-[56px_minmax(0,1fr)_auto] bg-background">
           <header
-            className={`relative z-30 col-start-1 row-start-1 flex h-14 shrink-0 items-center border-b bg-background px-4 sm:px-5 ${desktop ? "titlebar-drag" : ""}`}
+            className={`fixed inset-x-0 top-0 z-50 col-start-1 row-start-1 flex h-14 shrink-0 items-center border-b bg-background px-4 sm:px-5 lg:relative lg:inset-auto ${desktop ? "titlebar-drag" : ""}`}
           >
             {!sidebarPinnedOpen ? (
               <div
-                className={`absolute flex shrink-0 items-center gap-1 ${macDesktop && !sidebarOpen ? "" : "left-3"}`}
+                className={`absolute z-50 flex shrink-0 items-center gap-1 ${macDesktop && !sidebarOpen ? "" : "left-3"}`}
                 style={macDesktop && !sidebarOpen ? { left: `${80 / uiScale}px` } : undefined}
               >
                 <Button
@@ -859,17 +1017,21 @@ export default function App() {
                   size="icon-lg"
                   type="button"
                   variant="outline"
-                  onMouseEnter={() => setSidebarPreviewOpen(true)}
+                  onMouseEnter={() => {
+                    holdPanelPreview();
+                    setSidebarPreviewOpen(true);
+                  }}
+                  onMouseLeave={() => closePanelPreview(setSidebarPreviewOpen)}
                   onClick={() => {
                     setSidebarCollapsed(false);
-                    setSidebarPreviewOpen(false);
+                    if (!narrowView) setSidebarPreviewOpen(false);
                   }}
                 >
                   <PanelLeft aria-hidden="true" className="size-4" />
                 </Button>
                 <Button
                   aria-label="New chat"
-                  className="size-10 bg-card"
+                  className={`size-10 bg-card ${editingTitle ? "max-lg:hidden" : ""}`}
                   size="icon-lg"
                   type="button"
                   variant="outline"
@@ -879,17 +1041,17 @@ export default function App() {
                 </Button>
               </div>
             ) : null}
-            <div className={`mx-auto min-w-0 w-full max-w-3xl ${!sidebarPinnedOpen ? "max-lg:pl-24" : ""} ${!contextOpen ? "pr-24" : "pr-12"}`}>
+            <div className={`min-w-0 w-full text-left lg:mx-auto lg:max-w-3xl ${!sidebarPinnedOpen ? editingTitle ? "max-lg:pl-16" : "max-lg:pl-24" : ""} ${editingTitle ? "max-lg:pr-3" : !contextPinnedOpen ? "pr-24" : "pr-12"}`}>
               {editingTitle ? (
-                <form className="flex items-center gap-2" onSubmit={renameActiveThread}>
+                <form className="flex min-w-0 items-center gap-2" onSubmit={renameActiveThread}>
                   <Input
                     autoFocus
-                    className="h-8 min-w-0 bg-card text-sm font-semibold"
+                    className="h-8 min-w-0 flex-1 bg-card text-sm font-semibold"
                     maxLength={80}
                     value={titleDraft}
                     onChange={(event) => setTitleDraft(event.target.value)}
                   />
-                  <Button className="h-7 px-2" size="sm" type="submit" variant="ghost">
+                  <Button className="h-7 px-2" size="sm" type="submit" variant="affirmative">
                     Save
                   </Button>
                   <Button
@@ -903,8 +1065,8 @@ export default function App() {
                   </Button>
                 </form>
               ) : (
-                <div className={`flex items-center gap-2 ${activeThread ? "" : "justify-center"}`}>
-                  <h2 className="truncate text-sm font-semibold">
+                <div className="flex min-w-0 items-center gap-2">
+                  <h2 className="min-w-0 truncate text-left text-sm font-semibold">
                     {activeThread?.title || newThreadTitle || "New chat"}
                   </h2>
                   <Button
@@ -924,14 +1086,14 @@ export default function App() {
               )}
             </div>
             <div
-              className={`absolute flex items-center gap-1 ${desktopWindowControls && !contextOpen ? "" : "right-3"}`}
-              style={desktopWindowControls && !contextOpen ? { right: `${144 / uiScale}px` } : undefined}
+              className={`absolute z-50 flex items-center gap-1 ${editingTitle ? "max-lg:hidden" : ""} ${desktopWindowControls && !contextPinnedOpen ? "" : "right-3"}`}
+              style={desktopWindowControls && !contextPinnedOpen ? { right: `${144 / uiScale}px` } : undefined}
             >
               {updateVersion ? (
                 <Button
-                  className="h-10 gap-2 bg-card"
+                  className="h-10 gap-2"
                   type="button"
-                  variant="outline"
+                  variant="affirmative"
                   onClick={() => void window.harnessDesktop?.restartToUpdate()}
                 >
                   <RefreshCw aria-hidden="true" className="size-4" />
@@ -943,9 +1105,11 @@ export default function App() {
                 onOpenChange={(open) => {
                   if (open) {
                     setApiKeyDraft(apiKey);
-                    setMaxIterationsDraft(maxIterations);
+                    setMaxIterationsDraft(String(maxIterations));
+                    setMaxIterationsError("");
                     setSendOnEnterDraft(sendOnEnter);
                     setUiScaleDraft(uiScale);
+                    setAppearanceDraft(appearance);
                   }
                   setSettingsOpen(open);
                 }}
@@ -965,23 +1129,41 @@ export default function App() {
                 />
                 <DialogPrimitive.Portal>
                   <DialogPrimitive.Backdrop
-                    className="fixed inset-0 z-40 bg-black/10"
+                    className="fixed inset-0 z-[60] bg-black/25 backdrop-blur-[1px]"
                     onClick={() => setSettingsOpen(false)}
                   />
-                  <DialogPrimitive.Viewport className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center p-4">
+                  <DialogPrimitive.Viewport className="pointer-events-none fixed inset-0 z-[70] flex items-center justify-center p-4">
                     <DialogPrimitive.Popup className="pointer-events-auto w-full max-w-sm rounded-xl border bg-card p-4 text-card-foreground shadow-xl outline-none">
                       <form
+                        noValidate
                         onSubmit={(event) => {
                           event.preventDefault();
+                          const iterationWarning = Number(maxIterationsDraft);
+                          if (
+                            !maxIterationsDraft.trim()
+                            || !Number.isInteger(iterationWarning)
+                            || iterationWarning < 1
+                            || iterationWarning > 50
+                          ) {
+                            setMaxIterationsError("Enter a whole number from 1 to 50.");
+                            return;
+                          }
                           setApiKey(apiKeyDraft);
-                          setMaxIterations(maxIterationsDraft);
+                          setMaxIterations(iterationWarning);
                           setSendOnEnter(sendOnEnterDraft);
                           setUiScale(uiScaleDraft);
+                          setAppearance(appearanceDraft);
                           void desktop?.setScale(uiScaleDraft);
+                          void desktop?.setAppearance(appearanceDraft);
                           setSettingsOpen(false);
                         }}
                       >
-                        <DialogPrimitive.Title className="text-sm font-semibold">Settings</DialogPrimitive.Title>
+                        <div className="flex items-center justify-between gap-3">
+                          <DialogPrimitive.Title className="text-sm font-semibold">Settings</DialogPrimitive.Title>
+                          <span className="rounded-full border border-brand-border bg-brand-muted px-2 py-0.5 text-xs font-semibold text-brand">
+                            v{appVersion}
+                          </span>
+                        </div>
                         <DialogPrimitive.Description className="sr-only">
                           Changes are saved only when Done is selected.
                         </DialogPrimitive.Description>
@@ -998,19 +1180,25 @@ export default function App() {
                             />
                           </label>
                           <label className="block space-y-1.5 text-xs font-medium">
-                            <span>Max iterations</span>
+                            <span>Iteration warning</span>
                             <Input
+                              aria-describedby={maxIterationsError ? "iteration-warning-error" : undefined}
+                              aria-invalid={Boolean(maxIterationsError)}
                               max={50}
                               min={1}
+                              required
                               type="number"
                               value={maxIterationsDraft}
                               onChange={(event) => {
-                                const value = Number(event.target.value);
-                                if (Number.isInteger(value)) {
-                                  setMaxIterationsDraft(Math.min(Math.max(value, 1), 50));
-                                }
+                                setMaxIterationsDraft(event.target.value);
+                                setMaxIterationsError("");
                               }}
                             />
+                            {maxIterationsError ? (
+                              <span className="block text-xs font-normal text-destructive" id="iteration-warning-error">
+                                {maxIterationsError}
+                              </span>
+                            ) : null}
                           </label>
                           {desktop ? (
                             <div className="space-y-2 text-xs font-medium">
@@ -1045,6 +1233,23 @@ export default function App() {
                             </div>
                           ) : null}
                           <div className="space-y-2 text-xs font-medium">
+                            <span>Appearance</span>
+                            <div className="grid grid-cols-3 gap-2">
+                              {(["light", "dark", "system"] as const).map((option) => (
+                                <Button
+                                  aria-pressed={appearanceDraft === option}
+                                  className="capitalize"
+                                  key={option}
+                                  type="button"
+                                  variant={appearanceDraft === option ? "default" : "outline"}
+                                  onClick={() => setAppearanceDraft(option)}
+                                >
+                                  {option}
+                                </Button>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="space-y-2 text-xs font-medium">
                             <span>Message input</span>
                             <div className="grid gap-2" role="group" aria-label="Message input shortcut">
                               <Button
@@ -1074,22 +1279,35 @@ export default function App() {
                             </div>
                           </div>
                         </div>
-                        <div className="mt-5 flex justify-end">
-                          <Button type="submit">Done</Button>
+                        <div className="mt-5 flex min-h-9 items-center gap-3">
+                          {settingsDirty ? (
+                            <span className="text-xs font-medium text-warning" role="status">
+                              Changes not saved yet
+                            </span>
+                          ) : null}
+                          <Button className="ml-auto" type="submit" variant="affirmative">Done</Button>
                         </div>
                       </form>
                     </DialogPrimitive.Popup>
                   </DialogPrimitive.Viewport>
                 </DialogPrimitive.Portal>
               </DialogPrimitive.Root>
-              {!contextOpen ? (
+              {!contextPinnedOpen ? (
                 <Button
                   aria-label="Open context"
                   className="size-10 bg-card"
                   size="icon-lg"
                   type="button"
                   variant="outline"
-                  onClick={() => setContextOpen(true)}
+                  onMouseEnter={() => {
+                    holdPanelPreview();
+                    setContextPreviewOpen(true);
+                  }}
+                  onMouseLeave={() => closePanelPreview(setContextPreviewOpen)}
+                  onClick={() => {
+                    setContextOpen(true);
+                    if (!narrowView) setContextPreviewOpen(false);
+                  }}
                 >
                   <Layers3 aria-hidden="true" className="size-4" />
                 </Button>
@@ -1114,23 +1332,31 @@ export default function App() {
                         className={
                           turn.role === "assistant"
                             ? "message-in"
-                            : "message-in ml-auto max-w-[82%] rounded-2xl rounded-br-md bg-secondary px-4 py-3.5 text-secondary-foreground"
+                            : "message-in ml-auto max-w-[82%]"
                         }
                       >
                         {turn.role === "assistant" ? (
                           <div>
                             <AssistantMarkdown content={turn.content} />
-                            <div className="mt-2 flex items-center gap-1">
+                            <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
                               <time className="text-xs text-muted-foreground" dateTime={turn.created_at}>
                                 {formatTimestamp(turn.created_at)}
                               </time>
                               <CopyButton className="!size-4 [&_svg]:!size-2.5" content={turn.content} />
+                              {turn.model_name ? (
+                                <>
+                                  <span aria-hidden="true" className="size-1 rounded-full bg-border" />
+                                  <span>{turn.model_name}</span>
+                                </>
+                              ) : null}
                             </div>
                           </div>
                         ) : (
                           <div>
-                            <p className="whitespace-pre-wrap text-sm leading-7">{turn.content}</p>
-                            <div className="mt-2 flex items-center gap-1">
+                            <div className="rounded-2xl rounded-br-md bg-secondary px-4 py-3.5 text-secondary-foreground">
+                              <p className="whitespace-pre-wrap text-sm leading-6">{turn.content}</p>
+                            </div>
+                            <div className="mt-1 flex items-center justify-end gap-1.5 pr-1 text-xs text-muted-foreground">
                               <time className="text-xs text-muted-foreground" dateTime={turn.created_at}>
                                 {formatTimestamp(turn.created_at)}
                               </time>
@@ -1165,7 +1391,7 @@ export default function App() {
                             </span>
                           </Button>
                           {turn.finalized_by_iteration_limit || (finalizedByIterationLimit && isLatestPrompt) ? (
-                            <Badge className="bg-amber-100 text-amber-800">
+                            <Badge className="bg-warning-muted text-warning">
                               Limit reached
                             </Badge>
                           ) : null}
@@ -1181,6 +1407,28 @@ export default function App() {
                   <AssistantMarkdown content={assistantText} />
                 </article>
               ) : null}
+              {continuationRequest && activeThread?.id === runningThreadId ? (
+                <Card className="message-in rounded-xl border-warning-border bg-warning-muted p-4 text-warning shadow-none" role="status">
+                  <form
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      answerContinuation(true);
+                    }}
+                  >
+                    <p className="text-sm font-semibold">Continue running?</p>
+                    <p className="mt-1 text-sm leading-6 text-warning/85">
+                      The harness completed {continuationRequest.completed_iterations} iterations. Continue for up to{" "}
+                      {continuationRequest.additional_iterations} more, or stop and generate a final response now.
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Button type="submit" variant="affirmative">Continue</Button>
+                      <Button type="button" variant="outline" onClick={() => answerContinuation(false)}>
+                        Stop and summarize
+                      </Button>
+                    </div>
+                  </form>
+                </Card>
+              ) : null}
               <div ref={conversationBottomRef} />
             </div>
           </div>
@@ -1190,6 +1438,7 @@ export default function App() {
               <Textarea
                 ref={taskInputRef}
                 className="min-h-16 max-h-60 resize-none overflow-y-auto border-0 bg-transparent px-3 py-2 text-sm leading-6 shadow-none focus-visible:ring-0"
+                disabled={viewingOtherThreadDuringRun}
                 placeholder={'Inspect the repo, search for "AgentRuntime", run tests, and show git diff'}
                 value={task}
                 onChange={(event) => setTask(event.target.value)}
@@ -1212,8 +1461,12 @@ export default function App() {
                     </span>
                   ) : desktop ? (
                     <Button
-                      className="h-8 max-w-52 justify-start gap-2 px-2 font-mono text-xs font-normal text-muted-foreground"
-                      title={workspacePath}
+                      className={`h-8 max-w-52 justify-start gap-2 px-2 font-mono text-xs font-normal ${
+                        repositoryRequired
+                          ? "bg-warning-muted text-warning ring-2 ring-warning-border hover:bg-warning-muted/80"
+                          : "text-muted-foreground"
+                      }`}
+                      title={workspacePath || "Select repository"}
                       type="button"
                       variant="ghost"
                       onClick={async () => {
@@ -1223,14 +1476,18 @@ export default function App() {
                     >
                       <FolderGit2 aria-hidden="true" className="size-4 shrink-0" />
                       <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-left [direction:rtl]">
-                        {workspacePath}
+                        {workspacePath || "Select repository"}
                       </span>
                     </Button>
                   ) : (
                     <label>
                       <span className="sr-only">Workspace path</span>
                       <Input
-                        className="h-7 w-36 border-0 bg-transparent px-0 font-mono text-xs shadow-none focus-visible:ring-0 sm:w-52"
+                        className={`h-7 w-36 border-0 bg-transparent px-0 font-mono text-xs shadow-none sm:w-52 ${
+                          repositoryRequired
+                            ? "bg-warning-muted px-2 text-warning ring-2 ring-warning-border"
+                            : "focus-visible:ring-0"
+                        }`}
                         value={workspacePath}
                         onChange={(event) => setWorkspacePath(event.target.value)}
                         placeholder="Workspace path"
@@ -1279,9 +1536,10 @@ export default function App() {
                 ) : null}
                 <Button
                   className="h-8 px-3 text-xs font-semibold"
-                  disabled={!task.trim() || status === "connecting" || status === "running"}
+                  disabled={!task.trim() || (!activeThread && !workspacePath.trim()) || status === "connecting" || status === "running"}
                   size="sm"
                   type="submit"
+                  variant="affirmative"
                 >
                   <Send aria-hidden="true" className="size-3.5" /> Send
                 </Button>
@@ -1290,7 +1548,7 @@ export default function App() {
           </form>
 
         {activityOpen ? (
-          <aside className="relative flex min-h-0 flex-col border-t bg-sidebar lg:col-start-1 lg:row-start-2 lg:z-20 lg:w-[var(--activity-width)] lg:justify-self-end lg:self-stretch lg:border-t-0 lg:border-l lg:shadow-[-8px_0_24px_rgba(31,31,30,0.1)]">
+          <aside className="drawer-right relative z-20 col-start-1 row-start-2 flex min-h-0 w-[var(--activity-width)] max-w-[calc(100vw-3rem)] flex-col justify-self-end self-stretch border-l bg-sidebar shadow-[-8px_0_24px_rgba(31,31,30,0.1)] lg:max-w-none">
             <div
               aria-label="Resize activity panel"
               className="group absolute inset-y-0 -left-1 z-30 hidden w-2 cursor-col-resize touch-none lg:block"
@@ -1328,7 +1586,7 @@ export default function App() {
                 />
               </div>
             </header>
-            <div className="max-h-[45vh] min-h-0 flex-1 space-y-4 overflow-y-auto p-3 lg:max-h-none">
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
             {eventGroups.length ? (
               eventGroups.map((group, groupIndex) => (
                 <section className="space-y-2 border-b pb-4 last:border-b-0 last:pb-0" key={`${group.iteration}-${groupIndex}`}>
@@ -1365,12 +1623,16 @@ export default function App() {
                           isFailedEvent
                             ? "border-destructive/30 bg-destructive/5"
                             : runtimeEvent.type === "tool.completed"
-                              ? "border-emerald-200 bg-emerald-50"
+                              ? "border-success-border bg-success-muted"
                               : "bg-card"
                         }`}
                       >
                         <p className={`text-[10px] font-semibold uppercase tracking-[0.12em] ${
-                          isFailedEvent ? "text-destructive" : "text-muted-foreground"
+                          isFailedEvent
+                            ? "text-destructive"
+                            : runtimeEvent.type === "tool.completed"
+                              ? "text-success"
+                              : "text-muted-foreground"
                         }`}>
                           {runtimeEvent.type.replaceAll(".", " ")}
                         </p>
@@ -1389,7 +1651,7 @@ export default function App() {
                               </pre>
                             ) : null}
                             {result?.error ? (
-                              <p className="text-xs text-red-700">{String(result.error)}</p>
+                              <p className="text-xs text-destructive">{String(result.error)}</p>
                             ) : null}
                           </div>
                         ) : (
@@ -1413,9 +1675,19 @@ export default function App() {
         ) : null}
         </section>
 
-        {contextOpen ? (
-          <aside className="relative flex min-h-0 flex-col border-t bg-sidebar lg:h-screen lg:border-t-0 lg:border-l">
-            {contextOpen ? (
+        {contextVisible ? (
+          <aside
+            className={`drawer-right fixed top-14 right-0 bottom-0 z-40 flex w-[var(--context-column-width)] max-w-[calc(100vw-3rem)] min-h-0 flex-col border-l bg-sidebar shadow-[-12px_0_30px_rgba(31,31,30,0.12)] lg:max-w-none ${
+              contextPinnedOpen
+                ? "lg:relative lg:inset-y-auto lg:z-auto lg:shadow-none"
+                : "lg:absolute lg:top-14 lg:right-0 lg:bottom-0 lg:z-20"
+            }`}
+            onMouseEnter={holdPanelPreview}
+            onMouseLeave={() => {
+              if (!contextPinnedOpen) closePanelPreview(setContextPreviewOpen);
+            }}
+          >
+            {contextPinnedOpen ? (
               <div
                 aria-label="Resize context panel"
                 className="group absolute inset-y-0 -left-1 z-30 hidden w-2 cursor-col-resize touch-none lg:block"
@@ -1429,10 +1701,11 @@ export default function App() {
                 <span className="absolute inset-y-0 left-1/2 w-px bg-transparent group-hover:bg-border" />
               </div>
             ) : null}
-            <header
-              className={`flex h-14 shrink-0 items-center justify-between border-b px-3 ${desktop ? "titlebar-drag" : ""}`}
-              style={desktopWindowControls ? { paddingRight: `${144 / uiScale}px` } : undefined}
-            >
+            {contextPinnedOpen ? (
+              <header
+                className={`flex h-14 shrink-0 items-center justify-between border-b px-3 ${desktop ? "titlebar-drag" : ""}`}
+                style={desktopWindowControls ? { paddingRight: `${144 / uiScale}px` } : undefined}
+              >
               <div className="flex items-center gap-2">
                 <Button
                   aria-label="Collapse context"
@@ -1444,16 +1717,16 @@ export default function App() {
                 >
                   <Layers3 aria-hidden="true" className="size-4" />
                 </Button>
-                {contextOpen ? <p className="text-sm font-semibold">Context</p> : null}
+                <p className="text-sm font-semibold">Context</p>
               </div>
-              {contextOpen ? <span className="text-xs text-muted-foreground">
+              <span className="text-xs text-muted-foreground">
                 {threadContext
                   ? `${threadContext.messages.length} entries`
                   : "Empty"}
-              </span> : null}
-            </header>
-            {contextOpen ? (
-            <div className="max-h-[45vh] min-h-0 flex-1 space-y-4 overflow-y-auto p-3 lg:max-h-none">
+              </span>
+              </header>
+            ) : null}
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
               {threadContext ? (
                 <>
                   <section className="rounded-lg border bg-card p-3">
@@ -1479,26 +1752,61 @@ export default function App() {
                     </p>
                   </section>
                   <div className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-lg border bg-card p-3 text-[10px] text-muted-foreground">
-                    <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-blue-500" />Pinned</span>
-                    <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-emerald-500" />Included</span>
-                    <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-amber-500" />Truncated</span>
+                    <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-info-indicator" />Pinned</span>
+                    <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-success-indicator" />Included</span>
+                    <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-warning-indicator" />Truncated</span>
                     <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-muted-foreground" />Excluded</span>
                   </div>
                   <div className="space-y-1.5">
-                    {threadContext.messages.map((message) => (
-                      <div
-                        className={`rounded-lg border bg-card p-3 ${message.included ? "" : "opacity-45"}`}
+                    {threadContext.messages.map((message) => {
+                      const expanded = message.index in expandedContextEntries;
+                      const content = expandedContextEntries[message.index];
+                      return (
+                      <button
+                        aria-expanded={message.expandable ? expanded : undefined}
+                        className={`block w-full rounded-lg border bg-card p-3 text-left ${
+                          message.included ? "" : "opacity-70"
+                        } ${message.expandable ? "cursor-pointer hover:bg-accent/40" : "cursor-default"}`}
+                        disabled={!message.expandable}
                         key={message.index}
+                        type="button"
+                        onClick={async () => {
+                          if (expanded) {
+                            setExpandedContextEntries((current) => {
+                              const { [message.index]: _, ...collapsed } = current;
+                              return collapsed;
+                            });
+                            return;
+                          }
+                          if (!activeThread) return;
+                          setExpandedContextEntries((current) => ({ ...current, [message.index]: null }));
+                          try {
+                            const response = await fetch(`/threads/${activeThread.id}/context/${message.index}`);
+                            if (!response.ok) throw new Error();
+                            const payload = await readJson<{ content: string }>(response);
+                            setExpandedContextEntries((current) =>
+                              message.index in current
+                                ? { ...current, [message.index]: payload.content }
+                                : current,
+                            );
+                          } catch {
+                            setExpandedContextEntries((current) => {
+                              const { [message.index]: _, ...collapsed } = current;
+                              return collapsed;
+                            });
+                            setError("Could not load this context entry.");
+                          }
+                        }}
                       >
                         <div className="flex items-center gap-2">
                           <span className={`size-2 rounded-full ${
                             !message.included
                               ? "bg-muted-foreground"
                               : message.truncated
-                                ? "bg-amber-500"
+                                ? "bg-warning-indicator"
                                 : message.pinned
-                                  ? "bg-blue-500"
-                                  : "bg-emerald-500"
+                                  ? "bg-info-indicator"
+                                  : "bg-success-indicator"
                           }`} />
                           <span className="text-[10px] font-semibold uppercase tracking-[0.12em]">
                             {message.name || message.role}
@@ -1506,25 +1814,32 @@ export default function App() {
                           <span className="ml-auto text-[10px] tabular-nums text-muted-foreground">
                             ~{message.tokens.toLocaleString()} tok
                           </span>
+                          {message.expandable ? (
+                            <ChevronUp
+                              aria-hidden="true"
+                              className={`size-3.5 text-muted-foreground transition-transform ${expanded ? "" : "rotate-180"}`}
+                            />
+                          ) : null}
                         </div>
-                        <p className="mt-2 line-clamp-3 text-xs leading-5 text-muted-foreground">
-                          {message.preview || "Empty message"}
+                        <p className={`mt-2 text-xs leading-5 text-muted-foreground ${expanded ? "whitespace-pre-wrap break-words" : "line-clamp-3"}`}>
+                          {content === null ? "Loading..." : (content ?? message.preview) || "Empty message"}
                         </p>
                         {message.pinned || message.truncated || !message.included ? (
                           <p className={`mt-2 text-[10px] font-semibold uppercase tracking-[0.1em] ${
                             !message.included
                               ? "text-muted-foreground"
                               : message.truncated
-                                ? "text-amber-700"
-                                : "text-blue-700"
+                                ? "text-warning"
+                                : "text-info"
                           }`}>
                             {message.truncated
                               ? message.pinned ? "Pinned | truncated" : "Truncated to fit"
                               : message.pinned ? "Latest instruction | pinned" : "Outside window"}
                           </p>
                         ) : null}
-                      </div>
-                    ))}
+                      </button>
+                      );
+                    })}
                   </div>
                 </>
               ) : (
@@ -1533,7 +1848,6 @@ export default function App() {
                 </p>
               )}
             </div>
-            ) : null}
           </aside>
         ) : null}
       </section>
@@ -1544,54 +1858,69 @@ export default function App() {
               <p className="text-sm font-semibold">Keyboard shortcuts</p>
               <p className="mt-1 text-xs text-muted-foreground">Release {SHORTCUT_LABEL} to close.</p>
             </div>
-            <div className="divide-y px-4">
-              <div className="flex items-center justify-between gap-4 py-3 text-sm">
-                <span>Close Activity</span>
-                <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">Esc</kbd>
+            <div className="max-h-[calc(100vh-7rem)] overflow-y-auto px-4 pb-3">
+              <section>
+                <p className="pt-3 pb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                  Threads &amp; panels
+                </p>
+                <div>
+              <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
+                <span>New thread</span>
+                <ShortcutKeys keys={[SHORTCUT_LABEL, "T"]} />
               </div>
-              <div className="flex items-center justify-between gap-4 py-3 text-sm">
+              <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
+                <span>Refresh current thread</span>
+                <ShortcutKeys keys={[SHORTCUT_LABEL, "R"]} />
+              </div>
+              <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
+                <span>Close activity</span>
+                <ShortcutKeys keys={["Esc"]} />
+              </div>
+              <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
                 <span>Toggle threads</span>
-                <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">{SHORTCUT_LABEL} + B</kbd>
+                <ShortcutKeys keys={[SHORTCUT_LABEL, "B"]} />
               </div>
-              <div className="flex items-center justify-between gap-4 py-3 text-sm">
-                <span>Toggle Context</span>
-                <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">
-                  {SHORTCUT_LABEL} + {ALT_LABEL} + B
-                </kbd>
+              <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
+                <span>Toggle context</span>
+                <ShortcutKeys keys={[SHORTCUT_LABEL, ALT_LABEL, "B"]} />
               </div>
-              <div className="flex items-center justify-between gap-4 py-3 text-sm">
+                </div>
+              </section>
+              <section className="border-t">
+                <p className="pt-3 pb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                  Message input
+                </p>
+                <div>
+              <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
                 <span>Send message</span>
-                <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">
-                  {sendOnEnter ? "Enter" : "Shift + Enter"}
-                </kbd>
+                <ShortcutKeys keys={sendOnEnter ? ["Enter"] : ["Shift", "Enter"]} />
               </div>
-              <div className="flex items-center justify-between gap-4 py-3 text-sm">
+              <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
                 <span>New line</span>
-                <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">
-                  {sendOnEnter ? "Shift + Enter" : "Enter"}
-                </kbd>
+                <ShortcutKeys keys={sendOnEnter ? ["Shift", "Enter"] : ["Enter"]} />
               </div>
+                </div>
+              </section>
               {desktop ? (
-                <>
-                  <div className="flex items-center justify-between gap-4 py-3 text-sm">
+                <section className="border-t">
+                  <p className="pt-3 pb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                    View
+                  </p>
+                  <div>
+                  <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
                     <span>Zoom in</span>
-                    <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">
-                      {SHORTCUT_LABEL} + =
-                    </kbd>
+                    <ShortcutKeys keys={[SHORTCUT_LABEL, "="]} />
                   </div>
-                  <div className="flex items-center justify-between gap-4 py-3 text-sm">
+                  <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
                     <span>Zoom out</span>
-                    <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">
-                      {SHORTCUT_LABEL} + -
-                    </kbd>
+                    <ShortcutKeys keys={[SHORTCUT_LABEL, "-"]} />
                   </div>
-                  <div className="flex items-center justify-between gap-4 py-3 text-sm">
+                  <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
                     <span>Reset zoom</span>
-                    <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">
-                      {SHORTCUT_LABEL} + 0
-                    </kbd>
+                    <ShortcutKeys keys={[SHORTCUT_LABEL, "0"]} />
                   </div>
-                </>
+                  </div>
+                </section>
               ) : null}
             </div>
           </Card>
@@ -1639,6 +1968,9 @@ export default function App() {
                     : error}
                 </AlertDialogPrimitive.Description>
                 <div className="mt-5 flex justify-end gap-2">
+                  {!threadToDelete ? (
+                    <CopyButton className="mr-auto" content={error} label="Copy error" />
+                  ) : null}
                   {threadToDelete ? (
                     <AlertDialogPrimitive.Close
                       render={<Button type="button" variant="outline">Cancel</Button>}

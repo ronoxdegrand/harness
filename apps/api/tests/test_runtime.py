@@ -127,6 +127,25 @@ class EmptyModelProvider:
         return ModelResponse()
 
 
+class ContinuingModelProvider:
+    def __init__(self) -> None:
+        self.final_response_flags: list[bool] = []
+
+    def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
+        self.final_response_flags.append(final_response)
+        if final_response:
+            return ModelResponse(output_text="Stopped at the warning boundary.")
+        return ModelResponse(
+            tool_calls=[
+                ToolCall(
+                    id=f"call-{len(self.final_response_flags)}",
+                    name="list_files",
+                    arguments={},
+                )
+            ]
+        )
+
+
 def _write_broken_repo(repo_path: Path) -> None:
     repo_path.mkdir(parents=True, exist_ok=True)
     (repo_path / "math_utils.py").write_text(
@@ -254,6 +273,40 @@ def test_agent_runtime_executes_single_agent_loop(tmp_path: Path, monkeypatch) -
     assert run_row == ("completed", result.output_text, 1)
     assert event_count is not None and event_count[0] > 0
     assert snapshot_count is not None and snapshot_count[0] >= 2
+
+
+def test_iteration_warning_can_continue_for_another_full_interval(
+    tmp_path: Path, monkeypatch
+) -> None:
+    database_path = tmp_path / "continuation.db"
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(database_path))
+    get_settings.cache_clear()
+    initialize_database()
+
+    decisions = iter([True, False])
+    warnings: list[int] = []
+
+    def decide(iteration: int) -> bool:
+        warnings.append(iteration)
+        return next(decisions)
+
+    registry = build_default_tool_registry()
+    model = ContinuingModelProvider()
+    runtime = AgentRuntime(
+        model=model,
+        tool_registry=registry,
+        tool_executor=ToolExecutor(registry),
+        store=RunStore(database_path),
+        max_iterations=3,
+        continuation_decider=decide,
+    )
+
+    result = runtime.run("keep inspecting", target_path=tmp_path)
+
+    assert warnings == [3, 6]
+    assert model.final_response_flags == [False] * 5 + [True]
+    assert result.iterations == 6
+    assert result.finalized_by_iteration_limit is True
 
 
 def test_runtime_resume_loads_latest_snapshot(tmp_path: Path, monkeypatch) -> None:
@@ -393,6 +446,7 @@ def test_context_keeps_the_newest_messages_within_budget() -> None:
                 "pinned": True,
                 "truncated": False,
                 "preview": "task",
+                "expandable": False,
             },
             {
                 "index": 2,
@@ -403,6 +457,7 @@ def test_context_keeps_the_newest_messages_within_budget() -> None:
                 "pinned": False,
                 "truncated": True,
                 "preview": "123456789012",
+                "expandable": True,
             },
         ],
     }
