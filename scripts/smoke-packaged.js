@@ -64,7 +64,7 @@ async function main() {
     };
     interval = setInterval(() => {
       if (fs.existsSync(errorPath)) finish(new Error(fs.readFileSync(errorPath, "utf8")));
-      else if (fs.existsSync(successPath)) finish();
+      else if (process.platform === "darwin" && fs.existsSync(successPath)) finish();
     }, 100);
     timer = setTimeout(() => {
       const stage = fs.existsSync(stagePath) ? fs.readFileSync(stagePath, "utf8") : "not started";
@@ -107,7 +107,7 @@ async function main() {
   if (!fs.existsSync(path.join(desktopData, "harness.db"))) {
     throw new Error("Packaged Electron app did not keep its database under userData.");
   }
-  fs.rmSync(desktopData, { recursive: true, force: true });
+  fs.rmSync(desktopData, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   console.log("Packaged app smoke test passed.");
 }
 
