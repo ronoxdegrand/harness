@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld("harnessDesktop", {
   getSettings: () => ipcRenderer.invoke("desktop:get-settings"),
   setSettings: (settings) => ipcRenderer.invoke("desktop:set-settings", settings),
   setScale: (scale) => ipcRenderer.invoke("desktop:set-scale", scale),
+  setAppearance: (appearance) => ipcRenderer.invoke("desktop:set-appearance", appearance),
   selectRepository: (currentPath) => ipcRenderer.invoke("desktop:select-repository", currentPath),
   onScaleChanged(callback) {
     const listener = (_event, scale) => callback(scale);

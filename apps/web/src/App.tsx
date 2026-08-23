@@ -24,6 +24,11 @@ const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform);
 const SHORTCUT_KEY = IS_MAC ? "Meta" : "Control";
 const SHORTCUT_LABEL = IS_MAC ? "Cmd" : "Ctrl";
 const ALT_LABEL = IS_MAC ? "Option" : "Alt";
+type Appearance = "light" | "dark" | "system";
+
+function validAppearance(value: unknown): Appearance {
+  return value === "dark" || value === "system" ? value : "light";
+}
 
 function selectableModel(model: string) {
   return MODEL_OPTIONS.includes(model) ? model : MODEL_OPTIONS[0];
@@ -190,6 +195,9 @@ export default function App() {
     () => Boolean(desktop) || localStorage.getItem("send-on-enter") !== "false",
   );
   const [uiScale, setUiScale] = useState(1);
+  const [appearance, setAppearance] = useState<Appearance>(() =>
+    desktop ? "light" : validAppearance(localStorage.getItem("appearance")),
+  );
   const [settingsLoaded, setSettingsLoaded] = useState(!desktop);
   const [lastUsedModel, setLastUsedModel] = useState(MODEL_OPTIONS[0]);
   const [status, setStatus] = useState("idle");
@@ -199,6 +207,7 @@ export default function App() {
   const [maxIterationsError, setMaxIterationsError] = useState("");
   const [sendOnEnterDraft, setSendOnEnterDraft] = useState(sendOnEnter);
   const [uiScaleDraft, setUiScaleDraft] = useState(uiScale);
+  const [appearanceDraft, setAppearanceDraft] = useState<Appearance>(appearance);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [updateVersion, setUpdateVersion] = useState<string>();
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
@@ -302,6 +311,7 @@ export default function App() {
         );
         setSendOnEnter(settings.sendOnEnter ?? localStorage.getItem("send-on-enter") !== "false");
         setUiScale(settings.scale ?? 1);
+        setAppearance(validAppearance(settings.appearance));
         setSidebarWidth(
           settings.sidebarWidth ??
             Math.min(
@@ -341,6 +351,7 @@ export default function App() {
           activityWidth,
           contextWidth,
           scale: uiScale,
+          appearance,
         })
         .then(() => {
           sessionStorage.removeItem("gemini-api-key");
@@ -359,7 +370,20 @@ export default function App() {
     localStorage.setItem("sidebar-width", String(sidebarWidth));
     localStorage.setItem("activity-width", String(activityWidth));
     localStorage.setItem("context-width", String(contextWidth));
-  }, [activityWidth, apiKey, contextWidth, desktop, maxIterations, sendOnEnter, settingsLoaded, sidebarWidth, uiScale]);
+    localStorage.setItem("appearance", appearance);
+  }, [activityWidth, apiKey, appearance, contextWidth, desktop, maxIterations, sendOnEnter, settingsLoaded, sidebarWidth, uiScale]);
+
+  useEffect(() => {
+    const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
+    const applyTheme = () => {
+      document.documentElement.dataset.theme =
+        appearance === "system" ? (systemTheme.matches ? "dark" : "light") : appearance;
+    };
+    applyTheme();
+    if (appearance !== "system") return;
+    systemTheme.addEventListener("change", applyTheme);
+    return () => systemTheme.removeEventListener("change", applyTheme);
+  }, [appearance]);
 
   useEffect(() => {
     if (!settingsLoaded || apiKey.trim() || apiKeyPromptedRef.current) return;
@@ -368,8 +392,9 @@ export default function App() {
     setMaxIterationsDraft(String(maxIterations));
     setSendOnEnterDraft(sendOnEnter);
     setUiScaleDraft(uiScale);
+    setAppearanceDraft(appearance);
     setSettingsOpen(true);
-  }, [apiKey, maxIterations, sendOnEnter, settingsLoaded, uiScale]);
+  }, [apiKey, appearance, maxIterations, sendOnEnter, settingsLoaded, uiScale]);
 
   useEffect(() => {
     if (!desktop) return;
@@ -1042,6 +1067,7 @@ export default function App() {
                     setMaxIterationsError("");
                     setSendOnEnterDraft(sendOnEnter);
                     setUiScaleDraft(uiScale);
+                    setAppearanceDraft(appearance);
                   }
                   setSettingsOpen(open);
                 }}
@@ -1084,7 +1110,9 @@ export default function App() {
                           setMaxIterations(iterationWarning);
                           setSendOnEnter(sendOnEnterDraft);
                           setUiScale(uiScaleDraft);
+                          setAppearance(appearanceDraft);
                           void desktop?.setScale(uiScaleDraft);
+                          void desktop?.setAppearance(appearanceDraft);
                           setSettingsOpen(false);
                         }}
                       >
@@ -1157,6 +1185,23 @@ export default function App() {
                               </div>
                             </div>
                           ) : null}
+                          <div className="space-y-2 text-xs font-medium">
+                            <span>Appearance</span>
+                            <div className="grid grid-cols-3 gap-2">
+                              {(["light", "dark", "system"] as const).map((option) => (
+                                <Button
+                                  aria-pressed={appearanceDraft === option}
+                                  className="capitalize"
+                                  key={option}
+                                  type="button"
+                                  variant={appearanceDraft === option ? "default" : "outline"}
+                                  onClick={() => setAppearanceDraft(option)}
+                                >
+                                  {option}
+                                </Button>
+                              ))}
+                            </div>
+                          </div>
                           <div className="space-y-2 text-xs font-medium">
                             <span>Message input</span>
                             <div className="grid gap-2" role="group" aria-label="Message input shortcut">
@@ -1286,7 +1331,7 @@ export default function App() {
                             </span>
                           </Button>
                           {turn.finalized_by_iteration_limit || (finalizedByIterationLimit && isLatestPrompt) ? (
-                            <Badge className="bg-amber-100 text-amber-800">
+                            <Badge className="bg-warning-muted text-warning">
                               Limit reached
                             </Badge>
                           ) : null}
@@ -1303,7 +1348,7 @@ export default function App() {
                 </article>
               ) : null}
               {continuationRequest && activeThread?.id === runningThreadId ? (
-                <Card className="message-in rounded-xl border-amber-300 bg-amber-50 p-4 text-amber-950 shadow-none" role="status">
+                <Card className="message-in rounded-xl border-warning-border bg-warning-muted p-4 text-warning shadow-none" role="status">
                   <form
                     onSubmit={(event) => {
                       event.preventDefault();
@@ -1311,7 +1356,7 @@ export default function App() {
                     }}
                   >
                     <p className="text-sm font-semibold">Continue running?</p>
-                    <p className="mt-1 text-sm leading-6 text-amber-900/80">
+                    <p className="mt-1 text-sm leading-6 text-warning/85">
                       The harness completed {continuationRequest.completed_iterations} iterations. Continue for up to{" "}
                       {continuationRequest.additional_iterations} more, or stop and generate a final response now.
                     </p>
@@ -1358,7 +1403,7 @@ export default function App() {
                     <Button
                       className={`h-8 max-w-52 justify-start gap-2 px-2 font-mono text-xs font-normal ${
                         repositoryRequired
-                          ? "bg-amber-50 text-amber-900 ring-2 ring-amber-400/70 hover:bg-amber-100"
+                          ? "bg-warning-muted text-warning ring-2 ring-warning-border hover:bg-warning-muted/80"
                           : "text-muted-foreground"
                       }`}
                       title={workspacePath || "Select repository"}
@@ -1380,7 +1425,7 @@ export default function App() {
                       <Input
                         className={`h-7 w-36 border-0 bg-transparent px-0 font-mono text-xs shadow-none sm:w-52 ${
                           repositoryRequired
-                            ? "bg-amber-50 px-2 text-amber-900 ring-2 ring-amber-400/70"
+                            ? "bg-warning-muted px-2 text-warning ring-2 ring-warning-border"
                             : "focus-visible:ring-0"
                         }`}
                         value={workspacePath}
@@ -1517,12 +1562,16 @@ export default function App() {
                           isFailedEvent
                             ? "border-destructive/30 bg-destructive/5"
                             : runtimeEvent.type === "tool.completed"
-                              ? "border-emerald-200 bg-emerald-50"
+                              ? "border-success-border bg-success-muted"
                               : "bg-card"
                         }`}
                       >
                         <p className={`text-[10px] font-semibold uppercase tracking-[0.12em] ${
-                          isFailedEvent ? "text-destructive" : "text-muted-foreground"
+                          isFailedEvent
+                            ? "text-destructive"
+                            : runtimeEvent.type === "tool.completed"
+                              ? "text-success"
+                              : "text-muted-foreground"
                         }`}>
                           {runtimeEvent.type.replaceAll(".", " ")}
                         </p>
@@ -1541,7 +1590,7 @@ export default function App() {
                               </pre>
                             ) : null}
                             {result?.error ? (
-                              <p className="text-xs text-red-700">{String(result.error)}</p>
+                              <p className="text-xs text-destructive">{String(result.error)}</p>
                             ) : null}
                           </div>
                         ) : (
@@ -1631,9 +1680,9 @@ export default function App() {
                     </p>
                   </section>
                   <div className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-lg border bg-card p-3 text-[10px] text-muted-foreground">
-                    <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-blue-500" />Pinned</span>
-                    <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-emerald-500" />Included</span>
-                    <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-amber-500" />Truncated</span>
+                    <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-info-indicator" />Pinned</span>
+                    <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-success-indicator" />Included</span>
+                    <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-warning-indicator" />Truncated</span>
                     <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-muted-foreground" />Excluded</span>
                   </div>
                   <div className="space-y-1.5">
@@ -1644,7 +1693,7 @@ export default function App() {
                       <button
                         aria-expanded={message.expandable ? expanded : undefined}
                         className={`block w-full rounded-lg border bg-card p-3 text-left ${
-                          message.included ? "" : "opacity-45"
+                          message.included ? "" : "opacity-70"
                         } ${message.expandable ? "cursor-pointer hover:bg-accent/40" : "cursor-default"}`}
                         disabled={!message.expandable}
                         key={message.index}
@@ -1682,10 +1731,10 @@ export default function App() {
                             !message.included
                               ? "bg-muted-foreground"
                               : message.truncated
-                                ? "bg-amber-500"
+                                ? "bg-warning-indicator"
                                 : message.pinned
-                                  ? "bg-blue-500"
-                                  : "bg-emerald-500"
+                                  ? "bg-info-indicator"
+                                  : "bg-success-indicator"
                           }`} />
                           <span className="text-[10px] font-semibold uppercase tracking-[0.12em]">
                             {message.name || message.role}
@@ -1708,8 +1757,8 @@ export default function App() {
                             !message.included
                               ? "text-muted-foreground"
                               : message.truncated
-                                ? "text-amber-700"
-                                : "text-blue-700"
+                                ? "text-warning"
+                                : "text-info"
                           }`}>
                             {message.truncated
                               ? message.pinned ? "Pinned | truncated" : "Truncated to fit"

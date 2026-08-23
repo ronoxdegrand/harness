@@ -2,7 +2,7 @@ const { randomBytes } = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { app, BrowserWindow, dialog, ipcMain, safeStorage, session } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, session } = require("electron");
 const { autoUpdater } = require("electron-updater");
 
 const { startBackend, stopBackend } = require("./backend");
@@ -20,6 +20,10 @@ function normalizeScale(scale) {
   return Math.min(Math.max(Math.round((Number(scale) || 1) * 10) / 10, MIN_SCALE), MAX_SCALE);
 }
 
+function normalizeAppearance(appearance) {
+  return appearance === "dark" || appearance === "system" ? appearance : "light";
+}
+
 function updateWindowChrome(scale) {
   const headerHeight = Math.max(Math.round(56 * scale) - 1, 28);
   if (process.platform === "darwin") {
@@ -28,12 +32,19 @@ function updateWindowChrome(scale) {
       y: Math.max(Math.round(28 * scale - 7), 4),
     });
   } else {
+    const dark = nativeTheme.shouldUseDarkColors;
     mainWindow.setTitleBarOverlay({
-      color: "#fafaf7",
-      symbolColor: "#1b1b1a",
+      color: dark ? "#1b1c1a" : "#fafaf7",
+      symbolColor: dark ? "#ecece7" : "#1b1b1a",
       height: headerHeight,
     });
   }
+}
+
+function setAppearance(appearance) {
+  nativeTheme.themeSource = normalizeAppearance(appearance);
+  updateWindowChrome(mainWindow.webContents.getZoomFactor());
+  return nativeTheme.themeSource;
 }
 
 function setScale(scale) {
@@ -67,6 +78,9 @@ if (smokeTest) {
 }
 
 async function createWindow() {
+  const settings = readSettings(settingsPath, safeStorage);
+  nativeTheme.themeSource = normalizeAppearance(settings.appearance);
+  const dark = nativeTheme.shouldUseDarkColors;
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -79,8 +93,8 @@ async function createWindow() {
       ? { trafficLightPosition: { x: 16, y: 20 } }
       : {
           titleBarOverlay: {
-            color: "#fafaf7",
-            symbolColor: "#1b1b1a",
+            color: dark ? "#1b1c1a" : "#fafaf7",
+            symbolColor: dark ? "#ecece7" : "#1b1b1a",
             height: 56,
           },
         }),
@@ -91,9 +105,12 @@ async function createWindow() {
       sandbox: true,
     },
   });
-  const scale = normalizeScale(readSettings(settingsPath, safeStorage).scale);
+  const scale = normalizeScale(settings.scale);
   mainWindow.webContents.setZoomFactor(scale);
   updateWindowChrome(scale);
+  nativeTheme.on("updated", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) updateWindowChrome(mainWindow.webContents.getZoomFactor());
+  });
   mainWindow.once("ready-to-show", () => mainWindow.show());
   let timeout;
   try {
@@ -266,6 +283,7 @@ ipcMain.handle("desktop:set-settings", (_event, settings) => {
   writeSettings(settingsPath, settings, safeStorage);
 });
 ipcMain.handle("desktop:set-scale", (_event, scale) => setScale(scale));
+ipcMain.handle("desktop:set-appearance", (_event, appearance) => setAppearance(appearance));
 ipcMain.handle("desktop:select-repository", async (_event, currentPath) => {
   const result = await dialog.showOpenDialog(mainWindow, {
     title: "Select repository",

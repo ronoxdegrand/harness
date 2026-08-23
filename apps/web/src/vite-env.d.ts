@@ -8,6 +8,7 @@ interface DesktopSettings {
   activityWidth: number;
   contextWidth: number;
   scale: number;
+  appearance: "light" | "dark" | "system";
 }
 
 interface Window {
@@ -19,6 +20,7 @@ interface Window {
     getSettings(): Promise<Partial<DesktopSettings>>;
     setSettings(settings: DesktopSettings): Promise<void>;
     setScale(scale: number): Promise<number>;
+    setAppearance(appearance: DesktopSettings["appearance"]): Promise<string>;
     selectRepository(currentPath: string): Promise<string | undefined>;
     onScaleChanged(callback: (scale: number) => void): () => void;
   };

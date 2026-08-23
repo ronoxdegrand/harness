@@ -27,6 +27,7 @@ test("desktop settings persist with an encrypted API key", () => {
     activityWidth: 400,
     contextWidth: 350,
     scale: 0.9,
+    appearance: "dark",
   };
   try {
     writeSettings(file, settings, encryption);

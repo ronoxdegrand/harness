@@ -31,6 +31,7 @@ function writeSettings(file, settings, encryption) {
     activityWidth: settings.activityWidth,
     contextWidth: settings.contextWidth,
     scale: settings.scale,
+    appearance: settings.appearance,
   };
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(`${file}.tmp`, JSON.stringify(saved));
