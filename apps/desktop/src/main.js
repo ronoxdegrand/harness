@@ -2,15 +2,47 @@ const { randomBytes } = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { app, BrowserWindow, dialog, ipcMain, session } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, safeStorage, session } = require("electron");
 const { autoUpdater } = require("electron-updater");
 
 const { startBackend, stopBackend } = require("./backend");
+const { readSettings, writeSettings } = require("./settings");
 
 let backend;
 let mainWindow;
+let workspaceRoot;
 let quitting = false;
 let updateVersion;
+const MIN_SCALE = 0.5;
+const MAX_SCALE = 2;
+
+function normalizeScale(scale) {
+  return Math.min(Math.max(Math.round((Number(scale) || 1) * 10) / 10, MIN_SCALE), MAX_SCALE);
+}
+
+function updateWindowChrome(scale) {
+  const headerHeight = Math.max(Math.round(56 * scale) - 1, 28);
+  if (process.platform === "darwin") {
+    mainWindow.setWindowButtonPosition({
+      x: 16,
+      y: Math.max(Math.round(28 * scale - 7), 4),
+    });
+  } else {
+    mainWindow.setTitleBarOverlay({
+      color: "#fafaf7",
+      symbolColor: "#1b1b1a",
+      height: headerHeight,
+    });
+  }
+}
+
+function setScale(scale) {
+  const normalized = normalizeScale(scale);
+  mainWindow.webContents.setZoomFactor(normalized);
+  updateWindowChrome(normalized);
+  mainWindow.webContents.send("desktop:scale-changed", normalized);
+  return normalized;
+}
 
 const smokeTest =
   process.env.HARNESS_DESKTOP_SMOKE_TEST === "1" || process.argv.includes("--harness-smoke-test");
@@ -18,6 +50,10 @@ const userDataArgument = process.argv.find((argument) => argument.startsWith("--
 const desktopUserData =
   process.env.HARNESS_DESKTOP_USER_DATA || userDataArgument?.slice("--harness-user-data=".length);
 if (desktopUserData) app.setPath("userData", desktopUserData);
+else if (!app.isPackaged) app.setPath("userData", path.join(app.getPath("appData"), "AI Agent Harness Dev"));
+
+const settingsPath = path.join(app.getPath("userData"), "settings.json");
+fs.mkdirSync(app.getPath("userData"), { recursive: true });
 
 function reportSmoke(stage) {
   if (!smokeTest) return;
@@ -37,6 +73,17 @@ async function createWindow() {
     minWidth: 900,
     minHeight: 600,
     show: false,
+    icon: app.isPackaged ? undefined : path.join(__dirname, "../assets/icon.png"),
+    titleBarStyle: "hidden",
+    ...(process.platform === "darwin"
+      ? { trafficLightPosition: { x: 16, y: 20 } }
+      : {
+          titleBarOverlay: {
+            color: "#fafaf7",
+            symbolColor: "#1b1b1a",
+            height: 56,
+          },
+        }),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -44,6 +91,9 @@ async function createWindow() {
       sandbox: true,
     },
   });
+  const scale = normalizeScale(readSettings(settingsPath, safeStorage).scale);
+  mainWindow.webContents.setZoomFactor(scale);
+  updateWindowChrome(scale);
   mainWindow.once("ready-to-show", () => mainWindow.show());
   let timeout;
   try {
@@ -59,6 +109,9 @@ async function createWindow() {
 }
 
 async function start() {
+  if (!app.isPackaged && process.platform === "darwin") {
+    app.dock.setIcon(path.join(__dirname, "../assets/icon.png"));
+  }
   const root = app.isPackaged ? undefined : path.resolve(__dirname, "../../..");
   const executable = app.isPackaged
     ? path.join(
@@ -68,15 +121,16 @@ async function start() {
       )
     : path.join(root, ".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
   const token = randomBytes(32).toString("hex");
-  const workspaceRoot = process.env.HARNESS_WORKSPACE_ROOT || root || process.cwd();
+  workspaceRoot = process.env.HARNESS_WORKSPACE_ROOT || root || process.cwd();
   const webPath = app.isPackaged
     ? path.join(process.resourcesPath, "web")
     : path.join(root, "apps", "web", "dist");
   const environment = {
     ...process.env,
-    HARNESS_APP_ENV: "production",
+    HARNESS_APP_ENV: app.isPackaged ? "production" : "development",
     HARNESS_APP_VERSION: app.getVersion(),
     HARNESS_AUTH_TOKEN: token,
+    HARNESS_ALLOW_ABSOLUTE_WORKSPACES: "true",
     HARNESS_HOST: "127.0.0.1",
     HARNESS_PORT: "0",
     HARNESS_SQLITE_PATH: path.join(app.getPath("userData"), "harness.db"),
@@ -207,3 +261,19 @@ ipcMain.handle("desktop:restart-to-update", async () => {
 });
 
 ipcMain.handle("desktop:get-update", () => updateVersion);
+ipcMain.handle("desktop:get-settings", () => readSettings(settingsPath, safeStorage));
+ipcMain.handle("desktop:set-settings", (_event, settings) => {
+  writeSettings(settingsPath, settings, safeStorage);
+});
+ipcMain.handle("desktop:set-scale", (_event, scale) => setScale(scale));
+ipcMain.handle("desktop:select-repository", async (_event, currentPath) => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Select repository",
+    buttonLabel: "Select repository",
+    defaultPath: typeof currentPath === "string" && path.isAbsolute(currentPath)
+      ? currentPath
+      : workspaceRoot,
+    properties: ["openDirectory"],
+  });
+  return result.canceled ? undefined : result.filePaths[0];
+});

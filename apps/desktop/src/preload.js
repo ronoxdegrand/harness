@@ -9,4 +9,13 @@ contextBridge.exposeInMainWorld("harnessDesktop", {
   },
   getUpdateReady: () => ipcRenderer.invoke("desktop:get-update"),
   restartToUpdate: () => ipcRenderer.invoke("desktop:restart-to-update"),
+  getSettings: () => ipcRenderer.invoke("desktop:get-settings"),
+  setSettings: (settings) => ipcRenderer.invoke("desktop:set-settings", settings),
+  setScale: (scale) => ipcRenderer.invoke("desktop:set-scale", scale),
+  selectRepository: (currentPath) => ipcRenderer.invoke("desktop:select-repository", currentPath),
+  onScaleChanged(callback) {
+    const listener = (_event, scale) => callback(scale);
+    ipcRenderer.on("desktop:scale-changed", listener);
+    return () => ipcRenderer.removeListener("desktop:scale-changed", listener);
+  },
 });

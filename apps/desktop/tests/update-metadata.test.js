@@ -25,3 +25,17 @@ test("packaged artifact names are safe for GitHub release uploads", () => {
   const config = fs.readFileSync(path.resolve(__dirname, "../electron-builder.yml"), "utf8");
   assert.match(config, /^artifactName: [a-z0-9${}._-]+$/m);
 });
+
+test("packaged apps use the web favicon", () => {
+  const config = fs.readFileSync(path.resolve(__dirname, "../electron-builder.yml"), "utf8");
+  const favicon = path.resolve(__dirname, "../../web/public/favicon.svg");
+  assert.equal(config.match(/^  icon: \.\.\/web\/public\/favicon\.svg$/gm)?.length, 3);
+  assert.equal(fs.existsSync(favicon), true);
+});
+
+test("development uses a native-image-compatible favicon", () => {
+  const main = fs.readFileSync(path.resolve(__dirname, "../src/main.js"), "utf8");
+  const icon = path.resolve(__dirname, "../assets/icon.png");
+  assert.match(main, /assets\/icon\.png/);
+  assert.equal(fs.existsSync(icon), true);
+});

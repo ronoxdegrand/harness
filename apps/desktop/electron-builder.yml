@@ -14,16 +14,19 @@ extraResources:
   - from: ../web/dist
     to: web
 win:
+  icon: ../web/public/favicon.svg
   target:
     - target: nsis
       arch: [x64]
 mac:
+  icon: ../web/public/favicon.svg
   target:
     - target: dmg
       arch: [arm64]
     - target: zip
       arch: [arm64]
 linux:
+  icon: ../web/public/favicon.svg
   executableName: ai-agent-harness
   syncDesktopName: true
   category: Development

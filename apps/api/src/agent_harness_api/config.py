@@ -10,11 +10,12 @@ DEFAULT_MODEL = "gemini-3-flash"
 class Settings(BaseSettings):
     app_name: str = "AI Agent Harness API"
     app_env: str = "development"
-    app_version: str = "0.1.11"
+    app_version: str = "0.2.0"
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=0, le=65535)
     auth_token: str | None = None
     workspace_root: Path = Path(__file__).resolve().parents[4]
+    allow_absolute_workspaces: bool = False
     sqlite_path: Path = Path(__file__).resolve().parents[2] / "data" / "app.db"
     web_dist_path: Path | None = None
     gemini_api_key: str | None = Field(

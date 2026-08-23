@@ -1,12 +1,13 @@
 {
   "name": "@ai-agent-harness/desktop",
   "desktopName": "ai-agent-harness.desktop",
-  "version": "0.1.11",
+  "version": "0.2.0",
   "description": "Desktop shell for AI Agent Harness.",
   "author": "ronoxdegrand",
   "private": true,
   "main": "src/main.js",
   "scripts": {
+    "prestart": "npm --workspace @ai-agent-harness/web run build",
     "start": "electron .",
     "test": "node --test tests/*.test.js",
     "package": "electron-builder --publish never"

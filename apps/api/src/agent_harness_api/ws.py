@@ -18,10 +18,21 @@ from .store import RunStore, Thread, thread_title_from_prompt
 from .tools import ToolExecutor, build_default_tool_registry
 
 
-def resolve_workspace_path(workspace_root: Path, workspace_path: str) -> Path:
+def resolve_workspace_path(
+    workspace_root: Path, workspace_path: str, allow_absolute: bool = False
+) -> Path:
     resolved_root = workspace_root.resolve()
-    resolved_target = (resolved_root / workspace_path).resolve()
-    if resolved_target != resolved_root and resolved_root not in resolved_target.parents:
+    requested_path = Path(workspace_path)
+    resolved_target = (
+        requested_path.resolve()
+        if allow_absolute and requested_path.is_absolute()
+        else (resolved_root / requested_path).resolve()
+    )
+    if (
+        not (allow_absolute and requested_path.is_absolute())
+        and resolved_target != resolved_root
+        and resolved_root not in resolved_target.parents
+    ):
         raise ValueError("Workspace path escapes the configured workspace root.")
     return resolved_target
 
@@ -142,12 +153,20 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
             return
         target_path = Path(thread.workspace_path).resolve()
         root = settings.workspace_root.resolve()
-        if target_path != root and root not in target_path.parents:
+        if (
+            not settings.allow_absolute_workspaces
+            and target_path != root
+            and root not in target_path.parents
+        ):
             await _fail_run(websocket, "Thread workspace escapes the configured workspace root.")
             return
     else:
         try:
-            target_path = resolve_workspace_path(settings.workspace_root, workspace_path)
+            target_path = resolve_workspace_path(
+                settings.workspace_root,
+                workspace_path,
+                settings.allow_absolute_workspaces,
+            )
         except ValueError as exc:
             await _fail_run(websocket, str(exc))
             return

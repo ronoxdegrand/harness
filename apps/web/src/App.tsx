@@ -2,7 +2,7 @@ import { type CSSProperties, FormEvent, Fragment, type PointerEvent as ReactPoin
 import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { Select as SelectPrimitive } from "@base-ui/react/select";
-import { Check, ChevronUp, Copy, Layers3, LoaderCircle, Minimize2, PanelLeft, Pencil, Plus, RefreshCw, Send, Settings2, Trash2 } from "lucide-react";
+import { Check, ChevronUp, Copy, FolderGit2, Layers3, LoaderCircle, Minus, Minimize2, PanelLeft, Pencil, Plus, RefreshCw, Send, Settings2, Trash2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -55,6 +55,7 @@ type RuntimeEvent = {
 type ThreadSummary = {
   id: string;
   title: string;
+  workspace_path: string;
   model_name: string;
   created_at: string;
   updated_at: string;
@@ -148,17 +149,30 @@ function countIterations(events: RuntimeEvent[]) {
 }
 
 export default function App() {
+  const desktop = window.harnessDesktop;
+  const macDesktop = desktop?.platform === "darwin";
+  const desktopWindowControls = Boolean(desktop && !macDesktop);
   const [task, setTask] = useState("");
   const [workspacePath, setWorkspacePath] = useState(".");
   const [modelName, setModelName] = useState(MODEL_OPTIONS[0]);
-  const [apiKey, setApiKey] = useState(() => sessionStorage.getItem("gemini-api-key") || "");
-  const [maxIterations, setMaxIterations] = useState(() =>
-    Math.min(Math.max(Number(localStorage.getItem("max-iterations")) || 8, 1), 50),
+  const [apiKey, setApiKey] = useState(() =>
+    desktop ? "" : sessionStorage.getItem("gemini-api-key") || "",
   );
-  const [sendOnEnter, setSendOnEnter] = useState(() => localStorage.getItem("send-on-enter") !== "false");
+  const [maxIterations, setMaxIterations] = useState(() =>
+    desktop ? 8 : Math.min(Math.max(Number(localStorage.getItem("max-iterations")) || 8, 1), 50),
+  );
+  const [sendOnEnter, setSendOnEnter] = useState(
+    () => Boolean(desktop) || localStorage.getItem("send-on-enter") !== "false",
+  );
+  const [uiScale, setUiScale] = useState(1);
+  const [settingsLoaded, setSettingsLoaded] = useState(!desktop);
   const [lastUsedModel, setLastUsedModel] = useState(MODEL_OPTIONS[0]);
   const [status, setStatus] = useState("idle");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [apiKeyDraft, setApiKeyDraft] = useState(apiKey);
+  const [maxIterationsDraft, setMaxIterationsDraft] = useState(maxIterations);
+  const [sendOnEnterDraft, setSendOnEnterDraft] = useState(sendOnEnter);
+  const [uiScaleDraft, setUiScaleDraft] = useState(uiScale);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [updateVersion, setUpdateVersion] = useState<string>();
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
@@ -174,13 +188,28 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarPreviewOpen, setSidebarPreviewOpen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(() =>
-    Math.min(Math.max(Number(localStorage.getItem("sidebar-width")) || DEFAULT_SIDEBAR_WIDTH, 220), MAX_SIDEBAR_WIDTH),
+    desktop
+      ? DEFAULT_SIDEBAR_WIDTH
+      : Math.min(
+          Math.max(Number(localStorage.getItem("sidebar-width")) || DEFAULT_SIDEBAR_WIDTH, 220),
+          MAX_SIDEBAR_WIDTH,
+        ),
   );
   const [activityWidth, setActivityWidth] = useState(() =>
-    Math.min(Math.max(Number(localStorage.getItem("activity-width")) || DEFAULT_ACTIVITY_WIDTH, 280), MAX_ACTIVITY_WIDTH),
+    desktop
+      ? DEFAULT_ACTIVITY_WIDTH
+      : Math.min(
+          Math.max(Number(localStorage.getItem("activity-width")) || DEFAULT_ACTIVITY_WIDTH, 280),
+          MAX_ACTIVITY_WIDTH,
+        ),
   );
   const [contextWidth, setContextWidth] = useState(() =>
-    Math.min(Math.max(Number(localStorage.getItem("context-width")) || DEFAULT_CONTEXT_WIDTH, 280), MAX_CONTEXT_WIDTH),
+    desktop
+      ? DEFAULT_CONTEXT_WIDTH
+      : Math.min(
+          Math.max(Number(localStorage.getItem("context-width")) || DEFAULT_CONTEXT_WIDTH, 280),
+          MAX_CONTEXT_WIDTH,
+        ),
   );
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -217,34 +246,88 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!window.harnessDesktop) return;
-    void window.harnessDesktop.getUpdateReady().then(setUpdateVersion);
-    return window.harnessDesktop.onUpdateReady(setUpdateVersion);
+    if (!desktop) return;
+    void desktop.getUpdateReady().then(setUpdateVersion);
+    return desktop.onUpdateReady(setUpdateVersion);
   }, []);
 
   useEffect(() => {
-    localStorage.setItem("sidebar-width", String(sidebarWidth));
-  }, [sidebarWidth]);
+    if (!desktop) return;
+    void desktop.getSettings().then(
+      (settings) => {
+        setApiKey(settings.apiKey ?? sessionStorage.getItem("gemini-api-key") ?? "");
+        setMaxIterations(
+          settings.maxIterations ??
+            Math.min(Math.max(Number(localStorage.getItem("max-iterations")) || 8, 1), 50),
+        );
+        setSendOnEnter(settings.sendOnEnter ?? localStorage.getItem("send-on-enter") !== "false");
+        setUiScale(settings.scale ?? 1);
+        setSidebarWidth(
+          settings.sidebarWidth ??
+            Math.min(
+              Math.max(Number(localStorage.getItem("sidebar-width")) || DEFAULT_SIDEBAR_WIDTH, 220),
+              MAX_SIDEBAR_WIDTH,
+            ),
+        );
+        setActivityWidth(
+          settings.activityWidth ??
+            Math.min(
+              Math.max(Number(localStorage.getItem("activity-width")) || DEFAULT_ACTIVITY_WIDTH, 280),
+              MAX_ACTIVITY_WIDTH,
+            ),
+        );
+        setContextWidth(
+          settings.contextWidth ??
+            Math.min(
+              Math.max(Number(localStorage.getItem("context-width")) || DEFAULT_CONTEXT_WIDTH, 280),
+              MAX_CONTEXT_WIDTH,
+            ),
+        );
+        setSettingsLoaded(true);
+      },
+      (reason) => setError(`Could not load settings: ${String(reason)}`),
+    );
+  }, []);
 
   useEffect(() => {
-    localStorage.setItem("activity-width", String(activityWidth));
-  }, [activityWidth]);
-
-  useEffect(() => {
-    localStorage.setItem("context-width", String(contextWidth));
-  }, [contextWidth]);
-
-  useEffect(() => {
+    if (!settingsLoaded) return;
+    if (desktop) {
+      void desktop
+        .setSettings({
+          apiKey,
+          maxIterations,
+          sendOnEnter,
+          sidebarWidth,
+          activityWidth,
+          contextWidth,
+          scale: uiScale,
+        })
+        .then(() => {
+          sessionStorage.removeItem("gemini-api-key");
+          localStorage.removeItem("max-iterations");
+          localStorage.removeItem("send-on-enter");
+          localStorage.removeItem("sidebar-width");
+          localStorage.removeItem("activity-width");
+          localStorage.removeItem("context-width");
+        })
+        .catch((reason) => setError(`Could not save settings: ${String(reason)}`));
+      return;
+    }
     sessionStorage.setItem("gemini-api-key", apiKey);
-  }, [apiKey]);
-
-  useEffect(() => {
     localStorage.setItem("max-iterations", String(maxIterations));
-  }, [maxIterations]);
+    localStorage.setItem("send-on-enter", String(sendOnEnter));
+    localStorage.setItem("sidebar-width", String(sidebarWidth));
+    localStorage.setItem("activity-width", String(activityWidth));
+    localStorage.setItem("context-width", String(contextWidth));
+  }, [activityWidth, apiKey, contextWidth, desktop, maxIterations, sendOnEnter, settingsLoaded, sidebarWidth, uiScale]);
 
   useEffect(() => {
-    localStorage.setItem("send-on-enter", String(sendOnEnter));
-  }, [sendOnEnter]);
+    if (!desktop) return;
+    return desktop.onScaleChanged((scale) => {
+      setUiScale(scale);
+      setUiScaleDraft(scale);
+    });
+  }, []);
 
   useEffect(() => {
     function closeShortcuts() {
@@ -269,7 +352,24 @@ export default function App() {
         window.clearTimeout(shortcutTimerRef.current);
         shortcutTimerRef.current = null;
       }
-      if (event.key === "Escape") setActivityOpen(false);
+      if (event.key === "Escape") {
+        setActivityOpen(false);
+        setSettingsOpen(false);
+        setShortcutsOpen(false);
+        setThreadToDelete(null);
+        setError("");
+      }
+      if (desktop && modifierHeld && ["-", "=", "+", "0"].includes(event.key)) {
+        event.preventDefault();
+        setUiScale((scale) => {
+          const nextScale = event.key === "0"
+            ? 1
+            : Math.min(Math.max(Math.round((scale + (event.key === "-" ? -0.1 : 0.1)) * 10) / 10, 0.5), 2);
+          void desktop.setScale(nextScale);
+          return nextScale;
+        });
+        return;
+      }
       if (!modifierHeld || event.key.toLowerCase() !== "b") return;
 
       event.preventDefault();
@@ -285,12 +385,12 @@ export default function App() {
       if (event.key === SHORTCUT_KEY) closeShortcuts();
     }
 
-    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keydown", handleKeyDown, true);
     window.addEventListener("keyup", handleKeyUp);
     window.addEventListener("blur", closeShortcuts);
     return () => {
       if (shortcutTimerRef.current !== null) window.clearTimeout(shortcutTimerRef.current);
-      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keydown", handleKeyDown, true);
       window.removeEventListener("keyup", handleKeyUp);
       window.removeEventListener("blur", closeShortcuts);
     };
@@ -310,6 +410,7 @@ export default function App() {
         const latestModel = selectableModel(payload.threads[0].model_name);
         setModelName(latestModel);
         setLastUsedModel(latestModel);
+        setWorkspacePath(payload.threads[0].workspace_path);
       }
     } catch {
       setError("Could not load threads. Is the API running?");
@@ -325,6 +426,7 @@ export default function App() {
       }
       const payload = await readJson<ThreadDetail>(response);
       setActiveThread(payload.thread);
+      setWorkspacePath(payload.thread.workspace_path);
       setModelName(selectableModel(payload.thread.model_name));
       setThreadTurns(payload.turns);
       setEvents(payload.events);
@@ -357,6 +459,7 @@ export default function App() {
     setTask("");
     setNewThreadTitle(null);
     setModelName(lastUsedModel);
+    setWorkspacePath(threads[0]?.workspace_path ?? workspacePath);
   }
 
   async function renameActiveThread(event: FormEvent<HTMLFormElement>) {
@@ -454,6 +557,7 @@ export default function App() {
 
       if (payload.kind === "thread.opened") {
         setActiveThread(payload.payload.thread);
+        setWorkspacePath(payload.payload.thread.workspace_path);
         setThreadTurns((current) => {
           const pending = current.at(-1);
           if (pending?.role !== "user" || pending.run_id !== null) return current;
@@ -627,7 +731,10 @@ export default function App() {
               }
             }}
           >
-          <header className="flex h-14 shrink-0 items-center gap-1.5 border-b px-3">
+          <header
+            className={`flex h-14 shrink-0 items-center gap-1.5 border-b px-3 ${desktop ? "titlebar-drag" : ""}`}
+            style={macDesktop ? { paddingLeft: `${80 / uiScale}px` } : undefined}
+          >
                 <Button
                   aria-label={sidebarPreviewOpen ? "Pin sidebar" : "Collapse sidebar"}
                   className="size-10 shrink-0 bg-card"
@@ -672,8 +779,11 @@ export default function App() {
                     >
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm">{thread.title}</span>
-                        <span className="mt-1 block text-xs text-muted-foreground">
-                          {formatTimestamp(thread.updated_at)}
+                        <span
+                          className="mt-1 block overflow-hidden text-ellipsis whitespace-nowrap text-left font-mono text-xs text-muted-foreground [direction:rtl]"
+                          title={thread.workspace_path}
+                        >
+                          {thread.workspace_path}
                         </span>
                       </span>
                     </Button>
@@ -716,9 +826,14 @@ export default function App() {
         ) : null}
 
         <section className="relative flex min-h-0 min-w-0 flex-col bg-background lg:grid lg:h-screen lg:grid-cols-1 lg:grid-rows-[56px_minmax(0,1fr)_auto]">
-          <header className="relative z-30 col-start-1 row-start-1 flex h-14 shrink-0 items-center border-b bg-background px-4 sm:px-5">
+          <header
+            className={`relative z-30 col-start-1 row-start-1 flex h-14 shrink-0 items-center border-b bg-background px-4 sm:px-5 ${desktop ? "titlebar-drag" : ""}`}
+          >
             {!sidebarPinnedOpen ? (
-              <div className="absolute left-3 flex shrink-0 items-center gap-1">
+              <div
+                className={`absolute flex shrink-0 items-center gap-1 ${macDesktop && !sidebarOpen ? "" : "left-3"}`}
+                style={macDesktop && !sidebarOpen ? { left: `${80 / uiScale}px` } : undefined}
+              >
                 <Button
                   aria-label="Expand sidebar"
                   className="size-10 bg-card"
@@ -789,7 +904,10 @@ export default function App() {
                 </div>
               )}
             </div>
-            <div className="absolute right-3 flex items-center gap-1">
+            <div
+              className={`absolute flex items-center gap-1 ${desktopWindowControls && !contextOpen ? "" : "right-3"}`}
+              style={desktopWindowControls && !contextOpen ? { right: `${144 / uiScale}px` } : undefined}
+            >
               {updateVersion ? (
                 <Button
                   className="h-10 gap-2 bg-card"
@@ -801,7 +919,18 @@ export default function App() {
                   Restart to update
                 </Button>
               ) : null}
-              <DialogPrimitive.Root open={settingsOpen} onOpenChange={setSettingsOpen}>
+              <DialogPrimitive.Root
+                open={settingsOpen}
+                onOpenChange={(open) => {
+                  if (open) {
+                    setApiKeyDraft(apiKey);
+                    setMaxIterationsDraft(maxIterations);
+                    setSendOnEnterDraft(sendOnEnter);
+                    setUiScaleDraft(uiScale);
+                  }
+                  setSettingsOpen(open);
+                }}
+              >
                 <DialogPrimitive.Trigger
                   render={
                     <Button
@@ -822,65 +951,111 @@ export default function App() {
                   />
                   <DialogPrimitive.Viewport className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center p-4">
                     <DialogPrimitive.Popup className="pointer-events-auto w-full max-w-sm rounded-xl border bg-card p-4 text-card-foreground shadow-xl outline-none">
-                      <DialogPrimitive.Title className="text-sm font-semibold">Settings</DialogPrimitive.Title>
-                      <DialogPrimitive.Description className="mt-1 text-xs leading-5 text-muted-foreground">
-                        Applied to new runs.
-                      </DialogPrimitive.Description>
-                      <div className="mt-4 space-y-4">
-                        <label className="block space-y-1.5 text-xs font-medium">
-                          <span>Gemini API key</span>
-                          <Input
-                            autoComplete="off"
-                            placeholder="Use server key when empty"
-                            type="password"
-                            value={apiKey}
-                            onChange={(event) => setApiKey(event.target.value)}
-                          />
-                          <span className="block font-normal leading-4 text-muted-foreground">
-                            Kept only in this browser tab.
-                          </span>
-                        </label>
-                        <label className="block space-y-1.5 text-xs font-medium">
-                          <span>Max iterations</span>
-                          <Input
-                            max={50}
-                            min={1}
-                            type="number"
-                            value={maxIterations}
-                            onChange={(event) => {
-                              const value = Number(event.target.value);
-                              if (Number.isInteger(value)) setMaxIterations(Math.min(Math.max(value, 1), 50));
-                            }}
-                          />
-                        </label>
-                        <div className="space-y-1.5 text-xs font-medium">
-                          <span>Message input</span>
-                          <div className="grid grid-cols-2 gap-2">
-                            <Button
-                              size="sm"
-                              type="button"
-                              variant={sendOnEnter ? "default" : "outline"}
-                              onClick={() => setSendOnEnter(true)}
-                            >
-                              Enter sends
-                            </Button>
-                            <Button
-                              size="sm"
-                              type="button"
-                              variant={sendOnEnter ? "outline" : "default"}
-                              onClick={() => setSendOnEnter(false)}
-                            >
-                              Shift+Enter sends
-                            </Button>
+                      <form
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          setApiKey(apiKeyDraft);
+                          setMaxIterations(maxIterationsDraft);
+                          setSendOnEnter(sendOnEnterDraft);
+                          setUiScale(uiScaleDraft);
+                          void desktop?.setScale(uiScaleDraft);
+                          setSettingsOpen(false);
+                        }}
+                      >
+                        <DialogPrimitive.Title className="text-sm font-semibold">Settings</DialogPrimitive.Title>
+                        <DialogPrimitive.Description className="sr-only">
+                          Changes are saved only when Done is selected.
+                        </DialogPrimitive.Description>
+                        <div className="mt-4 space-y-4">
+                          <label className="block space-y-1.5 text-xs font-medium">
+                            <span>Gemini API key</span>
+                            <Input
+                              autoComplete="off"
+                              placeholder="Use server key when empty"
+                              type="password"
+                              value={apiKeyDraft}
+                              onChange={(event) => setApiKeyDraft(event.target.value)}
+                            />
+                          </label>
+                          <label className="block space-y-1.5 text-xs font-medium">
+                            <span>Max iterations</span>
+                            <Input
+                              max={50}
+                              min={1}
+                              type="number"
+                              value={maxIterationsDraft}
+                              onChange={(event) => {
+                                const value = Number(event.target.value);
+                                if (Number.isInteger(value)) {
+                                  setMaxIterationsDraft(Math.min(Math.max(value, 1), 50));
+                                }
+                              }}
+                            />
+                          </label>
+                          {desktop ? (
+                            <div className="space-y-2 text-xs font-medium">
+                              <span>Scale</span>
+                              <div className="grid grid-cols-[40px_minmax(0,1fr)_40px] gap-2">
+                                <Button
+                                  aria-label="Zoom out"
+                                  disabled={uiScaleDraft <= 0.5}
+                                  size="icon"
+                                  type="button"
+                                  variant="outline"
+                                  onClick={() => setUiScaleDraft((scale) => Math.max(scale - 0.1, 0.5))}
+                                >
+                                  <Minus aria-hidden="true" className="size-4" />
+                                </Button>
+                                <div className="flex h-10 items-center justify-center rounded-md border bg-muted font-mono text-sm">
+                                  {Math.round(uiScaleDraft * 100)}%
+                                </div>
+                                <Button
+                                  aria-label="Zoom in"
+                                  disabled={uiScaleDraft >= 2}
+                                  size="icon"
+                                  type="button"
+                                  variant="outline"
+                                  onClick={() => setUiScaleDraft((scale) => Math.min(scale + 0.1, 2))}
+                                >
+                                  <Plus aria-hidden="true" className="size-4" />
+                                </Button>
+                              </div>
+                            </div>
+                          ) : null}
+                          <div className="space-y-2 text-xs font-medium">
+                            <span>Message input</span>
+                            <div className="grid gap-2" role="group" aria-label="Message input shortcut">
+                              <Button
+                                aria-pressed={sendOnEnterDraft}
+                                className="h-auto w-full justify-between gap-3 px-3 py-2"
+                                type="button"
+                                variant={sendOnEnterDraft ? "default" : "outline"}
+                                onClick={() => setSendOnEnterDraft(true)}
+                              >
+                                <kbd className="shrink-0 rounded border bg-muted px-2 py-1 font-mono text-xs text-foreground">
+                                  Enter
+                                </kbd>
+                                <span>{sendOnEnterDraft ? "Sends" : "New line"}</span>
+                              </Button>
+                              <Button
+                                aria-pressed={!sendOnEnterDraft}
+                                className="h-auto w-full justify-between gap-3 px-3 py-2"
+                                type="button"
+                                variant={sendOnEnterDraft ? "outline" : "default"}
+                                onClick={() => setSendOnEnterDraft(false)}
+                              >
+                                <kbd className="shrink-0 rounded border bg-muted px-2 py-1 font-mono text-xs text-foreground">
+                                  Shift + Enter
+                                </kbd>
+                                <span>{sendOnEnterDraft ? "New line" : "Sends"}</span>
+                              </Button>
+                            </div>
                           </div>
-                          <span className="block font-normal leading-4 text-muted-foreground">
-                            The other shortcut inserts a new line.
-                          </span>
                         </div>
-                      </div>
-                      <div className="mt-5 flex justify-end">
-                        <DialogPrimitive.Close render={<Button type="button">Done</Button>} />
-                      </div>
+                        <div className="mt-5 flex justify-end">
+                          <Button type="submit">Done</Button>
+                        </div>
+                      </form>
                     </DialogPrimitive.Popup>
                   </DialogPrimitive.Viewport>
                 </DialogPrimitive.Portal>
@@ -916,24 +1091,29 @@ export default function App() {
                       <article
                         className={
                           turn.role === "assistant"
-                            ? "message-in relative pr-10"
-                            : "message-in relative ml-auto max-w-[82%] rounded-2xl rounded-br-md bg-secondary px-4 py-3.5 pr-10 text-secondary-foreground"
+                            ? "message-in"
+                            : "message-in ml-auto max-w-[82%] rounded-2xl rounded-br-md bg-secondary px-4 py-3.5 text-secondary-foreground"
                         }
                       >
-                        <CopyButton className={turn.role === "assistant" ? "absolute top-0 right-0" : "absolute top-2 right-2"} content={turn.content} />
                         {turn.role === "assistant" ? (
                           <div>
                             <AssistantMarkdown content={turn.content} />
-                            <time className="mt-2 block text-xs text-muted-foreground" dateTime={turn.created_at}>
-                              {formatTimestamp(turn.created_at)}
-                            </time>
+                            <div className="mt-2 flex items-center gap-1">
+                              <time className="text-xs text-muted-foreground" dateTime={turn.created_at}>
+                                {formatTimestamp(turn.created_at)}
+                              </time>
+                              <CopyButton className="!size-4 [&_svg]:!size-2.5" content={turn.content} />
+                            </div>
                           </div>
                         ) : (
                           <div>
                             <p className="whitespace-pre-wrap text-sm leading-7">{turn.content}</p>
-                            <time className="mt-2 block text-xs text-muted-foreground" dateTime={turn.created_at}>
-                              {formatTimestamp(turn.created_at)}
-                            </time>
+                            <div className="mt-2 flex items-center gap-1">
+                              <time className="text-xs text-muted-foreground" dateTime={turn.created_at}>
+                                {formatTimestamp(turn.created_at)}
+                              </time>
+                              <CopyButton className="!size-4 [&_svg]:!size-2.5" content={turn.content} />
+                            </div>
                           </div>
                         )}
                       </article>
@@ -975,8 +1155,7 @@ export default function App() {
                 })
               ) : null}
               {status === "running" && assistantText ? (
-                <article className="message-in relative pr-10">
-                  <CopyButton className="absolute top-0 right-0" content={assistantText} />
+                <article className="message-in">
                   <AssistantMarkdown content={assistantText} />
                 </article>
               ) : null}
@@ -1001,15 +1180,42 @@ export default function App() {
                 }}
               />
               <div className="flex flex-wrap items-center gap-2 px-1 pt-1">
-                <label className="mr-auto min-w-0 text-xs text-muted-foreground">
-                  <span className="sr-only">Workspace path</span>
-                  <Input
-                    className="h-7 w-36 border-0 bg-transparent px-0 text-xs shadow-none focus-visible:ring-0 sm:w-52"
-                    value={workspacePath}
-                    onChange={(event) => setWorkspacePath(event.target.value)}
-                    placeholder="Workspace path"
-                  />
-                </label>
+                <div className="mr-auto min-w-0 text-xs text-muted-foreground">
+                  {activeThread ? (
+                    <span
+                      className="block max-w-52 overflow-hidden text-ellipsis whitespace-nowrap px-2 text-left font-mono [direction:rtl]"
+                      title={activeThread.workspace_path}
+                    >
+                      {activeThread.workspace_path}
+                    </span>
+                  ) : desktop ? (
+                    <Button
+                      className="h-8 max-w-52 justify-start gap-2 px-2 font-mono text-xs font-normal text-muted-foreground"
+                      title={workspacePath}
+                      type="button"
+                      variant="ghost"
+                      onClick={async () => {
+                        const selected = await desktop.selectRepository(workspacePath);
+                        if (selected) setWorkspacePath(selected);
+                      }}
+                    >
+                      <FolderGit2 aria-hidden="true" className="size-4 shrink-0" />
+                      <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-left [direction:rtl]">
+                        {workspacePath}
+                      </span>
+                    </Button>
+                  ) : (
+                    <label>
+                      <span className="sr-only">Workspace path</span>
+                      <Input
+                        className="h-7 w-36 border-0 bg-transparent px-0 font-mono text-xs shadow-none focus-visible:ring-0 sm:w-52"
+                        value={workspacePath}
+                        onChange={(event) => setWorkspacePath(event.target.value)}
+                        placeholder="Workspace path"
+                      />
+                    </label>
+                  )}
+                </div>
                 <label className="text-xs text-muted-foreground">
                   <span className="sr-only">Model</span>
                   <SelectPrimitive.Root
@@ -1201,7 +1407,10 @@ export default function App() {
                 <span className="absolute inset-y-0 left-1/2 w-px bg-transparent group-hover:bg-border" />
               </div>
             ) : null}
-            <header className="flex h-14 shrink-0 items-center justify-between border-b px-3">
+            <header
+              className={`flex h-14 shrink-0 items-center justify-between border-b px-3 ${desktop ? "titlebar-drag" : ""}`}
+              style={desktopWindowControls ? { paddingRight: `${144 / uiScale}px` } : undefined}
+            >
               <div className="flex items-center gap-2">
                 <Button
                   aria-label="Collapse context"
@@ -1340,6 +1549,28 @@ export default function App() {
                   {sendOnEnter ? "Shift + Enter" : "Enter"}
                 </kbd>
               </div>
+              {desktop ? (
+                <>
+                  <div className="flex items-center justify-between gap-4 py-3 text-sm">
+                    <span>Zoom in</span>
+                    <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">
+                      {SHORTCUT_LABEL} + =
+                    </kbd>
+                  </div>
+                  <div className="flex items-center justify-between gap-4 py-3 text-sm">
+                    <span>Zoom out</span>
+                    <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">
+                      {SHORTCUT_LABEL} + -
+                    </kbd>
+                  </div>
+                  <div className="flex items-center justify-between gap-4 py-3 text-sm">
+                    <span>Reset zoom</span>
+                    <kbd className="rounded border bg-muted px-2 py-1 font-mono text-xs">
+                      {SHORTCUT_LABEL} + 0
+                    </kbd>
+                  </div>
+                </>
+              ) : null}
             </div>
           </Card>
         </div>
@@ -1370,24 +1601,32 @@ export default function App() {
             }}
           >
             <AlertDialogPrimitive.Popup className="w-full min-w-0 max-w-md overflow-hidden rounded-xl border bg-card p-5 text-card-foreground shadow-xl outline-none">
-              <AlertDialogPrimitive.Title className="text-base font-semibold">
-                {threadToDelete ? "Delete thread?" : "Something went wrong"}
-              </AlertDialogPrimitive.Title>
-              <AlertDialogPrimitive.Description className="mt-2 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] text-sm leading-6 text-muted-foreground">
-                {threadToDelete
-                  ? `This will permanently delete "${threadToDelete.title}" and its activity.`
-                  : error}
-              </AlertDialogPrimitive.Description>
-              <div className="mt-5 flex justify-end gap-2">
-                <AlertDialogPrimitive.Close
-                  render={<Button type="button" variant="outline">{threadToDelete ? "Cancel" : "Dismiss"}</Button>}
-                />
-                {threadToDelete ? (
-                  <Button type="button" variant="destructive" onClick={() => void deleteThread()}>
-                    Delete
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  if (threadToDelete) void deleteThread();
+                  else setError("");
+                }}
+              >
+                <AlertDialogPrimitive.Title className="text-base font-semibold">
+                  {threadToDelete ? "Delete thread?" : "Something went wrong"}
+                </AlertDialogPrimitive.Title>
+                <AlertDialogPrimitive.Description className="mt-2 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] text-sm leading-6 text-muted-foreground">
+                  {threadToDelete
+                    ? `This will permanently delete "${threadToDelete.title}" and its activity.`
+                    : error}
+                </AlertDialogPrimitive.Description>
+                <div className="mt-5 flex justify-end gap-2">
+                  {threadToDelete ? (
+                    <AlertDialogPrimitive.Close
+                      render={<Button type="button" variant="outline">Cancel</Button>}
+                    />
+                  ) : null}
+                  <Button type="submit" variant={threadToDelete ? "destructive" : "default"}>
+                    {threadToDelete ? "Delete" : "Dismiss"}
                   </Button>
-                ) : null}
-              </div>
+                </div>
+              </form>
             </AlertDialogPrimitive.Popup>
           </AlertDialogPrimitive.Viewport>
         </AlertDialogPrimitive.Portal>

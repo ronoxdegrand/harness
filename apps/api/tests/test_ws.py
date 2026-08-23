@@ -1,10 +1,12 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from agent_harness_api.config import get_settings
 from agent_harness_api.main import app
+from agent_harness_api.ws import resolve_workspace_path
 
 
 def _create_repo(repo_path: Path) -> None:
@@ -21,6 +23,17 @@ def _receive_failure(websocket) -> dict[str, object]:
     failure = websocket.receive_json()
     assert failure["kind"] == "run.failed"
     return failure
+
+
+def test_absolute_workspaces_require_explicit_permission(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "root"
+    repository = tmp_path / "repository"
+    workspace_root.mkdir()
+    repository.mkdir()
+
+    with pytest.raises(ValueError, match="escapes"):
+        resolve_workspace_path(workspace_root, str(repository))
+    assert resolve_workspace_path(workspace_root, str(repository), True) == repository.resolve()
 
 
 def test_run_websocket_rejects_invalid_requests(tmp_path: Path, monkeypatch) -> None:

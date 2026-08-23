@@ -84,6 +84,22 @@ body {
   min-width: 320px;
 }
 
+.titlebar-drag {
+  app-region: drag;
+  -webkit-app-region: drag;
+}
+
+.titlebar-drag button,
+.titlebar-drag input,
+.titlebar-drag select,
+.titlebar-drag textarea,
+.titlebar-drag a,
+.titlebar-drag [role="button"],
+.titlebar-drag [role="combobox"] {
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
+}
+
 code,
 pre {
   font-family: "JetBrains Mono Variable", monospace;
@@ -228,6 +244,7 @@ pre {
 @theme inline {
   --font-heading: "Inter Variable", sans-serif;
   --font-sans: "Inter Variable", sans-serif;
+  --font-mono: "JetBrains Mono Variable", monospace;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);

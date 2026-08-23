@@ -93,7 +93,11 @@ async def list_threads() -> dict[str, list[dict[str, str]]]:
 async def create_thread(request: ThreadCreateRequest) -> dict[str, object]:
     settings = get_settings()
     try:
-        workspace_path = resolve_workspace_path(settings.workspace_root, request.workspace_path)
+        workspace_path = resolve_workspace_path(
+            settings.workspace_root,
+            request.workspace_path,
+            settings.allow_absolute_workspaces,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not workspace_path.is_dir():
