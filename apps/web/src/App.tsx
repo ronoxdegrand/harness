@@ -161,7 +161,7 @@ export default function App() {
   const macDesktop = desktop?.platform === "darwin";
   const desktopWindowControls = Boolean(desktop && !macDesktop);
   const [task, setTask] = useState("");
-  const [workspacePath, setWorkspacePath] = useState(".");
+  const [workspacePath, setWorkspacePath] = useState("");
   const [modelName, setModelName] = useState(MODEL_OPTIONS[0]);
   const [apiKey, setApiKey] = useState(() =>
     desktop ? "" : sessionStorage.getItem("gemini-api-key") || "",
@@ -534,7 +534,7 @@ export default function App() {
 
   async function startRun(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!task.trim() || status === "connecting" || status === "running") return;
+    if (!task.trim() || (!activeThread && !workspacePath.trim()) || status === "connecting" || status === "running") return;
     socketRef.current?.close();
 
     const thread = activeThread;
@@ -707,6 +707,7 @@ export default function App() {
   const visibleEvents = activityRunId
     ? events.filter((runtimeEvent) => eventRunId(runtimeEvent) === activityRunId)
     : events;
+  const repositoryRequired = !activeThread && Boolean(task.trim()) && !workspacePath.trim();
   const sidebarPinnedOpen = !sidebarCollapsed;
   const sidebarOpen = sidebarPinnedOpen || sidebarPreviewOpen;
   const eventGroups: Array<{
@@ -1222,8 +1223,12 @@ export default function App() {
                     </span>
                   ) : desktop ? (
                     <Button
-                      className="h-8 max-w-52 justify-start gap-2 px-2 font-mono text-xs font-normal text-muted-foreground"
-                      title={workspacePath}
+                      className={`h-8 max-w-52 justify-start gap-2 px-2 font-mono text-xs font-normal ${
+                        repositoryRequired
+                          ? "bg-amber-50 text-amber-900 ring-2 ring-amber-400/70 hover:bg-amber-100"
+                          : "text-muted-foreground"
+                      }`}
+                      title={workspacePath || "Select repository"}
                       type="button"
                       variant="ghost"
                       onClick={async () => {
@@ -1233,14 +1238,18 @@ export default function App() {
                     >
                       <FolderGit2 aria-hidden="true" className="size-4 shrink-0" />
                       <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-left [direction:rtl]">
-                        {workspacePath}
+                        {workspacePath || "Select repository"}
                       </span>
                     </Button>
                   ) : (
                     <label>
                       <span className="sr-only">Workspace path</span>
                       <Input
-                        className="h-7 w-36 border-0 bg-transparent px-0 font-mono text-xs shadow-none focus-visible:ring-0 sm:w-52"
+                        className={`h-7 w-36 border-0 bg-transparent px-0 font-mono text-xs shadow-none sm:w-52 ${
+                          repositoryRequired
+                            ? "bg-amber-50 px-2 text-amber-900 ring-2 ring-amber-400/70"
+                            : "focus-visible:ring-0"
+                        }`}
                         value={workspacePath}
                         onChange={(event) => setWorkspacePath(event.target.value)}
                         placeholder="Workspace path"
@@ -1289,7 +1298,7 @@ export default function App() {
                 ) : null}
                 <Button
                   className="h-8 px-3 text-xs font-semibold"
-                  disabled={!task.trim() || status === "connecting" || status === "running"}
+                  disabled={!task.trim() || (!activeThread && !workspacePath.trim()) || status === "connecting" || status === "running"}
                   size="sm"
                   type="submit"
                 >

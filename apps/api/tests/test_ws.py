@@ -45,6 +45,8 @@ def test_run_websocket_rejects_invalid_requests(tmp_path: Path, monkeypatch) -> 
         ([], "Request must be a JSON object."),
         ({}, "Task is required to start a run."),
         ({"task": None}, "Task is required to start a run."),
+        ({"task": "inspect"}, "Workspace path is required"),
+        ({"task": "inspect", "workspace_path": " "}, "Workspace path is required"),
         ({"task": "inspect", "workspace_path": 1}, "Workspace path must be a string."),
         ({"task": "inspect", "model_name": " "}, "Model name must be a non-empty string."),
         ({"task": "inspect", "api_key": " "}, "API key must be a non-empty string."),

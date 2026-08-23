@@ -86,6 +86,10 @@ def test_thread_api_persists_across_app_sessions(tmp_path: Path, monkeypatch) ->
     get_settings.cache_clear()
 
     with TestClient(app) as client:
+        assert client.post("/threads", json={"title": "Missing repository"}).status_code == 422
+        assert client.post(
+            "/threads", json={"workspace_path": " ", "title": "Missing repository"}
+        ).status_code == 400
         invalid = client.post("/threads", json={"workspace_path": "../outside"})
         assert invalid.status_code == 400
 

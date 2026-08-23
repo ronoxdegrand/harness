@@ -96,7 +96,7 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
         return
 
     task = request.get("task")
-    workspace_path = request.get("workspace_path", ".")
+    workspace_path = request.get("workspace_path")
     requested_thread_id = request.get("thread_id")
     requested_model = request.get("model_name")
     requested_title = request.get("title")
@@ -106,11 +106,6 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
     if not isinstance(task, str) or not (prompt := task.strip()):
         await _fail_run(websocket, "Task is required to start a run.")
         return
-
-    if not isinstance(workspace_path, str):
-        await _fail_run(websocket, "Workspace path must be a string.")
-        return
-    workspace_path = workspace_path.strip() or "."
 
     if requested_model is not None and (
         not isinstance(requested_model, str) or not requested_model.strip()
@@ -161,6 +156,16 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
             await _fail_run(websocket, "Thread workspace escapes the configured workspace root.")
             return
     else:
+        if workspace_path is None:
+            await _fail_run(websocket, "Workspace path is required for a new thread.")
+            return
+        if not isinstance(workspace_path, str):
+            await _fail_run(websocket, "Workspace path must be a string.")
+            return
+        workspace_path = workspace_path.strip()
+        if not workspace_path:
+            await _fail_run(websocket, "Workspace path is required for a new thread.")
+            return
         try:
             target_path = resolve_workspace_path(
                 settings.workspace_root,

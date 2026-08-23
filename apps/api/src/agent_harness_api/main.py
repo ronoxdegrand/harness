@@ -13,7 +13,7 @@ from .ws import handle_run_websocket, resolve_workspace_path
 
 
 class ThreadCreateRequest(BaseModel):
-    workspace_path: str = "."
+    workspace_path: str
     title: str | None = None
     prompt: str | None = None
 
@@ -92,10 +92,12 @@ async def list_threads() -> dict[str, list[dict[str, str]]]:
 @app.post("/threads")
 async def create_thread(request: ThreadCreateRequest) -> dict[str, object]:
     settings = get_settings()
+    if not request.workspace_path.strip():
+        raise HTTPException(status_code=400, detail="Workspace path is required.")
     try:
         workspace_path = resolve_workspace_path(
             settings.workspace_root,
-            request.workspace_path,
+            request.workspace_path.strip(),
             settings.allow_absolute_workspaces,
         )
     except ValueError as exc:
