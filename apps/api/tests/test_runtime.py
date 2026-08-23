@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from agent_harness_api.context import Context
 from agent_harness_api.config import get_settings
 from agent_harness_api.db import initialize_database
@@ -280,6 +282,95 @@ def test_runtime_resume_loads_latest_snapshot(tmp_path: Path, monkeypatch) -> No
 
     context = runtime.resume("resume-run")
     assert json.loads(json.dumps(context.snapshot())) == snapshot
+
+
+def test_resume_replays_a_safe_interrupted_tool(tmp_path: Path, monkeypatch) -> None:
+    database_path = tmp_path / "resume-safe.db"
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(database_path))
+    get_settings.cache_clear()
+    initialize_database()
+    (tmp_path / "README.md").write_text("durable\n", encoding="utf-8")
+
+    store = RunStore(database_path)
+    store.create_run(
+        run_id="safe-run",
+        target_path=tmp_path,
+        max_iterations=2,
+        timeout_seconds=10,
+    )
+    store.save_snapshot(
+        "safe-run",
+        0,
+        [{"role": "user", "content": "read", "name": None, "tool_call_id": None}],
+    )
+    call = {"id": "read-1", "name": "read_file", "arguments": {"path": "README.md"}}
+    store.start_tool_execution(
+        run_id="safe-run",
+        iteration=1,
+        tool_call=call,
+        replay_policy="safe",
+        event_payload={"run_id": "safe-run", "iteration": 1, "tool_call": call},
+    )
+
+    registry = build_default_tool_registry()
+    runtime = AgentRuntime(
+        model=EmptyModelProvider(),
+        tool_registry=registry,
+        tool_executor=ToolExecutor(registry),
+        store=store,
+    )
+    context = runtime.resume("safe-run")
+
+    assert context.snapshot()[-1]["tool_call_id"] == "read-1"
+    assert "durable" in context.snapshot()[-1]["content"]
+    with sqlite3.connect(database_path) as connection:
+        status = connection.execute(
+            "SELECT status FROM harness_tool_executions WHERE tool_call_id = 'read-1'"
+        ).fetchone()
+    assert status == ("completed",)
+
+
+def test_resume_blocks_an_ambiguous_side_effect(tmp_path: Path, monkeypatch) -> None:
+    database_path = tmp_path / "resume-unsafe.db"
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(database_path))
+    get_settings.cache_clear()
+    initialize_database()
+
+    store = RunStore(database_path)
+    store.create_run(
+        run_id="unsafe-run",
+        target_path=tmp_path,
+        max_iterations=2,
+        timeout_seconds=10,
+    )
+    store.save_snapshot(
+        "unsafe-run",
+        0,
+        [{"role": "user", "content": "run", "name": None, "tool_call_id": None}],
+    )
+    call = {"id": "shell-1", "name": "shell", "arguments": {"command": "echo hi"}}
+    store.start_tool_execution(
+        run_id="unsafe-run",
+        iteration=1,
+        tool_call=call,
+        replay_policy="never",
+        event_payload={"run_id": "unsafe-run", "iteration": 1, "tool_call": call},
+    )
+    registry = build_default_tool_registry()
+    runtime = AgentRuntime(
+        model=EmptyModelProvider(),
+        tool_registry=registry,
+        tool_executor=ToolExecutor(registry),
+        store=store,
+    )
+
+    with pytest.raises(RuntimeError, match="automatic replay is unsafe"):
+        runtime.resume("unsafe-run")
+    with sqlite3.connect(database_path) as connection:
+        status = connection.execute(
+            "SELECT status FROM harness_tool_executions WHERE tool_call_id = 'shell-1'"
+        ).fetchone()
+    assert status == ("indeterminate",)
 
 
 def test_context_keeps_the_newest_messages_within_budget() -> None:

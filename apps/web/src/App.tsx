@@ -110,17 +110,25 @@ function AssistantMarkdown({ content }: { content: string }) {
 }
 
 function CopyButton({ content, className, label = "Copy message" }: { content: string; className: string; label?: string }) {
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timeout = window.setTimeout(() => setCopied(false), 1500);
+    return () => window.clearTimeout(timeout);
+  }, [copied]);
+
   return (
     <Button
-      aria-label={label}
+      aria-label={copied ? "Copied" : label}
       className={`size-7 text-muted-foreground opacity-60 hover:opacity-100 ${className}`}
       size="icon-sm"
-      title={label}
+      title={copied ? "Copied" : label}
       type="button"
       variant="ghost"
-      onClick={() => navigator.clipboard.writeText(content).catch(() => undefined)}
+      onClick={() => navigator.clipboard.writeText(content).then(() => setCopied(true)).catch(() => undefined)}
     >
-      <Copy aria-hidden="true" className="size-3.5" />
+      {copied ? <Check aria-hidden="true" className="size-3.5" /> : <Copy aria-hidden="true" className="size-3.5" />}
     </Button>
   );
 }
@@ -221,6 +229,7 @@ export default function App() {
   const conversationBottomRef = useRef<HTMLDivElement | null>(null);
   const activityBottomRef = useRef<HTMLDivElement | null>(null);
   const shortcutTimerRef = useRef<number | null>(null);
+  const apiKeyPromptedRef = useRef(false);
   const resizeRef = useRef<{ panel: "sidebar" | "activity" | "context"; startX: number; startWidth: number } | null>(null);
 
   useEffect(() => {
@@ -320,6 +329,16 @@ export default function App() {
     localStorage.setItem("activity-width", String(activityWidth));
     localStorage.setItem("context-width", String(contextWidth));
   }, [activityWidth, apiKey, contextWidth, desktop, maxIterations, sendOnEnter, settingsLoaded, sidebarWidth, uiScale]);
+
+  useEffect(() => {
+    if (!settingsLoaded || apiKey.trim() || apiKeyPromptedRef.current) return;
+    apiKeyPromptedRef.current = true;
+    setApiKeyDraft(apiKey);
+    setMaxIterationsDraft(maxIterations);
+    setSendOnEnterDraft(sendOnEnter);
+    setUiScaleDraft(uiScale);
+    setSettingsOpen(true);
+  }, [apiKey, maxIterations, sendOnEnter, settingsLoaded, uiScale]);
 
   useEffect(() => {
     if (!desktop) return;
@@ -970,8 +989,9 @@ export default function App() {
                           <label className="block space-y-1.5 text-xs font-medium">
                             <span>Gemini API key</span>
                             <Input
+                              autoFocus
                               autoComplete="off"
-                              placeholder="Use server key when empty"
+                              placeholder="Enter your API key"
                               type="password"
                               value={apiKeyDraft}
                               onChange={(event) => setApiKeyDraft(event.target.value)}
@@ -998,6 +1018,7 @@ export default function App() {
                               <div className="grid grid-cols-[40px_minmax(0,1fr)_40px] gap-2">
                                 <Button
                                   aria-label="Zoom out"
+                                  className="size-10"
                                   disabled={uiScaleDraft <= 0.5}
                                   size="icon"
                                   type="button"
@@ -1011,6 +1032,7 @@ export default function App() {
                                 </div>
                                 <Button
                                   aria-label="Zoom in"
+                                  className="size-10"
                                   disabled={uiScaleDraft >= 2}
                                   size="icon"
                                   type="button"

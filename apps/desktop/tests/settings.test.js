@@ -4,7 +4,13 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { readSettings, writeSettings } = require("../src/settings");
+const { getDatabasePath, readSettings, writeSettings } = require("../src/settings");
+
+test("development and installed apps use different databases", () => {
+  const directory = path.join(os.tmpdir(), "harness-data");
+  assert.equal(getDatabasePath(directory, false), path.join(directory, "harness-dev.db"));
+  assert.equal(getDatabasePath(directory, true), path.join(directory, "harness.db"));
+});
 
 test("desktop settings persist with an encrypted API key", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "harness-settings-"));

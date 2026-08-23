@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 import httpx
 
@@ -170,7 +171,9 @@ class GeminiModelProvider(ModelProvider):
                     continue
                 tool_calls.append(
                     ToolCall(
-                        id=f"call-{len(tool_calls) + 1}", name=tool_name, arguments=args
+                        id=str(call.get("id") or f"call-{uuid4().hex}"),
+                        name=tool_name,
+                        arguments=args,
                     )
                 )
 

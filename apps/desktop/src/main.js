@@ -6,7 +6,7 @@ const { app, BrowserWindow, dialog, ipcMain, safeStorage, session } = require("e
 const { autoUpdater } = require("electron-updater");
 
 const { startBackend, stopBackend } = require("./backend");
-const { readSettings, writeSettings } = require("./settings");
+const { getDatabasePath, readSettings, writeSettings } = require("./settings");
 
 let backend;
 let mainWindow;
@@ -133,7 +133,7 @@ async function start() {
     HARNESS_ALLOW_ABSOLUTE_WORKSPACES: "true",
     HARNESS_HOST: "127.0.0.1",
     HARNESS_PORT: "0",
-    HARNESS_SQLITE_PATH: path.join(app.getPath("userData"), "harness.db"),
+    HARNESS_SQLITE_PATH: getDatabasePath(app.getPath("userData"), app.isPackaged),
     HARNESS_WEB_DIST_PATH: webPath,
     HARNESS_WORKSPACE_ROOT: workspaceRoot,
   };

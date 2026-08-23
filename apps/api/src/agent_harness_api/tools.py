@@ -67,6 +67,7 @@ class ToolDefinition:
     description: str
     input_schema: dict[str, Any]
     handler: ToolHandler
+    replay_policy: str = "never"
 
     def execute(self, arguments: dict[str, Any], workspace_root: Path) -> ToolResult:
         _validate_arguments(self.input_schema, arguments)
@@ -136,6 +137,7 @@ def build_default_tool_registry() -> ToolRegistry:
                     required=["path"],
                 ),
                 handler=_read_file,
+                replay_policy="safe",
             ),
             ToolDefinition(
                 name="write_file",
@@ -148,6 +150,7 @@ def build_default_tool_registry() -> ToolRegistry:
                     required=["path", "content"],
                 ),
                 handler=_write_file,
+                replay_policy="idempotent",
             ),
             ToolDefinition(
                 name="list_files",
@@ -163,6 +166,7 @@ def build_default_tool_registry() -> ToolRegistry:
                     },
                 ),
                 handler=_list_files,
+                replay_policy="safe",
             ),
             ToolDefinition(
                 name="search_files",
@@ -177,6 +181,7 @@ def build_default_tool_registry() -> ToolRegistry:
                     required=["query"],
                 ),
                 handler=_search_files,
+                replay_policy="safe",
             ),
             ToolDefinition(
                 name="shell",
@@ -201,6 +206,7 @@ def build_default_tool_registry() -> ToolRegistry:
                     },
                 ),
                 handler=_git_status,
+                replay_policy="safe",
             ),
             ToolDefinition(
                 name="git_diff",
@@ -212,6 +218,7 @@ def build_default_tool_registry() -> ToolRegistry:
                     },
                 ),
                 handler=_git_diff,
+                replay_policy="safe",
             ),
         ]
     )

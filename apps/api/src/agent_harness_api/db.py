@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .config import get_settings
 
-LATEST_SCHEMA_VERSION = 3
+LATEST_SCHEMA_VERSION = 4
 
 
 class SchemaCompatibilityError(RuntimeError):
@@ -83,10 +83,35 @@ def _migration_3(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migration_4(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS harness_tool_executions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            tool_call_id TEXT NOT NULL,
+            iteration INTEGER NOT NULL,
+            tool_name TEXT NOT NULL,
+            arguments TEXT NOT NULL,
+            replay_policy TEXT NOT NULL CHECK (replay_policy IN ('safe', 'idempotent', 'never')),
+            status TEXT NOT NULL CHECK (status IN ('started', 'completed', 'failed', 'indeterminate')),
+            result TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (run_id, tool_call_id),
+            FOREIGN KEY (run_id) REFERENCES harness_runs (id)
+        )"""
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS harness_tool_executions_run_status "
+        "ON harness_tool_executions (run_id, status, id)"
+    )
+
+
 MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "initial_schema", _migration_1),
     (2, "run_and_turn_metadata", _migration_2),
     (3, "turn_lookup_index", _migration_3),
+    (4, "durable_tool_executions", _migration_4),
 )
 
 
@@ -120,6 +145,10 @@ def _validate_schema(connection: sqlite3.Connection) -> None:
         "harness_turns": {"id", "thread_id", "run_id", "role", "content", "model_name"},
         "harness_events": {"id", "run_id", "event_type", "payload"},
         "harness_snapshots": {"id", "run_id", "iteration", "messages"},
+        "harness_tool_executions": {
+            "id", "run_id", "tool_call_id", "iteration", "tool_name", "arguments",
+            "replay_policy", "status", "result",
+        },
     }
     for table, columns in required.items():
         if not _table_exists(connection, table) or not columns.issubset(_columns(connection, table)):

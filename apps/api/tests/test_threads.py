@@ -72,7 +72,10 @@ def test_delete_thread_removes_its_run_data(tmp_path: Path, monkeypatch) -> None
         assert client.delete(f"/threads/{thread_id}").status_code == 404
 
     with sqlite3.connect(database_path) as connection:
-        for table in ("harness_threads", "harness_turns", "harness_runs", "harness_events", "harness_snapshots"):
+        for table in (
+            "harness_threads", "harness_turns", "harness_runs", "harness_events",
+            "harness_snapshots", "harness_tool_executions",
+        ):
             assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
 
 

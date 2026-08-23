@@ -37,4 +37,8 @@ function writeSettings(file, settings, encryption) {
   fs.renameSync(`${file}.tmp`, file);
 }
 
-module.exports = { readSettings, writeSettings };
+function getDatabasePath(directory, isPackaged) {
+  return path.join(directory, isPackaged ? "harness.db" : "harness-dev.db");
+}
+
+module.exports = { getDatabasePath, readSettings, writeSettings };

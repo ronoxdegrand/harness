@@ -9,7 +9,7 @@ from .context import Context
 from .events import EventEmitter
 from .model import ModelProvider
 from .store import RunStore
-from .tools import ToolExecutor, ToolRegistry
+from .tools import ToolCall, ToolExecutor, ToolRegistry
 
 
 @dataclass
@@ -152,31 +152,14 @@ class AgentRuntime:
                     )
 
                 for call in response.tool_calls:
-                    self._emit(
+                    self._execute_tool(
                         active_run_id,
-                        "tool.started",
-                        iteration=iteration,
-                        tool_call=call.as_dict(),
-                    )
-                    result = self.tool_executor.execute(call, target_path=resolved_target)
-                    context.add_tool_result(call, result)
-                    self._emit(
-                        active_run_id,
-                        "context.updated",
-                        iteration=iteration,
-                        context=context.inspect(),
+                        iteration,
+                        call,
+                        resolved_target,
+                        context,
                     )
 
-                    event_type = "tool.completed" if result.success else "tool.failed"
-                    self._emit(
-                        active_run_id,
-                        event_type,
-                        iteration=iteration,
-                        tool_call=call.as_dict(),
-                        result=result.as_dict(),
-                    )
-
-                self.store.save_snapshot(active_run_id, iteration, context.snapshot())
                 self._emit(
                     active_run_id,
                     "turn.completed",
@@ -194,8 +177,106 @@ class AgentRuntime:
         snapshot = self.store.load_latest_snapshot(run_id)
         if snapshot is None:
             raise ValueError(f"No snapshot found for run {run_id}.")
-        return Context.from_snapshot(snapshot)
+        context = Context.from_snapshot(snapshot)
+        pending = self.store.list_pending_tool_executions(run_id)
+        if not pending:
+            return context
+        target_path = self.store.get_run_target(run_id)
+        if target_path is None:
+            raise ValueError(f"Run {run_id} does not exist.")
+        for execution in pending:
+            if execution["replay_policy"] == "never":
+                payload = {
+                    "run_id": run_id,
+                    "iteration": execution["iteration"],
+                    "tool_call": {
+                        "id": execution["id"],
+                        "name": execution["name"],
+                        "arguments": execution["arguments"],
+                    },
+                    "reason": "The process stopped after execution started; side effects are unknown.",
+                }
+                self.store.mark_tool_execution_indeterminate(run_id, execution["id"], payload)
+                if execution["status"] == "started":
+                    self.events.emit("tool.indeterminate", **payload)
+                raise RuntimeError(
+                    f"Tool {execution['name']} ({execution['id']}) may have produced side effects; "
+                    "automatic replay is unsafe."
+                )
+            call = ToolCall(
+                id=execution["id"],
+                name=execution["name"],
+                arguments=execution["arguments"],
+            )
+            self._emit(
+                run_id,
+                "tool.replaying",
+                iteration=execution["iteration"],
+                tool_call=call.as_dict(),
+                replay_policy=execution["replay_policy"],
+            )
+            self._execute_tool(
+                run_id,
+                execution["iteration"],
+                call,
+                target_path,
+                context,
+                already_started=True,
+            )
+        return context
+
+    def _execute_tool(
+        self,
+        run_id: str,
+        iteration: int,
+        call: ToolCall,
+        target_path: Path,
+        context: Context,
+        *,
+        already_started: bool = False,
+    ) -> None:
+        tool_call = call.as_dict()
+        started_payload = {
+            "run_id": run_id,
+            "iteration": iteration,
+            "tool_call": tool_call,
+        }
+        if not already_started:
+            self.store.start_tool_execution(
+                run_id=run_id,
+                iteration=iteration,
+                tool_call=tool_call,
+                replay_policy=self.tool_registry.get(call.name).replay_policy,
+                event_payload=started_payload,
+            )
+            self.events.emit("tool.started", **started_payload)
+
+        result = self.tool_executor.execute(call, target_path=target_path)
+        context.add_tool_result(call, result)
+        context_payload = {
+            "run_id": run_id,
+            "iteration": iteration,
+            "context": context.inspect(),
+        }
+        result_payload = {
+            "run_id": run_id,
+            "iteration": iteration,
+            "tool_call": tool_call,
+            "result": result.as_dict(),
+        }
+        result_event = "tool.completed" if result.success else "tool.failed"
+        self.store.finish_tool_execution(
+            run_id=run_id,
+            tool_call_id=call.id,
+            iteration=iteration,
+            result=result.as_dict(),
+            messages=context.snapshot(),
+            events=[("context.updated", context_payload), (result_event, result_payload)],
+        )
+        self.events.emit("context.updated", **context_payload)
+        self.events.emit(result_event, **result_payload)
 
     def _emit(self, run_id: str, event_type: str, **payload: object) -> None:
-        event = self.events.emit(event_type, run_id=run_id, **payload)
-        self.store.append_event(run_id, event.type, event.payload)
+        durable_payload = {"run_id": run_id, **payload}
+        self.store.append_event(run_id, event_type, durable_payload)
+        self.events.emit(event_type, **durable_payload)

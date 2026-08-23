@@ -147,6 +147,9 @@ class RunStore:
             connection.execute(
                 f"DELETE FROM harness_events WHERE run_id IN ({run_ids})", (thread_id,)
             )
+            connection.execute(
+                f"DELETE FROM harness_tool_executions WHERE run_id IN ({run_ids})", (thread_id,)
+            )
             connection.execute("DELETE FROM harness_turns WHERE thread_id = ?", (thread_id,))
             connection.execute("DELETE FROM harness_runs WHERE thread_id = ?", (thread_id,))
             deleted = connection.execute(
@@ -259,6 +262,119 @@ class RunStore:
                 (run_id, event_type, json.dumps(payload)),
             )
             connection.commit()
+
+    def start_tool_execution(
+        self,
+        *,
+        run_id: str,
+        iteration: int,
+        tool_call: dict[str, Any],
+        replay_policy: str,
+        event_payload: dict[str, Any],
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO harness_tool_executions (
+                    run_id, tool_call_id, iteration, tool_name, arguments,
+                    replay_policy, status
+                ) VALUES (?, ?, ?, ?, ?, ?, 'started')
+                """,
+                (
+                    run_id,
+                    tool_call["id"],
+                    iteration,
+                    tool_call["name"],
+                    json.dumps(tool_call["arguments"]),
+                    replay_policy,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO harness_events (run_id, event_type, payload) VALUES (?, ?, ?)",
+                (run_id, "tool.started", json.dumps(event_payload)),
+            )
+            connection.commit()
+
+    def finish_tool_execution(
+        self,
+        *,
+        run_id: str,
+        tool_call_id: str,
+        iteration: int,
+        result: dict[str, Any],
+        messages: list[dict[str, Any]],
+        events: list[tuple[str, dict[str, Any]]],
+    ) -> None:
+        status = "completed" if result["success"] else "failed"
+        with self._connect() as connection:
+            updated = connection.execute(
+                """
+                UPDATE harness_tool_executions
+                SET status = ?, result = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE run_id = ? AND tool_call_id = ? AND status = 'started'
+                """,
+                (status, json.dumps(result), run_id, tool_call_id),
+            ).rowcount
+            if updated != 1:
+                raise RuntimeError(f"Tool execution {tool_call_id} is not pending.")
+            connection.executemany(
+                "INSERT INTO harness_events (run_id, event_type, payload) VALUES (?, ?, ?)",
+                [(run_id, event_type, json.dumps(payload)) for event_type, payload in events],
+            )
+            connection.execute(
+                "INSERT INTO harness_snapshots (run_id, iteration, messages) VALUES (?, ?, ?)",
+                (run_id, iteration, json.dumps(messages)),
+            )
+            connection.commit()
+
+    def list_pending_tool_executions(self, run_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT tool_call_id, iteration, tool_name, arguments, replay_policy, status
+                FROM harness_tool_executions
+                WHERE run_id = ? AND status IN ('started', 'indeterminate')
+                ORDER BY id
+                """,
+                (run_id,),
+            ).fetchall()
+        return [
+            {
+                "id": row[0],
+                "iteration": row[1],
+                "name": row[2],
+                "arguments": json.loads(row[3]),
+                "replay_policy": row[4],
+                "status": row[5],
+            }
+            for row in rows
+        ]
+
+    def mark_tool_execution_indeterminate(
+        self, run_id: str, tool_call_id: str, event_payload: dict[str, Any]
+    ) -> None:
+        with self._connect() as connection:
+            updated = connection.execute(
+                """
+                UPDATE harness_tool_executions
+                SET status = 'indeterminate', updated_at = CURRENT_TIMESTAMP
+                WHERE run_id = ? AND tool_call_id = ? AND status = 'started'
+                """,
+                (run_id, tool_call_id),
+            ).rowcount
+            if updated:
+                connection.execute(
+                    "INSERT INTO harness_events (run_id, event_type, payload) VALUES (?, ?, ?)",
+                    (run_id, "tool.indeterminate", json.dumps(event_payload)),
+                )
+            connection.commit()
+
+    def get_run_target(self, run_id: str) -> Path | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT target_path FROM harness_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+        return Path(row[0]) if row else None
 
     def save_snapshot(
         self,
