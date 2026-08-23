@@ -1,6 +1,6 @@
 [project]
 name = "agent-harness-api"
-version = "0.2.1"
+version = "0.3.0"
 description = "FastAPI backend for the AI agent harness."
 requires-python = ">=3.12"
 dependencies = [
