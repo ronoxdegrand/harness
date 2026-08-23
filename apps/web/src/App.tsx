@@ -221,6 +221,8 @@ export default function App() {
   const [assistantText, setAssistantText] = useState("");
   const [activityOpen, setActivityOpen] = useState(false);
   const [contextOpen, setContextOpen] = useState(true);
+  const [narrowView, setNarrowView] = useState(() => window.matchMedia("(max-width: 1023px)").matches);
+  const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [activityRunId, setActivityRunId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarPreviewOpen, setSidebarPreviewOpen] = useState(false);
@@ -264,6 +266,7 @@ export default function App() {
   const conversationBottomRef = useRef<HTMLDivElement | null>(null);
   const activityBottomRef = useRef<HTMLDivElement | null>(null);
   const shortcutTimerRef = useRef<number | null>(null);
+  const panelPreviewTimerRef = useRef<number | null>(null);
   const apiKeyPromptedRef = useRef(false);
   const continuationPendingRef = useRef(false);
   const resizeRef = useRef<{ panel: "sidebar" | "activity" | "context"; startX: number; startWidth: number } | null>(null);
@@ -291,6 +294,7 @@ export default function App() {
   useEffect(() => {
     return () => {
       socketRef.current?.close();
+      if (panelPreviewTimerRef.current !== null) window.clearTimeout(panelPreviewTimerRef.current);
     };
   }, []);
 
@@ -386,6 +390,18 @@ export default function App() {
   }, [appearance]);
 
   useEffect(() => {
+    const media = window.matchMedia("(max-width: 1023px)");
+    const update = () => {
+      setNarrowView(media.matches);
+      setSidebarPreviewOpen(false);
+      setContextPreviewOpen(false);
+    };
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
+  useEffect(() => {
     if (!settingsLoaded || apiKey.trim() || apiKeyPromptedRef.current) return;
     apiKeyPromptedRef.current = true;
     setApiKeyDraft(apiKey);
@@ -460,6 +476,7 @@ export default function App() {
       event.preventDefault();
       if (event.altKey) {
         setContextOpen((open) => !open);
+        setContextPreviewOpen(false);
       } else {
         setSidebarCollapsed((collapsed) => !collapsed);
         setSidebarPreviewOpen(false);
@@ -800,6 +817,19 @@ export default function App() {
     );
   }
 
+  function holdPanelPreview() {
+    if (panelPreviewTimerRef.current !== null) window.clearTimeout(panelPreviewTimerRef.current);
+    panelPreviewTimerRef.current = null;
+  }
+
+  function closePanelPreview(setOpen: (open: boolean) => void) {
+    holdPanelPreview();
+    panelPreviewTimerRef.current = window.setTimeout(() => {
+      panelPreviewTimerRef.current = null;
+      setOpen(false);
+    }, 100);
+  }
+
   const visibleEvents = activityRunId
     ? events.filter((runtimeEvent) => eventRunId(runtimeEvent) === activityRunId)
     : events;
@@ -808,8 +838,10 @@ export default function App() {
   const viewingOtherThreadDuringRun = Boolean(
     runInProgress && runningThreadId && activeThread?.id !== runningThreadId,
   );
-  const sidebarPinnedOpen = !sidebarCollapsed;
+  const sidebarPinnedOpen = !narrowView && !sidebarCollapsed;
   const sidebarOpen = sidebarPinnedOpen || sidebarPreviewOpen;
+  const contextPinnedOpen = !narrowView && contextOpen;
+  const contextVisible = contextPinnedOpen || contextPreviewOpen;
   const eventGroups: Array<{
     iteration: number | null;
     createdAt?: string;
@@ -833,14 +865,19 @@ export default function App() {
   const contextUsage = threadContext
     ? Math.min((threadContext.estimated_tokens / threadContext.token_budget) * 100, 100)
     : 0;
+  const settingsDirty = apiKeyDraft !== apiKey
+    || maxIterationsDraft !== String(maxIterations)
+    || sendOnEnterDraft !== sendOnEnter
+    || appearanceDraft !== appearance
+    || Boolean(desktop && uiScaleDraft !== uiScale);
   const layoutColumns = [
     sidebarPinnedOpen ? "var(--sidebar-width)" : null,
     "minmax(0,1fr)",
-    contextOpen ? "var(--context-column-width)" : null,
+    contextPinnedOpen ? "var(--context-column-width)" : null,
   ].filter(Boolean).join(" ");
 
   return (
-    <main className="bg-background text-foreground lg:h-screen lg:overflow-hidden">
+    <main className="h-dvh overflow-hidden bg-background text-foreground">
       <section
         style={{
           "--sidebar-width": `${sidebarWidth}px`,
@@ -848,37 +885,34 @@ export default function App() {
           "--context-column-width": `${contextWidth}px`,
           "--layout-columns": layoutColumns,
         } as CSSProperties}
-        className="relative grid w-full lg:h-screen lg:grid-cols-[var(--layout-columns)]"
+        className="relative grid h-dvh w-full overflow-hidden lg:grid-cols-[var(--layout-columns)]"
       >
         {sidebarOpen ? (
           <aside
-            className={`relative flex min-h-0 flex-col border-b bg-sidebar lg:border-b-0 lg:border-r ${
-              sidebarPinnedOpen ? "" : "sidebar-preview lg:absolute lg:inset-y-0 lg:left-0 lg:z-20 lg:w-[var(--sidebar-width)] lg:shadow-[12px_0_30px_rgba(31,31,30,0.12)]"
+            className={`drawer-left fixed top-14 bottom-0 left-0 z-40 flex w-[var(--sidebar-width)] max-w-[calc(100vw-3rem)] min-h-0 flex-col border-r bg-sidebar shadow-[12px_0_30px_rgba(31,31,30,0.12)] lg:max-w-none ${
+              sidebarPinnedOpen
+                ? "lg:relative lg:inset-y-auto lg:z-auto lg:shadow-none"
+                : "sidebar-preview lg:absolute lg:top-14 lg:bottom-0 lg:left-0 lg:z-20"
             }`}
+            onMouseEnter={holdPanelPreview}
             onMouseLeave={() => {
               if (!sidebarPinnedOpen) {
-                setSidebarPreviewOpen(false);
+                closePanelPreview(setSidebarPreviewOpen);
               }
             }}
           >
-          <header
-            className={`flex h-14 shrink-0 items-center gap-1.5 border-b px-3 ${desktop ? "titlebar-drag" : ""}`}
-            style={macDesktop ? { paddingLeft: `${80 / uiScale}px` } : undefined}
-          >
+          {sidebarPinnedOpen ? (
+            <header
+              className={`flex h-14 shrink-0 items-center gap-1.5 border-b px-3 ${desktop ? "titlebar-drag" : ""}`}
+              style={macDesktop ? { paddingLeft: `${80 / uiScale}px` } : undefined}
+            >
                 <Button
-                  aria-label={sidebarPreviewOpen ? "Pin sidebar" : "Collapse sidebar"}
+                  aria-label="Collapse sidebar"
                   className="size-10 shrink-0 bg-card"
                   size="icon-lg"
                   variant="outline"
                   type="button"
-                  onClick={() => {
-                    if (sidebarPreviewOpen) {
-                      setSidebarCollapsed(false);
-                      setSidebarPreviewOpen(false);
-                    } else {
-                      setSidebarCollapsed(true);
-                    }
-                  }}
+                  onClick={() => setSidebarCollapsed(true)}
                 >
                   <PanelLeft aria-hidden="true" className="size-4" />
                 </Button>
@@ -890,7 +924,8 @@ export default function App() {
                 >
                   <Plus aria-hidden="true" className="size-4" /> New chat
                 </Button>
-          </header>
+            </header>
+          ) : null}
 
           <div className="flex min-h-0 flex-1 flex-col py-3 pl-3">
             <nav className="space-y-1 overflow-y-auto pr-3">
@@ -964,13 +999,13 @@ export default function App() {
           </aside>
         ) : null}
 
-        <section className="relative flex min-h-0 min-w-0 flex-col bg-background lg:grid lg:h-screen lg:grid-cols-1 lg:grid-rows-[56px_minmax(0,1fr)_auto]">
+        <section className="relative grid h-dvh min-h-0 min-w-0 grid-cols-1 grid-rows-[56px_minmax(0,1fr)_auto] bg-background">
           <header
-            className={`relative z-30 col-start-1 row-start-1 flex h-14 shrink-0 items-center border-b bg-background px-4 sm:px-5 ${desktop ? "titlebar-drag" : ""}`}
+            className={`fixed inset-x-0 top-0 z-50 col-start-1 row-start-1 flex h-14 shrink-0 items-center border-b bg-background px-4 sm:px-5 lg:relative lg:inset-auto ${desktop ? "titlebar-drag" : ""}`}
           >
             {!sidebarPinnedOpen ? (
               <div
-                className={`absolute flex shrink-0 items-center gap-1 ${macDesktop && !sidebarOpen ? "" : "left-3"}`}
+                className={`absolute z-50 flex shrink-0 items-center gap-1 ${macDesktop && !sidebarOpen ? "" : "left-3"}`}
                 style={macDesktop && !sidebarOpen ? { left: `${80 / uiScale}px` } : undefined}
               >
                 <Button
@@ -979,17 +1014,21 @@ export default function App() {
                   size="icon-lg"
                   type="button"
                   variant="outline"
-                  onMouseEnter={() => setSidebarPreviewOpen(true)}
+                  onMouseEnter={() => {
+                    holdPanelPreview();
+                    setSidebarPreviewOpen(true);
+                  }}
+                  onMouseLeave={() => closePanelPreview(setSidebarPreviewOpen)}
                   onClick={() => {
                     setSidebarCollapsed(false);
-                    setSidebarPreviewOpen(false);
+                    if (!narrowView) setSidebarPreviewOpen(false);
                   }}
                 >
                   <PanelLeft aria-hidden="true" className="size-4" />
                 </Button>
                 <Button
                   aria-label="New chat"
-                  className="size-10 bg-card"
+                  className={`size-10 bg-card ${editingTitle ? "max-lg:hidden" : ""}`}
                   size="icon-lg"
                   type="button"
                   variant="outline"
@@ -999,12 +1038,12 @@ export default function App() {
                 </Button>
               </div>
             ) : null}
-            <div className={`mx-auto min-w-0 w-full max-w-3xl ${!sidebarPinnedOpen ? "max-lg:pl-24" : ""} ${!contextOpen ? "pr-24" : "pr-12"}`}>
+            <div className={`min-w-0 w-full text-left lg:mx-auto lg:max-w-3xl ${!sidebarPinnedOpen ? editingTitle ? "max-lg:pl-16" : "max-lg:pl-24" : ""} ${editingTitle ? "max-lg:pr-3" : !contextPinnedOpen ? "pr-24" : "pr-12"}`}>
               {editingTitle ? (
-                <form className="flex items-center gap-2" onSubmit={renameActiveThread}>
+                <form className="flex min-w-0 items-center gap-2" onSubmit={renameActiveThread}>
                   <Input
                     autoFocus
-                    className="h-8 min-w-0 bg-card text-sm font-semibold"
+                    className="h-8 min-w-0 flex-1 bg-card text-sm font-semibold"
                     maxLength={80}
                     value={titleDraft}
                     onChange={(event) => setTitleDraft(event.target.value)}
@@ -1023,8 +1062,8 @@ export default function App() {
                   </Button>
                 </form>
               ) : (
-                <div className={`flex items-center gap-2 ${activeThread ? "" : "justify-center"}`}>
-                  <h2 className="truncate text-sm font-semibold">
+                <div className="flex min-w-0 items-center gap-2">
+                  <h2 className="min-w-0 truncate text-left text-sm font-semibold">
                     {activeThread?.title || newThreadTitle || "New chat"}
                   </h2>
                   <Button
@@ -1044,8 +1083,8 @@ export default function App() {
               )}
             </div>
             <div
-              className={`absolute flex items-center gap-1 ${desktopWindowControls && !contextOpen ? "" : "right-3"}`}
-              style={desktopWindowControls && !contextOpen ? { right: `${144 / uiScale}px` } : undefined}
+              className={`absolute z-50 flex items-center gap-1 ${editingTitle ? "max-lg:hidden" : ""} ${desktopWindowControls && !contextPinnedOpen ? "" : "right-3"}`}
+              style={desktopWindowControls && !contextPinnedOpen ? { right: `${144 / uiScale}px` } : undefined}
             >
               {updateVersion ? (
                 <Button
@@ -1087,10 +1126,10 @@ export default function App() {
                 />
                 <DialogPrimitive.Portal>
                   <DialogPrimitive.Backdrop
-                    className="fixed inset-0 z-40 bg-black/10"
+                    className="fixed inset-0 z-[60] bg-black/25 backdrop-blur-[1px]"
                     onClick={() => setSettingsOpen(false)}
                   />
-                  <DialogPrimitive.Viewport className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center p-4">
+                  <DialogPrimitive.Viewport className="pointer-events-none fixed inset-0 z-[70] flex items-center justify-center p-4">
                     <DialogPrimitive.Popup className="pointer-events-auto w-full max-w-sm rounded-xl border bg-card p-4 text-card-foreground shadow-xl outline-none">
                       <form
                         noValidate
@@ -1232,22 +1271,35 @@ export default function App() {
                             </div>
                           </div>
                         </div>
-                        <div className="mt-5 flex justify-end">
-                          <Button type="submit">Done</Button>
+                        <div className="mt-5 flex min-h-9 items-center gap-3">
+                          {settingsDirty ? (
+                            <span className="text-xs font-medium text-warning" role="status">
+                              Changes not saved yet
+                            </span>
+                          ) : null}
+                          <Button className="ml-auto" type="submit">Done</Button>
                         </div>
                       </form>
                     </DialogPrimitive.Popup>
                   </DialogPrimitive.Viewport>
                 </DialogPrimitive.Portal>
               </DialogPrimitive.Root>
-              {!contextOpen ? (
+              {!contextPinnedOpen ? (
                 <Button
                   aria-label="Open context"
                   className="size-10 bg-card"
                   size="icon-lg"
                   type="button"
                   variant="outline"
-                  onClick={() => setContextOpen(true)}
+                  onMouseEnter={() => {
+                    holdPanelPreview();
+                    setContextPreviewOpen(true);
+                  }}
+                  onMouseLeave={() => closePanelPreview(setContextPreviewOpen)}
+                  onClick={() => {
+                    setContextOpen(true);
+                    if (!narrowView) setContextPreviewOpen(false);
+                  }}
                 >
                   <Layers3 aria-hidden="true" className="size-4" />
                 </Button>
@@ -1487,7 +1539,7 @@ export default function App() {
           </form>
 
         {activityOpen ? (
-          <aside className="relative flex min-h-0 flex-col border-t bg-sidebar lg:col-start-1 lg:row-start-2 lg:z-20 lg:w-[var(--activity-width)] lg:justify-self-end lg:self-stretch lg:border-t-0 lg:border-l lg:shadow-[-8px_0_24px_rgba(31,31,30,0.1)]">
+          <aside className="drawer-right relative z-20 col-start-1 row-start-2 flex min-h-0 w-[var(--activity-width)] max-w-[calc(100vw-3rem)] flex-col justify-self-end self-stretch border-l bg-sidebar shadow-[-8px_0_24px_rgba(31,31,30,0.1)] lg:max-w-none">
             <div
               aria-label="Resize activity panel"
               className="group absolute inset-y-0 -left-1 z-30 hidden w-2 cursor-col-resize touch-none lg:block"
@@ -1525,7 +1577,7 @@ export default function App() {
                 />
               </div>
             </header>
-            <div className="max-h-[45vh] min-h-0 flex-1 space-y-4 overflow-y-auto p-3 lg:max-h-none">
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
             {eventGroups.length ? (
               eventGroups.map((group, groupIndex) => (
                 <section className="space-y-2 border-b pb-4 last:border-b-0 last:pb-0" key={`${group.iteration}-${groupIndex}`}>
@@ -1614,9 +1666,19 @@ export default function App() {
         ) : null}
         </section>
 
-        {contextOpen ? (
-          <aside className="relative flex min-h-0 flex-col border-t bg-sidebar lg:h-screen lg:border-t-0 lg:border-l">
-            {contextOpen ? (
+        {contextVisible ? (
+          <aside
+            className={`drawer-right fixed top-14 right-0 bottom-0 z-40 flex w-[var(--context-column-width)] max-w-[calc(100vw-3rem)] min-h-0 flex-col border-l bg-sidebar shadow-[-12px_0_30px_rgba(31,31,30,0.12)] lg:max-w-none ${
+              contextPinnedOpen
+                ? "lg:relative lg:inset-y-auto lg:z-auto lg:shadow-none"
+                : "lg:absolute lg:top-14 lg:right-0 lg:bottom-0 lg:z-20"
+            }`}
+            onMouseEnter={holdPanelPreview}
+            onMouseLeave={() => {
+              if (!contextPinnedOpen) closePanelPreview(setContextPreviewOpen);
+            }}
+          >
+            {contextPinnedOpen ? (
               <div
                 aria-label="Resize context panel"
                 className="group absolute inset-y-0 -left-1 z-30 hidden w-2 cursor-col-resize touch-none lg:block"
@@ -1630,10 +1692,11 @@ export default function App() {
                 <span className="absolute inset-y-0 left-1/2 w-px bg-transparent group-hover:bg-border" />
               </div>
             ) : null}
-            <header
-              className={`flex h-14 shrink-0 items-center justify-between border-b px-3 ${desktop ? "titlebar-drag" : ""}`}
-              style={desktopWindowControls ? { paddingRight: `${144 / uiScale}px` } : undefined}
-            >
+            {contextPinnedOpen ? (
+              <header
+                className={`flex h-14 shrink-0 items-center justify-between border-b px-3 ${desktop ? "titlebar-drag" : ""}`}
+                style={desktopWindowControls ? { paddingRight: `${144 / uiScale}px` } : undefined}
+              >
               <div className="flex items-center gap-2">
                 <Button
                   aria-label="Collapse context"
@@ -1645,16 +1708,16 @@ export default function App() {
                 >
                   <Layers3 aria-hidden="true" className="size-4" />
                 </Button>
-                {contextOpen ? <p className="text-sm font-semibold">Context</p> : null}
+                <p className="text-sm font-semibold">Context</p>
               </div>
-              {contextOpen ? <span className="text-xs text-muted-foreground">
+              <span className="text-xs text-muted-foreground">
                 {threadContext
                   ? `${threadContext.messages.length} entries`
                   : "Empty"}
-              </span> : null}
-            </header>
-            {contextOpen ? (
-            <div className="max-h-[45vh] min-h-0 flex-1 space-y-4 overflow-y-auto p-3 lg:max-h-none">
+              </span>
+              </header>
+            ) : null}
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
               {threadContext ? (
                 <>
                   <section className="rounded-lg border bg-card p-3">
@@ -1776,7 +1839,6 @@ export default function App() {
                 </p>
               )}
             </div>
-            ) : null}
           </aside>
         ) : null}
       </section>
