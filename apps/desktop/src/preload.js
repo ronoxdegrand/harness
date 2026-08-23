@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("harnessDesktop", {
   platform: process.platform,
+  getVersion: () => ipcRenderer.invoke("desktop:get-version"),
   onUpdateReady(callback) {
     const listener = (_event, version) => callback(version);
     ipcRenderer.on("desktop:update-ready", listener);

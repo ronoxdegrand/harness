@@ -14,6 +14,7 @@ interface DesktopSettings {
 interface Window {
   harnessDesktop?: {
     platform: string;
+    getVersion(): Promise<string>;
     getUpdateReady(): Promise<string | undefined>;
     onUpdateReady(callback: (version: string) => void): () => void;
     restartToUpdate(): Promise<void>;

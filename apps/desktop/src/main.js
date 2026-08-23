@@ -278,6 +278,7 @@ ipcMain.handle("desktop:restart-to-update", async () => {
 });
 
 ipcMain.handle("desktop:get-update", () => updateVersion);
+ipcMain.handle("desktop:get-version", () => app.getVersion());
 ipcMain.handle("desktop:get-settings", () => readSettings(settingsPath, safeStorage));
 ipcMain.handle("desktop:set-settings", (_event, settings) => {
   writeSettings(settingsPath, settings, safeStorage);

@@ -32,6 +32,12 @@
   --sidebar-accent-foreground: #20201e;
   --sidebar-border: #e7e7e1;
   --sidebar-ring: #777770;
+  --brand: #0f766e;
+  --brand-muted: #e5f4f1;
+  --brand-border: #a8d8d1;
+  --affirmative: #5eead4;
+  --affirmative-hover: #45d6c0;
+  --affirmative-foreground: #10211e;
   --scrollbar: #c7c7bf;
   --scrollbar-hover: #a5a59d;
   --link: #2868b2;
@@ -81,6 +87,12 @@
   --sidebar-accent-foreground: #f2f2ed;
   --sidebar-border: #343530;
   --sidebar-ring: #a5a59d;
+  --brand: #5eead4;
+  --brand-muted: #17332f;
+  --brand-border: #2a5c54;
+  --affirmative: #5eead4;
+  --affirmative-hover: #45d6c0;
+  --affirmative-foreground: #10211e;
   --scrollbar: #50514a;
   --scrollbar-hover: #686961;
   --link: #7db4ee;
@@ -349,6 +361,12 @@ pre {
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
+  --color-brand: var(--brand);
+  --color-brand-muted: var(--brand-muted);
+  --color-brand-border: var(--brand-border);
+  --color-affirmative: var(--affirmative);
+  --color-affirmative-hover: var(--affirmative-hover);
+  --color-affirmative-foreground: var(--affirmative-foreground);
   --color-success: var(--success);
   --color-success-muted: var(--success-muted);
   --color-success-border: var(--success-border);

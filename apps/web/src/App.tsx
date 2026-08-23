@@ -7,6 +7,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { Badge, Button, Card, Input, Separator, Textarea } from "@/components/ui";
+import webPackage from "../package.json";
 
 const MODEL_OPTIONS = [
   "gemini-3-flash",
@@ -210,6 +211,7 @@ export default function App() {
   const [appearanceDraft, setAppearanceDraft] = useState<Appearance>(appearance);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [updateVersion, setUpdateVersion] = useState<string>();
+  const [appVersion, setAppVersion] = useState(webPackage.version);
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [activeThread, setActiveThread] = useState<ThreadSummary | null>(null);
   const [runningThreadId, setRunningThreadId] = useState<string | null>(null);
@@ -300,6 +302,7 @@ export default function App() {
 
   useEffect(() => {
     if (!desktop) return;
+    void desktop.getVersion().then(setAppVersion);
     void desktop.getUpdateReady().then(setUpdateVersion);
     return desktop.onUpdateReady(setUpdateVersion);
   }, []);
@@ -1048,7 +1051,7 @@ export default function App() {
                     value={titleDraft}
                     onChange={(event) => setTitleDraft(event.target.value)}
                   />
-                  <Button className="h-7 px-2" size="sm" type="submit" variant="ghost">
+                  <Button className="h-7 px-2" size="sm" type="submit" variant="affirmative">
                     Save
                   </Button>
                   <Button
@@ -1088,9 +1091,9 @@ export default function App() {
             >
               {updateVersion ? (
                 <Button
-                  className="h-10 gap-2 bg-card"
+                  className="h-10 gap-2"
                   type="button"
-                  variant="outline"
+                  variant="affirmative"
                   onClick={() => void window.harnessDesktop?.restartToUpdate()}
                 >
                   <RefreshCw aria-hidden="true" className="size-4" />
@@ -1155,7 +1158,12 @@ export default function App() {
                           setSettingsOpen(false);
                         }}
                       >
-                        <DialogPrimitive.Title className="text-sm font-semibold">Settings</DialogPrimitive.Title>
+                        <div className="flex items-center justify-between gap-3">
+                          <DialogPrimitive.Title className="text-sm font-semibold">Settings</DialogPrimitive.Title>
+                          <span className="rounded-full border border-brand-border bg-brand-muted px-2 py-0.5 text-xs font-semibold text-brand">
+                            v{appVersion}
+                          </span>
+                        </div>
                         <DialogPrimitive.Description className="sr-only">
                           Changes are saved only when Done is selected.
                         </DialogPrimitive.Description>
@@ -1277,7 +1285,7 @@ export default function App() {
                               Changes not saved yet
                             </span>
                           ) : null}
-                          <Button className="ml-auto" type="submit">Done</Button>
+                          <Button className="ml-auto" type="submit" variant="affirmative">Done</Button>
                         </div>
                       </form>
                     </DialogPrimitive.Popup>
@@ -1413,7 +1421,7 @@ export default function App() {
                       {continuationRequest.additional_iterations} more, or stop and generate a final response now.
                     </p>
                     <div className="mt-3 flex flex-wrap gap-2">
-                      <Button type="submit">Continue</Button>
+                      <Button type="submit" variant="affirmative">Continue</Button>
                       <Button type="button" variant="outline" onClick={() => answerContinuation(false)}>
                         Stop and summarize
                       </Button>
@@ -1531,6 +1539,7 @@ export default function App() {
                   disabled={!task.trim() || (!activeThread && !workspacePath.trim()) || status === "connecting" || status === "running"}
                   size="sm"
                   type="submit"
+                  variant="affirmative"
                 >
                   <Send aria-hidden="true" className="size-3.5" /> Send
                 </Button>
