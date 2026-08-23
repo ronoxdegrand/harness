@@ -4,6 +4,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from .context import Context
 from .events import EventEmitter
@@ -31,6 +32,7 @@ class AgentRuntime:
         event_emitter: EventEmitter | None = None,
         max_iterations: int = 12,
         timeout_seconds: int = 120,
+        continuation_decider: Callable[[int], bool] | None = None,
     ) -> None:
         self.model = model
         self.model_name = getattr(model, "model_name", None)
@@ -40,6 +42,7 @@ class AgentRuntime:
         self.events = event_emitter or EventEmitter()
         self.max_iterations = max_iterations
         self.timeout_seconds = timeout_seconds
+        self.continuation_decider = continuation_decider
 
     def run(
         self,
@@ -72,10 +75,39 @@ class AgentRuntime:
         self.store.save_snapshot(active_run_id, 0, context.snapshot())
 
         iteration = 0
+        warning_interval = iteration_limit
+        warning_iteration = iteration_limit
         try:
-            for iteration in range(1, iteration_limit + 1):
+            while True:
+                iteration += 1
                 if time.monotonic() - started_at > timeout_limit:
                     raise TimeoutError(f"Run exceeded {timeout_limit} seconds.")
+
+                force_final_response = False
+                if iteration == warning_iteration:
+                    self._emit(
+                        active_run_id,
+                        "run.continuation_requested",
+                        iteration=iteration,
+                        completed_iterations=iteration - 1,
+                    )
+                    wait_started = time.monotonic()
+                    continue_run = (
+                        self.continuation_decider(iteration)
+                        if self.continuation_decider
+                        else False
+                    )
+                    started_at += time.monotonic() - wait_started
+                    self._emit(
+                        active_run_id,
+                        "run.continuation_decided",
+                        iteration=iteration,
+                        continue_run=continue_run,
+                    )
+                    if continue_run:
+                        warning_iteration += warning_interval
+                    else:
+                        force_final_response = True
 
                 self._emit(active_run_id, "turn.started", iteration=iteration)
                 self._emit(
@@ -86,10 +118,10 @@ class AgentRuntime:
                 )
                 response = self.model.complete(
                     context,
-                    final_response=iteration == iteration_limit,
+                    final_response=force_final_response,
                 )
 
-                if iteration == iteration_limit and response.tool_calls:
+                if force_final_response and response.tool_calls:
                     if not response.output_text:
                         raise RuntimeError("Final iteration must return an output message.")
                     response.tool_calls = []
@@ -137,7 +169,7 @@ class AgentRuntime:
                         status="completed",
                     )
                     self.store.save_snapshot(active_run_id, iteration, context.snapshot())
-                    finalized_by_iteration_limit = iteration == iteration_limit
+                    finalized_by_iteration_limit = force_final_response
                     self.store.complete_run(
                         active_run_id,
                         response.output_text,
@@ -167,7 +199,6 @@ class AgentRuntime:
                     status="tool_results_available",
                 )
 
-            raise RuntimeError(f"Run exceeded max_iterations={iteration_limit}.")
         except Exception as exc:
             self._emit(active_run_id, "turn.failed", iteration=iteration or 1, error=str(exc))
             self.store.fail_run(active_run_id, str(exc))

@@ -43,6 +43,10 @@ type RunSocketMessage =
       };
     }
   | { kind: "run.failed"; error: string }
+  | {
+      kind: "run.continuation_required";
+      payload: { iteration: number; completed_iterations: number; additional_iterations: number };
+    }
   | { kind: "run.finished" };
 
 type RuntimeEvent = {
@@ -185,6 +189,7 @@ export default function App() {
   const [updateVersion, setUpdateVersion] = useState<string>();
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [activeThread, setActiveThread] = useState<ThreadSummary | null>(null);
+  const [runningThreadId, setRunningThreadId] = useState<string | null>(null);
   const [threadToDelete, setThreadToDelete] = useState<ThreadSummary | null>(null);
   const [threadTurns, setThreadTurns] = useState<ThreadTurn[]>([]);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
@@ -223,13 +228,20 @@ export default function App() {
   const [titleDraft, setTitleDraft] = useState("");
   const [newThreadTitle, setNewThreadTitle] = useState<string | null>(null);
   const [finalizedByIterationLimit, setFinalizedByIterationLimit] = useState(false);
+  const [continuationRequest, setContinuationRequest] = useState<{
+    iteration: number;
+    completed_iterations: number;
+    additional_iterations: number;
+  } | null>(null);
   const [error, setError] = useState("");
   const socketRef = useRef<WebSocket | null>(null);
+  const activeThreadIdRef = useRef<string | null>(null);
   const taskInputRef = useRef<HTMLTextAreaElement | null>(null);
   const conversationBottomRef = useRef<HTMLDivElement | null>(null);
   const activityBottomRef = useRef<HTMLDivElement | null>(null);
   const shortcutTimerRef = useRef<number | null>(null);
   const apiKeyPromptedRef = useRef(false);
+  const continuationPendingRef = useRef(false);
   const resizeRef = useRef<{ panel: "sidebar" | "activity" | "context"; startX: number; startWidth: number } | null>(null);
 
   useEffect(() => {
@@ -237,7 +249,7 @@ export default function App() {
     if (activityOpen) {
       activityBottomRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
     }
-  }, [activityOpen, events, assistantText, status]);
+  }, [activityOpen, events, assistantText, continuationRequest, status]);
 
   useEffect(() => {
     const input = taskInputRef.current;
@@ -247,6 +259,10 @@ export default function App() {
     input.style.height = "auto";
     input.style.height = `${input.scrollHeight}px`;
   }, [task]);
+
+  useEffect(() => {
+    if (!activeThread && !settingsOpen) taskInputRef.current?.focus();
+  }, [activeThread, settingsOpen]);
 
   useEffect(() => {
     return () => {
@@ -454,6 +470,7 @@ export default function App() {
         return;
       }
       const payload = await readJson<ThreadDetail>(response);
+      activeThreadIdRef.current = payload.thread.id;
       setActiveThread(payload.thread);
       setWorkspacePath(payload.thread.workspace_path);
       setModelName(selectableModel(payload.thread.model_name));
@@ -474,6 +491,7 @@ export default function App() {
 
   function startNewThread() {
     socketRef.current?.close();
+    activeThreadIdRef.current = null;
     setActiveThread(null);
     setThreadTurns([]);
     setEvents([]);
@@ -483,6 +501,8 @@ export default function App() {
     setActivityOpen(false);
     setActivityRunId(null);
     setFinalizedByIterationLimit(false);
+    continuationPendingRef.current = false;
+    setContinuationRequest(null);
     setError("");
     setStatus("idle");
     setTask("");
@@ -538,15 +558,19 @@ export default function App() {
     socketRef.current?.close();
 
     const thread = activeThread;
+    let runThreadId = thread?.id ?? null;
     const submittedTask = task;
     setLastUsedModel(modelName);
 
     setStatus("connecting");
+    setRunningThreadId(runThreadId);
     setTask("");
     setAssistantText("");
     setActivityOpen(false);
     setActivityRunId(null);
     setFinalizedByIterationLimit(false);
+    continuationPendingRef.current = false;
+    setContinuationRequest(null);
     setError("");
     setThreadTurns((current) => [
       ...current,
@@ -585,6 +609,9 @@ export default function App() {
       }
 
       if (payload.kind === "thread.opened") {
+        runThreadId = payload.payload.thread.id;
+        activeThreadIdRef.current = runThreadId;
+        setRunningThreadId(runThreadId);
         setActiveThread(payload.payload.thread);
         setWorkspacePath(payload.payload.thread.workspace_path);
         setThreadTurns((current) => {
@@ -597,6 +624,7 @@ export default function App() {
       }
 
       if (payload.kind === "runtime.event") {
+        if (runThreadId && activeThreadIdRef.current !== runThreadId) return;
         setEvents((current) => [...current, payload.event]);
 
         if (payload.event.type === "context.updated") {
@@ -622,7 +650,6 @@ export default function App() {
           const toolName = typeof toolCall?.name === "string" ? toolCall.name : "tool";
           const result = payload.event.payload.result as Record<string, unknown> | undefined;
           const output = typeof result?.output === "string" ? result.output : "Tool failed.";
-          setStatus("failed");
           setError(`Tool failed: ${toolName}. ${output}`);
         }
 
@@ -651,34 +678,61 @@ export default function App() {
         return;
       }
 
+      if (payload.kind === "run.continuation_required") {
+        continuationPendingRef.current = true;
+        setContinuationRequest(payload.payload);
+        return;
+      }
+
       if (payload.kind === "run.completed") {
         setStatus(payload.payload.status);
-        setFinalizedByIterationLimit(payload.payload.finalized_by_iteration_limit);
-        if (payload.payload.output_text.trim()) {
-          setAssistantText(payload.payload.output_text);
+        if (activeThreadIdRef.current === payload.payload.thread_id) {
+          setFinalizedByIterationLimit(payload.payload.finalized_by_iteration_limit);
+          if (payload.payload.output_text.trim()) {
+            setAssistantText(payload.payload.output_text);
+          }
+          void openThread(payload.payload.thread_id, true);
         }
-        void openThread(payload.payload.thread_id, true);
         void refreshThreads();
         return;
       }
 
       if (payload.kind === "run.failed") {
         setStatus("failed");
-        setError(payload.error);
-        setAssistantText((current) => current || "The run failed.");
+        if (activeThreadIdRef.current === runThreadId) {
+          setError(payload.error);
+          setAssistantText((current) => current || "The run failed.");
+        }
         return;
       }
 
       if (payload.kind === "run.finished") {
+        continuationPendingRef.current = false;
+        setContinuationRequest(null);
+        setRunningThreadId(null);
         setStatus((current) => (current === "running" ? "completed" : current));
         socket.close();
       }
     };
 
     socket.onerror = () => {
+      continuationPendingRef.current = false;
+      setContinuationRequest(null);
+      setRunningThreadId(null);
       setStatus("failed");
       setError("WebSocket connection failed.");
     };
+  }
+
+  function answerContinuation(continueRun: boolean) {
+    if (!continuationPendingRef.current) return;
+    continuationPendingRef.current = false;
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(
+        JSON.stringify({ kind: "run.continuation_decision", continue: continueRun }),
+      );
+    }
+    setContinuationRequest(null);
   }
 
   function startResize(panel: "sidebar" | "activity" | "context", event: ReactPointerEvent<HTMLDivElement>) {
@@ -708,6 +762,10 @@ export default function App() {
     ? events.filter((runtimeEvent) => eventRunId(runtimeEvent) === activityRunId)
     : events;
   const repositoryRequired = !activeThread && Boolean(task.trim()) && !workspacePath.trim();
+  const runInProgress = Boolean(runningThreadId);
+  const viewingOtherThreadDuringRun = Boolean(
+    runInProgress && runningThreadId && activeThread?.id !== runningThreadId,
+  );
   const sidebarPinnedOpen = !sidebarCollapsed;
   const sidebarOpen = sidebarPinnedOpen || sidebarPreviewOpen;
   const eventGroups: Array<{
@@ -817,20 +875,29 @@ export default function App() {
                         </span>
                       </span>
                     </Button>
-                    <Button
-                      aria-label={`Delete ${thread.title}`}
-                      className="absolute top-1/2 right-1.5 size-7 -translate-y-1/2 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 hover:text-destructive"
-                      disabled={activeThread?.id === thread.id && (status === "connecting" || status === "running")}
-                      size="icon-sm"
-                      type="button"
-                      variant="ghost"
-                      onClick={() => {
-                        setError("");
-                        setThreadToDelete(thread);
-                      }}
-                    >
-                      <Trash2 aria-hidden="true" className="size-3.5" />
-                    </Button>
+                    {runInProgress && runningThreadId === thread.id ? (
+                      <span
+                        aria-label="Running"
+                        className="absolute top-1/2 right-1.5 flex size-7 -translate-y-1/2 items-center justify-center text-muted-foreground"
+                        role="status"
+                      >
+                        <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" />
+                      </span>
+                    ) : (
+                      <Button
+                        aria-label={`Delete ${thread.title}`}
+                        className="absolute top-1/2 right-1.5 size-7 -translate-y-1/2 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 hover:text-destructive"
+                        size="icon-sm"
+                        type="button"
+                        variant="ghost"
+                        onClick={() => {
+                          setError("");
+                          setThreadToDelete(thread);
+                        }}
+                      >
+                        <Trash2 aria-hidden="true" className="size-3.5" />
+                      </Button>
+                    )}
                   </div>
                 ))
               ) : (
@@ -1009,7 +1076,7 @@ export default function App() {
                             />
                           </label>
                           <label className="block space-y-1.5 text-xs font-medium">
-                            <span>Max iterations</span>
+                            <span>Iteration warning</span>
                             <Input
                               max={50}
                               min={1}
@@ -1192,6 +1259,28 @@ export default function App() {
                   <AssistantMarkdown content={assistantText} />
                 </article>
               ) : null}
+              {continuationRequest && activeThread?.id === runningThreadId ? (
+                <Card className="message-in rounded-xl border-amber-300 bg-amber-50 p-4 text-amber-950 shadow-none" role="status">
+                  <form
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      answerContinuation(true);
+                    }}
+                  >
+                    <p className="text-sm font-semibold">Continue running?</p>
+                    <p className="mt-1 text-sm leading-6 text-amber-900/80">
+                      The harness completed {continuationRequest.completed_iterations} iterations. Continue for up to{" "}
+                      {continuationRequest.additional_iterations} more, or stop and generate a final response now.
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Button type="submit">Continue</Button>
+                      <Button type="button" variant="outline" onClick={() => answerContinuation(false)}>
+                        Stop and summarize
+                      </Button>
+                    </div>
+                  </form>
+                </Card>
+              ) : null}
               <div ref={conversationBottomRef} />
             </div>
           </div>
@@ -1201,6 +1290,7 @@ export default function App() {
               <Textarea
                 ref={taskInputRef}
                 className="min-h-16 max-h-60 resize-none overflow-y-auto border-0 bg-transparent px-3 py-2 text-sm leading-6 shadow-none focus-visible:ring-0"
+                disabled={viewingOtherThreadDuringRun}
                 placeholder={'Inspect the repo, search for "AgentRuntime", run tests, and show git diff'}
                 value={task}
                 onChange={(event) => setTask(event.target.value)}
