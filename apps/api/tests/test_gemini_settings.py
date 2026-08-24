@@ -8,3 +8,12 @@ def test_settings_reads_gemini_api_key_from_env(monkeypatch) -> None:
     settings = get_settings()
 
     assert settings.gemini_api_key == "test-key"
+
+
+def test_settings_reads_sarvam_api_key_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("SARVAM_API_KEY", "sarvam-key")
+    get_settings.cache_clear()
+
+    settings = get_settings()
+
+    assert settings.sarvam_api_key == "sarvam-key"

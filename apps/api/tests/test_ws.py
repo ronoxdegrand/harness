@@ -50,6 +50,7 @@ def test_run_websocket_rejects_invalid_requests(tmp_path: Path, monkeypatch) -> 
         ({"task": "inspect", "workspace_path": 1}, "Workspace path must be a string."),
         ({"task": "inspect", "model_name": " "}, "Model name must be a non-empty string."),
         ({"task": "inspect", "api_key": " "}, "API key must be a non-empty string."),
+        ({"task": "inspect", "sarvam_api_key": " "}, "Sarvam API key must be a non-empty string."),
         ({"task": "inspect", "max_iterations": 0}, "Max iterations must be an integer"),
         ({"task": "inspect", "max_iterations": 51}, "Max iterations must be an integer"),
         ({"task": "inspect", "max_iterations": "8"}, "Max iterations must be an integer"),
@@ -237,7 +238,41 @@ def test_run_websocket_accepts_iteration_warning_decisions(tmp_path: Path, monke
                     elif message["kind"] == "run.finished":
                         break
 
-    assert warnings == [2, 4]
+    assert warnings == [1, 3]
     assert final_payload is not None
     assert final_payload["iterations"] == 4
     assert final_payload["finalized_by_iteration_limit"] is True
+
+
+def test_run_websocket_routes_sarvam_model_and_key(tmp_path: Path, monkeypatch) -> None:
+    workspace_root = tmp_path / "workspace"
+    _create_repo(workspace_root)
+    monkeypatch.setenv("HARNESS_WORKSPACE_ROOT", str(workspace_root))
+    get_settings.cache_clear()
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "Sarvam completed the run."}}]}
+
+    with patch(
+        "agent_harness_api.sarvam_model.httpx.post", return_value=FakeResponse()
+    ) as post:
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws/run") as websocket:
+                assert websocket.receive_json()["kind"] == "session.ready"
+                websocket.send_json(
+                        {
+                            "task": "inspect",
+                            "workspace_path": ".",
+                            "model_name": "sarvam-105b",
+                        "sarvam_api_key": "sarvam-key",
+                    }
+                )
+                while (message := websocket.receive_json())["kind"] != "run.completed":
+                    pass
+
+    assert message["payload"]["output_text"] == "Sarvam completed the run."
+    assert post.call_args.kwargs["headers"] == {"api-subscription-key": "sarvam-key"}

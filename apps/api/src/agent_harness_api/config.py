@@ -10,7 +10,7 @@ DEFAULT_MODEL = "gemini-3-flash"
 class Settings(BaseSettings):
     app_name: str = "AI Agent Harness API"
     app_env: str = "development"
-    app_version: str = "0.3.0"
+    app_version: str = "0.4.0"
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=0, le=65535)
     auth_token: str | None = None
@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = Field(
         default=None,
         validation_alias=AliasChoices("GEMINI_API_KEY", "HARNESS_GEMINI_API_KEY"),
+    )
+    sarvam_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SARVAM_API_KEY", "HARNESS_SARVAM_API_KEY"),
     )
     model_config = SettingsConfigDict(
         env_prefix="HARNESS_",

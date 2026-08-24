@@ -2,11 +2,14 @@
 
 interface DesktopSettings {
   apiKey: string;
+  sarvamApiKey: string;
   maxIterations: number;
   sendOnEnter: boolean;
   sidebarWidth: number;
   activityWidth: number;
   contextWidth: number;
+  threadSort: "recent-message" | "created";
+  groupThreadsByPath: boolean;
   scale: number;
   appearance: "light" | "dark" | "system";
 }

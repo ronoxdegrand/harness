@@ -24,8 +24,9 @@ class Thread:
     model_name: str
     created_at: str
     updated_at: str
+    last_message_at: str | None
 
-    def as_dict(self) -> dict[str, str]:
+    def as_dict(self) -> dict[str, object]:
         return asdict(self)
 
 
@@ -87,7 +88,8 @@ class RunStore:
             )
             row = connection.execute(
                 """
-                SELECT id, title, workspace_path, model_name, created_at, updated_at
+                SELECT id, title, workspace_path, model_name, created_at, updated_at,
+                       (SELECT MAX(created_at) FROM harness_turns WHERE thread_id = harness_threads.id)
                 FROM harness_threads WHERE id = ?
                 """,
                 (thread_id,),
@@ -98,7 +100,8 @@ class RunStore:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, title, workspace_path, model_name, created_at, updated_at
+                SELECT id, title, workspace_path, model_name, created_at, updated_at,
+                       (SELECT MAX(created_at) FROM harness_turns WHERE thread_id = harness_threads.id)
                 FROM harness_threads
                 ORDER BY COALESCE(
                     (
@@ -115,7 +118,8 @@ class RunStore:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, title, workspace_path, model_name, created_at, updated_at
+                SELECT id, title, workspace_path, model_name, created_at, updated_at,
+                       (SELECT MAX(created_at) FROM harness_turns WHERE thread_id = harness_threads.id)
                 FROM harness_threads WHERE id = ?
                 """,
                 (thread_id,),
@@ -130,7 +134,8 @@ class RunStore:
             )
             row = connection.execute(
                 """
-                SELECT id, title, workspace_path, model_name, created_at, updated_at
+                SELECT id, title, workspace_path, model_name, created_at, updated_at,
+                       (SELECT MAX(created_at) FROM harness_turns WHERE thread_id = harness_threads.id)
                 FROM harness_threads WHERE id = ?
                 """,
                 (thread_id,),
@@ -461,7 +466,7 @@ class RunStore:
         return sqlite3.connect(self.database_path)
 
     @staticmethod
-    def _thread_from_row(row: tuple[str, str, str, str, str, str]) -> Thread:
+    def _thread_from_row(row: tuple[str, str, str, str, str, str, str | None]) -> Thread:
         return Thread(
             id=row[0],
             title=row[1],
@@ -469,4 +474,5 @@ class RunStore:
             model_name=row[3],
             created_at=row[4],
             updated_at=row[5],
+            last_message_at=row[6],
         )

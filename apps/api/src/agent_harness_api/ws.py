@@ -15,6 +15,7 @@ from .context import Context
 from .events import EventEmitter, RuntimeEvent
 from .gemini_model import GeminiModelProvider
 from .runtime import AgentRuntime
+from .sarvam_model import SarvamModelProvider
 from .store import RunStore, Thread, thread_title_from_prompt
 from .tools import ToolExecutor, build_default_tool_registry
 
@@ -42,18 +43,25 @@ def build_runtime(
     workspace_path: Path,
     emitter: EventEmitter,
     *,
-    api_key: str | None,
+    gemini_api_key: str | None,
+    sarvam_api_key: str | None,
     model_name: str,
     max_iterations: int,
     continuation_decider: Callable[[int], bool],
 ) -> AgentRuntime:
     registry = build_default_tool_registry()
+    if model_name == "sarvam-105b":
+        model = SarvamModelProvider(
+            api_key=sarvam_api_key, model_name=model_name, tool_registry=registry
+        )
+    elif model_name.startswith("gemini-"):
+        model = GeminiModelProvider(
+            api_key=gemini_api_key, model_name=model_name, tool_registry=registry
+        )
+    else:
+        raise ValueError(f"Unsupported model: {model_name}")
     return AgentRuntime(
-        model=GeminiModelProvider(
-            api_key=api_key,
-            model_name=model_name,
-            tool_registry=registry,
-        ),
+        model=model,
         tool_registry=registry,
         tool_executor=ToolExecutor(registry),
         store=RunStore(),
@@ -104,6 +112,7 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
     requested_model = request.get("model_name")
     requested_title = request.get("title")
     requested_api_key = request.get("api_key")
+    requested_sarvam_api_key = request.get("sarvam_api_key")
     requested_max_iterations = request.get("max_iterations")
 
     if not isinstance(task, str) or not (prompt := task.strip()):
@@ -120,6 +129,13 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
         not isinstance(requested_api_key, str) or not requested_api_key.strip()
     ):
         await _fail_run(websocket, "API key must be a non-empty string.")
+        return
+
+    if requested_sarvam_api_key is not None and (
+        not isinstance(requested_sarvam_api_key, str)
+        or not requested_sarvam_api_key.strip()
+    ):
+        await _fail_run(websocket, "Sarvam API key must be a non-empty string.")
         return
 
     if requested_max_iterations is not None and (
@@ -194,15 +210,15 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
     def on_event(event: RuntimeEvent) -> None:
         _push_message(loop, queue, {"kind": "runtime.event", "event": event.as_dict()})
 
-    def decide_continuation(iteration: int) -> bool:
+    def decide_continuation(completed_iterations: int) -> bool:
         _push_message(
             loop,
             queue,
             {
                 "kind": "run.continuation_required",
                 "payload": {
-                    "iteration": iteration,
-                    "completed_iterations": iteration - 1,
+                    "iteration": completed_iterations,
+                    "completed_iterations": completed_iterations,
                     "additional_iterations": requested_max_iterations or 8,
                 },
             },
@@ -214,7 +230,14 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
         runtime = build_runtime(
             target_path,
             emitter,
-            api_key=requested_api_key.strip() if requested_api_key else settings.gemini_api_key,
+            gemini_api_key=(
+                requested_api_key.strip() if requested_api_key else settings.gemini_api_key
+            ),
+            sarvam_api_key=(
+                requested_sarvam_api_key.strip()
+                if requested_sarvam_api_key
+                else settings.sarvam_api_key
+            ),
             model_name=model_name,
             max_iterations=requested_max_iterations or 8,
             continuation_decider=decide_continuation,

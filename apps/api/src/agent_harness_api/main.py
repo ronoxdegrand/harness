@@ -85,7 +85,7 @@ async def shutdown(request: Request) -> dict[str, str]:
 
 
 @app.get("/threads")
-async def list_threads() -> dict[str, list[dict[str, str]]]:
+async def list_threads() -> dict[str, list[dict[str, object]]]:
     return {"threads": [thread.as_dict() for thread in RunStore().list_threads()]}
 
 
@@ -133,7 +133,7 @@ async def get_thread_context_entry(thread_id: str, message_index: int) -> dict[s
 
 
 @app.patch("/threads/{thread_id}")
-async def rename_thread(thread_id: str, request: ThreadRenameRequest) -> dict[str, str]:
+async def rename_thread(thread_id: str, request: ThreadRenameRequest) -> dict[str, object]:
     title = request.title.strip()
     if not title:
         raise HTTPException(status_code=400, detail="Thread title cannot be empty.")

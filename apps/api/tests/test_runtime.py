@@ -275,7 +275,7 @@ def test_agent_runtime_executes_single_agent_loop(tmp_path: Path, monkeypatch) -
     assert snapshot_count is not None and snapshot_count[0] >= 2
 
 
-def test_iteration_warning_can_continue_for_another_full_interval(
+def test_iteration_warning_repeats_after_each_full_interval(
     tmp_path: Path, monkeypatch
 ) -> None:
     database_path = tmp_path / "continuation.db"
@@ -283,7 +283,7 @@ def test_iteration_warning_can_continue_for_another_full_interval(
     get_settings.cache_clear()
     initialize_database()
 
-    decisions = iter([True, False])
+    decisions = iter([True, True, False])
     warnings: list[int] = []
 
     def decide(iteration: int) -> bool:
@@ -297,15 +297,15 @@ def test_iteration_warning_can_continue_for_another_full_interval(
         tool_registry=registry,
         tool_executor=ToolExecutor(registry),
         store=RunStore(database_path),
-        max_iterations=3,
+        max_iterations=8,
         continuation_decider=decide,
     )
 
     result = runtime.run("keep inspecting", target_path=tmp_path)
 
-    assert warnings == [3, 6]
-    assert model.final_response_flags == [False] * 5 + [True]
-    assert result.iterations == 6
+    assert warnings == [7, 15, 23]
+    assert model.final_response_flags == [False] * 23 + [True]
+    assert result.iterations == 24
     assert result.finalized_by_iteration_limit is True
 
 
