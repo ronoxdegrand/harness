@@ -38,6 +38,7 @@ def test_tool_registry_exposes_metadata_and_schemas() -> None:
     assert "git_status" in tool_names
     assert any(tool["name"] == "shell" for tool in definitions)
     assert registry.get("write_file").input_schema["required"] == ["path", "content"]
+    assert registry.get("git_diff").input_schema["properties"]["staged"]["type"] == "boolean"
 
 
 def test_filesystem_tools_respect_workspace_root(tmp_path: Path) -> None:
@@ -188,6 +189,29 @@ def test_git_tools_and_repo_workflow(tmp_path: Path) -> None:
         ToolCall(id="diff", name="git_diff", arguments={"path": "src/math_utils.py"}),
         target_path=workspace,
     )
+    blank_path_diff = executor.execute(
+        ToolCall(id="blank-diff", name="git_diff", arguments={"path": ""}),
+        target_path=workspace,
+    )
+    blank_path_status = executor.execute(
+        ToolCall(id="blank-status", name="git_status", arguments={"path": " "}),
+        target_path=workspace,
+    )
+    subprocess.run(
+        ["git", "add", "src/math_utils.py"], cwd=workspace, check=True, capture_output=True
+    )
+    staged_diff = executor.execute(
+        ToolCall(
+            id="staged-diff",
+            name="git_diff",
+            arguments={"path": "", "staged": True},
+        ),
+        target_path=workspace,
+    )
+    unstaged_diff = executor.execute(
+        ToolCall(id="unstaged-diff", name="git_diff", arguments={"path": ""}),
+        target_path=workspace,
+    )
 
     assert failing_test.success is False
     assert "assert subtract(5, 2) == 3" in failing_test.output
@@ -197,3 +221,9 @@ def test_git_tools_and_repo_workflow(tmp_path: Path) -> None:
     assert "M src/math_utils.py" in status_result.output
     assert "-    return a + b" in diff_result.output
     assert "+    return a - b" in diff_result.output
+    assert blank_path_diff.success is True
+    assert "src/math_utils.py" in blank_path_diff.output
+    assert blank_path_status.success is True
+    assert "src/math_utils.py" in staged_diff.output
+    assert "-    return a + b" in staged_diff.output
+    assert unstaged_diff.output == ""

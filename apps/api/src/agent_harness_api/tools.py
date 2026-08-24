@@ -210,10 +210,11 @@ def build_default_tool_registry() -> ToolRegistry:
             ),
             ToolDefinition(
                 name="git_diff",
-                description="Return git diff output for the workspace.",
+                description="Return unstaged or staged git diff output. An omitted or blank path means the workspace root.",
                 input_schema=_object_schema(
                     {
                         "path": {"type": "string"},
+                        "staged": {"type": "boolean"},
                         "timeout_seconds": {"type": "integer"},
                     },
                 ),
@@ -392,7 +393,10 @@ def _shell(arguments: dict[str, Any], root: Path) -> ToolResult:
 
 
 def _git_status(arguments: dict[str, Any], root: Path) -> ToolResult:
-    working_directory = _resolve_path(root, arguments.get("path", "."))
+    target = arguments.get("path", ".")
+    if not target.strip():
+        target = "."
+    working_directory = _resolve_path(root, target)
     completed = _run_command(
         ["git", "status", "--short"],
         cwd=working_directory,
@@ -410,9 +414,15 @@ def _git_status(arguments: dict[str, Any], root: Path) -> ToolResult:
 
 def _git_diff(arguments: dict[str, Any], root: Path) -> ToolResult:
     target = arguments.get("path", ".")
+    if not target.strip():
+        target = "."
     _resolve_path(root, target)
+    command = ["git", "diff"]
+    if arguments.get("staged", False):
+        command.append("--cached")
+    command.extend(["--", target])
     completed = _run_command(
-        ["git", "diff", "--", target],
+        command,
         cwd=root,
         timeout_seconds=int(arguments.get("timeout_seconds", 30)),
     )
