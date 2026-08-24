@@ -721,14 +721,6 @@ export default function App() {
           setAssistantText((current) => current || `Running tool: ${toolName}...`);
         }
 
-        if (payload.event.type === "tool.failed") {
-          const toolCall = payload.event.payload.tool_call as Record<string, unknown> | undefined;
-          const toolName = typeof toolCall?.name === "string" ? toolCall.name : "tool";
-          const result = payload.event.payload.result as Record<string, unknown> | undefined;
-          const output = typeof result?.output === "string" ? result.output : "Tool failed.";
-          setError(`Tool failed: ${toolName}. ${output}`);
-        }
-
         if (payload.event.type === "turn.failed") {
           const errorMessage = String(payload.event.payload.error ?? "The model request failed.");
           setStatus("failed");
