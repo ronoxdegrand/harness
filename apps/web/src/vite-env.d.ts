@@ -8,6 +8,8 @@ interface DesktopSettings {
   sidebarWidth: number;
   activityWidth: number;
   contextWidth: number;
+  threadSort: "recent-message" | "created";
+  groupThreadsByPath: boolean;
   scale: number;
   appearance: "light" | "dark" | "system";
 }

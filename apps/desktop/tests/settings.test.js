@@ -27,6 +27,8 @@ test("desktop settings persist with an encrypted API key", () => {
     sidebarWidth: 300,
     activityWidth: 400,
     contextWidth: 350,
+    threadSort: "created",
+    groupThreadsByPath: true,
     scale: 0.9,
     appearance: "dark",
   };

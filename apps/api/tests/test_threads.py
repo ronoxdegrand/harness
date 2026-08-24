@@ -99,6 +99,7 @@ def test_thread_api_persists_across_app_sessions(tmp_path: Path, monkeypatch) ->
         assert thread["title"] == "First thread"
         assert thread["created_at"]
         assert thread["updated_at"]
+        assert thread["last_message_at"] is None
         assert created.json()["turns"] == []
         assert created.json()["events"] == []
 
@@ -123,6 +124,7 @@ def test_thread_api_persists_across_app_sessions(tmp_path: Path, monkeypatch) ->
         RunStore().append_turn(thread_id=thread["id"], role="user", content="Newest prompt")
         listed = client.get("/threads").json()["threads"]
         assert listed[0]["id"] == thread["id"]
+        assert listed[0]["last_message_at"]
         thread = listed[0]
 
     get_settings.cache_clear()

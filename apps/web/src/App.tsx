@@ -2,20 +2,18 @@ import { type CSSProperties, FormEvent, Fragment, type PointerEvent as ReactPoin
 import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { Select as SelectPrimitive } from "@base-ui/react/select";
-import { Check, ChevronUp, Copy, FolderGit2, Layers3, LoaderCircle, Minus, Minimize2, PanelLeft, Pencil, Plus, RefreshCw, Send, Settings2, Trash2 } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Copy, FolderGit2, Layers3, LoaderCircle, Minus, Minimize2, PanelLeft, Pencil, Plus, RefreshCw, Send, Settings2, Trash2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { Badge, Button, Card, Input, Separator, Textarea } from "@/components/ui";
 import webPackage from "../package.json";
 
-const MODEL_OPTIONS = [
-  "gemini-3-flash",
-  "gemini-3-flash-lite",
+const GEMINI_MODELS = [
   "gemini-3.5-flash",
   "gemini-3.5-flash-lite",
-  "sarvam-105b",
 ];
+const SARVAM_MODELS = ["sarvam-105b"];
 const DEFAULT_SIDEBAR_WIDTH = 272;
 const DEFAULT_ACTIVITY_WIDTH = 340;
 const DEFAULT_CONTEXT_WIDTH = 340;
@@ -27,13 +25,18 @@ const SHORTCUT_KEY = IS_MAC ? "Meta" : "Control";
 const SHORTCUT_LABEL = IS_MAC ? "Cmd" : "Ctrl";
 const ALT_LABEL = IS_MAC ? "Option" : "Alt";
 type Appearance = "light" | "dark" | "system";
+type ThreadSort = "recent-message" | "created";
 
 function validAppearance(value: unknown): Appearance {
   return value === "dark" || value === "system" ? value : "light";
 }
 
-function selectableModel(model: string) {
-  return MODEL_OPTIONS.includes(model) ? model : MODEL_OPTIONS[0];
+function validThreadSort(value: unknown): ThreadSort {
+  return value === "created" ? value : "recent-message";
+}
+
+function selectableModel(model: string, options: string[]) {
+  return options.includes(model) ? model : options[0] ?? "";
 }
 
 type RunSocketMessage =
@@ -70,6 +73,7 @@ type ThreadSummary = {
   model_name: string;
   created_at: string;
   updated_at: string;
+  last_message_at: string | null;
 };
 
 type ThreadTurn = {
@@ -186,7 +190,7 @@ export default function App() {
   const desktopWindowControls = Boolean(desktop && !macDesktop);
   const [task, setTask] = useState("");
   const [workspacePath, setWorkspacePath] = useState("");
-  const [modelName, setModelName] = useState(MODEL_OPTIONS[0]);
+  const [modelName, setModelName] = useState("");
   const [apiKey, setApiKey] = useState(() =>
     desktop ? "" : sessionStorage.getItem("gemini-api-key") || "",
   );
@@ -204,9 +208,10 @@ export default function App() {
     desktop ? "light" : validAppearance(localStorage.getItem("appearance")),
   );
   const [settingsLoaded, setSettingsLoaded] = useState(!desktop);
-  const [lastUsedModel, setLastUsedModel] = useState(MODEL_OPTIONS[0]);
+  const [lastUsedModel, setLastUsedModel] = useState("");
   const [status, setStatus] = useState("idle");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [apiKeyDraft, setApiKeyDraft] = useState(apiKey);
   const [sarvamApiKeyDraft, setSarvamApiKeyDraft] = useState(sarvamApiKey);
   const [maxIterationsDraft, setMaxIterationsDraft] = useState(String(maxIterations));
@@ -257,6 +262,12 @@ export default function App() {
           MAX_CONTEXT_WIDTH,
         ),
   );
+  const [threadSort, setThreadSort] = useState<ThreadSort>(() =>
+    desktop ? "recent-message" : validThreadSort(localStorage.getItem("thread-sort")),
+  );
+  const [groupThreadsByPath, setGroupThreadsByPath] = useState(
+    () => !desktop && localStorage.getItem("group-threads-by-path") === "true",
+  );
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [newThreadTitle, setNewThreadTitle] = useState<string | null>(null);
@@ -277,6 +288,10 @@ export default function App() {
   const apiKeyPromptedRef = useRef(false);
   const continuationPendingRef = useRef(false);
   const resizeRef = useRef<{ panel: "sidebar" | "activity" | "context"; startX: number; startWidth: number } | null>(null);
+  const availableModels = [
+    ...(apiKey.trim() ? GEMINI_MODELS : []),
+    ...(sarvamApiKey.trim() ? SARVAM_MODELS : []),
+  ];
 
   useEffect(() => {
     conversationBottomRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
@@ -297,6 +312,12 @@ export default function App() {
   useEffect(() => {
     if (!settingsOpen) taskInputRef.current?.focus();
   }, [activeThread, settingsOpen]);
+
+  useEffect(() => {
+    const latestModel = threads[0]?.model_name ?? "";
+    setModelName((current) => selectableModel(current || latestModel, availableModels));
+    setLastUsedModel((current) => selectableModel(current || latestModel, availableModels));
+  }, [apiKey, sarvamApiKey, threads]);
 
   useEffect(() => {
     return () => {
@@ -348,6 +369,8 @@ export default function App() {
               MAX_CONTEXT_WIDTH,
             ),
         );
+        setThreadSort(validThreadSort(settings.threadSort));
+        setGroupThreadsByPath(settings.groupThreadsByPath ?? false);
         setSettingsLoaded(true);
       },
       (reason) => setError(`Could not load settings: ${String(reason)}`),
@@ -366,6 +389,8 @@ export default function App() {
           sidebarWidth,
           activityWidth,
           contextWidth,
+          threadSort,
+          groupThreadsByPath,
           scale: uiScale,
           appearance,
         })
@@ -377,6 +402,8 @@ export default function App() {
           localStorage.removeItem("sidebar-width");
           localStorage.removeItem("activity-width");
           localStorage.removeItem("context-width");
+          localStorage.removeItem("thread-sort");
+          localStorage.removeItem("group-threads-by-path");
         })
         .catch((reason) => setError(`Could not save settings: ${String(reason)}`));
       return;
@@ -388,8 +415,10 @@ export default function App() {
     localStorage.setItem("sidebar-width", String(sidebarWidth));
     localStorage.setItem("activity-width", String(activityWidth));
     localStorage.setItem("context-width", String(contextWidth));
+    localStorage.setItem("thread-sort", threadSort);
+    localStorage.setItem("group-threads-by-path", String(groupThreadsByPath));
     localStorage.setItem("appearance", appearance);
-  }, [activityWidth, apiKey, appearance, contextWidth, desktop, maxIterations, sarvamApiKey, sendOnEnter, settingsLoaded, sidebarWidth, uiScale]);
+  }, [activityWidth, apiKey, appearance, contextWidth, desktop, groupThreadsByPath, maxIterations, sarvamApiKey, sendOnEnter, settingsLoaded, sidebarWidth, threadSort, uiScale]);
 
   useEffect(() => {
     const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
@@ -524,7 +553,7 @@ export default function App() {
       const payload = await readJson<{ threads: ThreadSummary[] }>(response);
       setThreads(payload.threads);
       if (initializeModel && payload.threads[0]) {
-        const latestModel = selectableModel(payload.threads[0].model_name);
+        const latestModel = selectableModel(payload.threads[0].model_name, availableModels);
         setModelName(latestModel);
         setLastUsedModel(latestModel);
         setWorkspacePath(payload.threads[0].workspace_path);
@@ -545,7 +574,7 @@ export default function App() {
       activeThreadIdRef.current = payload.thread.id;
       setActiveThread(payload.thread);
       setWorkspacePath(payload.thread.workspace_path);
-      setModelName(selectableModel(payload.thread.model_name));
+      setModelName(selectableModel(payload.thread.model_name, availableModels));
       setThreadTurns(payload.turns);
       setEvents(payload.events);
       setThreadContext(payload.context);
@@ -581,7 +610,7 @@ export default function App() {
     setStatus("idle");
     setTask("");
     setNewThreadTitle(null);
-    setModelName(lastUsedModel);
+    setModelName(selectableModel(lastUsedModel, availableModels));
     setWorkspacePath(threads[0]?.workspace_path ?? workspacePath);
   }
 
@@ -628,7 +657,7 @@ export default function App() {
 
   async function startRun(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!task.trim() || (!activeThread && !workspacePath.trim()) || status === "connecting" || status === "running") return;
+    if (!task.trim() || !modelName || (!activeThread && !workspacePath.trim()) || status === "connecting" || status === "running") return;
     socketRef.current?.close();
 
     const thread = activeThread;
@@ -839,10 +868,22 @@ export default function App() {
     }, 100);
   }
 
+  function openSettings() {
+    setApiKeyDraft(apiKey);
+    setSarvamApiKeyDraft(sarvamApiKey);
+    setMaxIterationsDraft(String(maxIterations));
+    setMaxIterationsError("");
+    setSendOnEnterDraft(sendOnEnter);
+    setUiScaleDraft(uiScale);
+    setAppearanceDraft(appearance);
+    setSettingsOpen(true);
+  }
+
   const visibleEvents = activityRunId
     ? events.filter((runtimeEvent) => eventRunId(runtimeEvent) === activityRunId)
     : events;
   const repositoryRequired = !activeThread && Boolean(task.trim()) && !workspacePath.trim();
+  const modelRequired = Boolean(task.trim()) && !modelName;
   const runInProgress = Boolean(runningThreadId);
   const viewingOtherThreadDuringRun = Boolean(
     runInProgress && runningThreadId && activeThread?.id !== runningThreadId,
@@ -880,6 +921,21 @@ export default function App() {
     || sendOnEnterDraft !== sendOnEnter
     || appearanceDraft !== appearance
     || Boolean(desktop && uiScaleDraft !== uiScale);
+  const sortedThreads = [...threads].sort((left, right) => {
+    const leftDate = threadSort === "created" ? left.created_at : left.last_message_at ?? left.created_at;
+    const rightDate = threadSort === "created" ? right.created_at : right.last_message_at ?? right.created_at;
+    return rightDate.localeCompare(leftDate);
+  });
+  const threadGroups = groupThreadsByPath
+    ? Array.from(
+        sortedThreads.reduce((groups, thread) => {
+          const group = groups.get(thread.workspace_path) ?? [];
+          group.push(thread);
+          groups.set(thread.workspace_path, group);
+          return groups;
+        }, new Map<string, ThreadSummary[]>()),
+      )
+    : [[null, sortedThreads] as const];
   const layoutColumns = [
     sidebarPinnedOpen ? "var(--sidebar-width)" : null,
     "minmax(0,1fr)",
@@ -938,10 +994,69 @@ export default function App() {
           ) : null}
 
           <div className="flex min-h-0 flex-1 flex-col py-3 pl-3">
+            <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 pb-2 pr-3">
+              <SelectPrimitive.Root
+                value={threadSort}
+                onValueChange={(value) => value && setThreadSort(value as ThreadSort)}
+              >
+                <SelectPrimitive.Trigger
+                  aria-label="Sort threads"
+                  className="flex h-8 min-w-0 cursor-pointer items-center justify-between gap-1.5 rounded-lg border bg-card px-2.5 text-xs outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                >
+                  <span>{threadSort === "created" ? "Newest threads" : "Recent messages"}</span>
+                  <SelectPrimitive.Icon render={<ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />} />
+                </SelectPrimitive.Trigger>
+                <SelectPrimitive.Portal>
+                  <SelectPrimitive.Positioner alignItemWithTrigger sideOffset={4} className="z-50">
+                    <SelectPrimitive.Popup className="min-w-44 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md">
+                      <SelectPrimitive.List>
+                        {([
+                          ["recent-message", "Recent messages"],
+                          ["created", "Newest threads"],
+                        ] as const).map(([value, label]) => (
+                          <SelectPrimitive.Item
+                            className="relative flex cursor-default items-center rounded-md py-1.5 pr-8 pl-2 text-sm outline-none focus:bg-accent focus:text-accent-foreground"
+                            key={value}
+                            value={value}
+                          >
+                            <SelectPrimitive.ItemText>{label}</SelectPrimitive.ItemText>
+                            <SelectPrimitive.ItemIndicator
+                              className="absolute right-2"
+                              render={<Check className="size-4" />}
+                            />
+                          </SelectPrimitive.Item>
+                        ))}
+                      </SelectPrimitive.List>
+                    </SelectPrimitive.Popup>
+                  </SelectPrimitive.Positioner>
+                </SelectPrimitive.Portal>
+              </SelectPrimitive.Root>
+              <Button
+                aria-label="Group threads by repository path"
+                aria-pressed={groupThreadsByPath}
+                className="h-8 gap-1.5 px-2 text-xs"
+                title="Group by repository path"
+                type="button"
+                variant={groupThreadsByPath ? "secondary" : "outline"}
+                onClick={() => setGroupThreadsByPath((grouped) => !grouped)}
+              >
+                <FolderGit2 aria-hidden="true" className="size-3.5" /> Group
+              </Button>
+            </div>
             <nav className="space-y-1 overflow-y-auto pr-3">
               {threads.length ? (
-                threads.map((thread) => (
-                  <div className="group relative" key={thread.id}>
+                threadGroups.map(([path, groupThreads]) => (
+                  <Fragment key={path ?? "all-threads"}>
+                    {path ? (
+                      <p
+                        className="overflow-hidden whitespace-nowrap px-3 pb-1 pt-2 text-left font-mono text-[10px] font-medium text-muted-foreground [direction:rtl]"
+                        title={path}
+                      >
+                        {path}
+                      </p>
+                    ) : null}
+                    {groupThreads.map((thread) => (
+                      <div className="group relative" key={thread.id}>
                     <Button
                       className={`h-auto w-full justify-start rounded-lg px-3 py-2.5 pr-10 text-left ${
                         activeThread?.id === thread.id
@@ -954,12 +1069,22 @@ export default function App() {
                     >
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm">{thread.title}</span>
-                        <span
-                          className="mt-1 block overflow-hidden text-ellipsis whitespace-nowrap text-left font-mono text-xs text-muted-foreground [direction:rtl]"
-                          title={thread.workspace_path}
-                        >
-                          {thread.workspace_path}
-                        </span>
+                        {!groupThreadsByPath ? (
+                          <span
+                            className="mt-1 block overflow-hidden text-ellipsis whitespace-nowrap text-left font-mono text-xs text-muted-foreground [direction:rtl]"
+                            title={thread.workspace_path}
+                          >
+                            {thread.workspace_path}
+                          </span>
+                        ) : (
+                          <span className="mt-1 block text-xs text-muted-foreground">
+                            {formatTimestamp(
+                              threadSort === "created"
+                                ? thread.created_at
+                                : thread.last_message_at ?? thread.created_at,
+                            )}
+                          </span>
+                        )}
                       </span>
                     </Button>
                     {runInProgress && runningThreadId === thread.id ? (
@@ -985,7 +1110,9 @@ export default function App() {
                         <Trash2 aria-hidden="true" className="size-3.5" />
                       </Button>
                     )}
-                  </div>
+                      </div>
+                    ))}
+                  </Fragment>
                 ))
               ) : (
                 <p className="px-3 py-4 text-sm text-muted-foreground">Your chats will appear here.</p>
@@ -1110,16 +1237,8 @@ export default function App() {
               <DialogPrimitive.Root
                 open={settingsOpen}
                 onOpenChange={(open) => {
-                  if (open) {
-                    setApiKeyDraft(apiKey);
-                    setSarvamApiKeyDraft(sarvamApiKey);
-                    setMaxIterationsDraft(String(maxIterations));
-                    setMaxIterationsError("");
-                    setSendOnEnterDraft(sendOnEnter);
-                    setUiScaleDraft(uiScale);
-                    setAppearanceDraft(appearance);
-                  }
-                  setSettingsOpen(open);
+                  if (open) openSettings();
+                  else setSettingsOpen(false);
                 }}
               >
                 <DialogPrimitive.Trigger
@@ -1516,19 +1635,28 @@ export default function App() {
                 </div>
                 <label className="text-xs text-muted-foreground">
                   <span className="sr-only">Model</span>
-                  <SelectPrimitive.Root
+                  {availableModels.length ? (
+                    <SelectPrimitive.Root
+                    open={modelPickerOpen}
                     value={modelName}
+                    onOpenChange={setModelPickerOpen}
                     onValueChange={(value) => value && setModelName(value as string)}
                   >
-                    <SelectPrimitive.Trigger className="flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-lg bg-transparent px-2.5 text-xs outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
+                    <SelectPrimitive.Trigger
+                      className={`flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-lg px-2.5 text-xs outline-none focus-visible:ring-3 focus-visible:ring-ring/50 ${
+                        modelRequired
+                          ? "bg-warning-muted text-warning ring-2 ring-warning-border"
+                          : "bg-transparent"
+                      }`}
+                    >
                       <SelectPrimitive.Value />
                       <SelectPrimitive.Icon render={<ChevronUp className="size-4 text-muted-foreground" />} />
                     </SelectPrimitive.Trigger>
                     <SelectPrimitive.Portal>
                       <SelectPrimitive.Positioner alignItemWithTrigger sideOffset={4} className="z-50">
-                        <SelectPrimitive.Popup className="min-w-48 rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10">
+                        <SelectPrimitive.Popup className="min-w-48 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md">
                           <SelectPrimitive.List>
-                            {MODEL_OPTIONS.map((model) => (
+                            {apiKey.trim() ? GEMINI_MODELS.map((model) => (
                               <SelectPrimitive.Item
                                 className="relative flex cursor-default items-center rounded-md py-1.5 pr-8 pl-2 text-sm outline-none focus:bg-accent focus:text-accent-foreground"
                                 key={model}
@@ -1540,12 +1668,53 @@ export default function App() {
                                   render={<Check className="size-4" />}
                                 />
                               </SelectPrimitive.Item>
-                            ))}
+                            )) : null}
+                            {apiKey.trim() && sarvamApiKey.trim() ? <Separator className="my-1" /> : null}
+                            {sarvamApiKey.trim() ? SARVAM_MODELS.map((model) => (
+                              <SelectPrimitive.Item
+                                className="relative flex cursor-default items-center rounded-md py-1.5 pr-8 pl-2 text-sm outline-none focus:bg-accent focus:text-accent-foreground"
+                                key={model}
+                                value={model}
+                              >
+                                <SelectPrimitive.ItemText>{model}</SelectPrimitive.ItemText>
+                                <SelectPrimitive.ItemIndicator
+                                  className="absolute right-2"
+                                  render={<Check className="size-4" />}
+                                />
+                              </SelectPrimitive.Item>
+                            )) : null}
+                            {availableModels.length ? <Separator className="my-1" /> : null}
+                            <Button
+                              className="h-8 w-full justify-start gap-2 px-2 text-xs"
+                              type="button"
+                              variant="ghost"
+                              onClick={() => {
+                                setModelPickerOpen(false);
+                                openSettings();
+                              }}
+                            >
+                              <Settings2 aria-hidden="true" className="size-3.5" /> Set API key
+                            </Button>
                           </SelectPrimitive.List>
                         </SelectPrimitive.Popup>
                       </SelectPrimitive.Positioner>
                     </SelectPrimitive.Portal>
-                  </SelectPrimitive.Root>
+                    </SelectPrimitive.Root>
+                  ) : (
+                    <Button
+                      className={`h-8 w-48 justify-between px-2.5 text-xs font-normal ${
+                        modelRequired
+                          ? "bg-warning-muted text-warning ring-2 ring-warning-border hover:bg-warning-muted/80"
+                          : "text-muted-foreground"
+                      }`}
+                      type="button"
+                      variant="ghost"
+                      onClick={openSettings}
+                    >
+                      <span>Set API key</span>
+                      <Settings2 aria-hidden="true" className="size-4" />
+                    </Button>
+                  )}
                 </label>
                 {status === "connecting" || status === "running" ? (
                   <span className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
@@ -1555,7 +1724,7 @@ export default function App() {
                 ) : null}
                 <Button
                   className="h-8 px-3 text-xs font-semibold"
-                  disabled={!task.trim() || (!activeThread && !workspacePath.trim()) || status === "connecting" || status === "running"}
+                  disabled={!task.trim() || !modelName || (!activeThread && !workspacePath.trim()) || status === "connecting" || status === "running"}
                   size="sm"
                   type="submit"
                   variant="affirmative"
