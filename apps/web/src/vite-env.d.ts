@@ -2,6 +2,7 @@
 
 interface DesktopSettings {
   apiKey: string;
+  sarvamApiKey: string;
   maxIterations: number;
   sendOnEnter: boolean;
   sidebarWidth: number;

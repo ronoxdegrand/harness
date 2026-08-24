@@ -21,6 +21,7 @@ test("desktop settings persist with an encrypted API key", () => {
   };
   const settings = {
     apiKey: "secret",
+    sarvamApiKey: "sarvam-secret",
     maxIterations: 12,
     sendOnEnter: false,
     sidebarWidth: 300,
@@ -47,7 +48,7 @@ test("an unreadable API key does not discard other settings", () => {
     fs.writeFileSync(file, JSON.stringify({ apiKey: "invalid", maxIterations: 12 }));
     assert.deepEqual(
       readSettings(file, { decryptString: () => { throw new Error("unavailable"); } }),
-      { apiKey: "", maxIterations: 12 },
+      { apiKey: "", sarvamApiKey: "", maxIterations: 12 },
     );
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });

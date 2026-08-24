@@ -14,6 +14,7 @@ const MODEL_OPTIONS = [
   "gemini-3-flash-lite",
   "gemini-3.5-flash",
   "gemini-3.5-flash-lite",
+  "sarvam-105b",
 ];
 const DEFAULT_SIDEBAR_WIDTH = 272;
 const DEFAULT_ACTIVITY_WIDTH = 340;
@@ -189,6 +190,9 @@ export default function App() {
   const [apiKey, setApiKey] = useState(() =>
     desktop ? "" : sessionStorage.getItem("gemini-api-key") || "",
   );
+  const [sarvamApiKey, setSarvamApiKey] = useState(() =>
+    desktop ? "" : sessionStorage.getItem("sarvam-api-key") || "",
+  );
   const [maxIterations, setMaxIterations] = useState(() =>
     desktop ? 8 : Math.min(Math.max(Number(localStorage.getItem("max-iterations")) || 8, 1), 50),
   );
@@ -204,6 +208,7 @@ export default function App() {
   const [status, setStatus] = useState("idle");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [apiKeyDraft, setApiKeyDraft] = useState(apiKey);
+  const [sarvamApiKeyDraft, setSarvamApiKeyDraft] = useState(sarvamApiKey);
   const [maxIterationsDraft, setMaxIterationsDraft] = useState(String(maxIterations));
   const [maxIterationsError, setMaxIterationsError] = useState("");
   const [sendOnEnterDraft, setSendOnEnterDraft] = useState(sendOnEnter);
@@ -312,6 +317,9 @@ export default function App() {
     void desktop.getSettings().then(
       (settings) => {
         setApiKey(settings.apiKey ?? sessionStorage.getItem("gemini-api-key") ?? "");
+        setSarvamApiKey(
+          settings.sarvamApiKey ?? sessionStorage.getItem("sarvam-api-key") ?? "",
+        );
         setMaxIterations(
           settings.maxIterations ??
             Math.min(Math.max(Number(localStorage.getItem("max-iterations")) || 8, 1), 50),
@@ -352,6 +360,7 @@ export default function App() {
       void desktop
         .setSettings({
           apiKey,
+          sarvamApiKey,
           maxIterations,
           sendOnEnter,
           sidebarWidth,
@@ -362,6 +371,7 @@ export default function App() {
         })
         .then(() => {
           sessionStorage.removeItem("gemini-api-key");
+          sessionStorage.removeItem("sarvam-api-key");
           localStorage.removeItem("max-iterations");
           localStorage.removeItem("send-on-enter");
           localStorage.removeItem("sidebar-width");
@@ -372,13 +382,14 @@ export default function App() {
       return;
     }
     sessionStorage.setItem("gemini-api-key", apiKey);
+    sessionStorage.setItem("sarvam-api-key", sarvamApiKey);
     localStorage.setItem("max-iterations", String(maxIterations));
     localStorage.setItem("send-on-enter", String(sendOnEnter));
     localStorage.setItem("sidebar-width", String(sidebarWidth));
     localStorage.setItem("activity-width", String(activityWidth));
     localStorage.setItem("context-width", String(contextWidth));
     localStorage.setItem("appearance", appearance);
-  }, [activityWidth, apiKey, appearance, contextWidth, desktop, maxIterations, sendOnEnter, settingsLoaded, sidebarWidth, uiScale]);
+  }, [activityWidth, apiKey, appearance, contextWidth, desktop, maxIterations, sarvamApiKey, sendOnEnter, settingsLoaded, sidebarWidth, uiScale]);
 
   useEffect(() => {
     const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
@@ -405,15 +416,16 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!settingsLoaded || apiKey.trim() || apiKeyPromptedRef.current) return;
+    if (!settingsLoaded || apiKey.trim() || sarvamApiKey.trim() || apiKeyPromptedRef.current) return;
     apiKeyPromptedRef.current = true;
     setApiKeyDraft(apiKey);
+    setSarvamApiKeyDraft(sarvamApiKey);
     setMaxIterationsDraft(String(maxIterations));
     setSendOnEnterDraft(sendOnEnter);
     setUiScaleDraft(uiScale);
     setAppearanceDraft(appearance);
     setSettingsOpen(true);
-  }, [apiKey, appearance, maxIterations, sendOnEnter, settingsLoaded, uiScale]);
+  }, [apiKey, appearance, maxIterations, sarvamApiKey, sendOnEnter, settingsLoaded, uiScale]);
 
   useEffect(() => {
     if (!desktop) return;
@@ -662,7 +674,9 @@ export default function App() {
             workspace_path: workspacePath,
             model_name: modelName,
             max_iterations: maxIterations,
-            ...(apiKey.trim() ? { api_key: apiKey.trim() } : {}),
+            ...(modelName === "sarvam-105b"
+              ? sarvamApiKey.trim() ? { sarvam_api_key: sarvamApiKey.trim() } : {}
+              : apiKey.trim() ? { api_key: apiKey.trim() } : {}),
             ...(thread ? { thread_id: thread.id } : {}),
             ...(!thread && newThreadTitle ? { title: newThreadTitle } : {}),
           }),
@@ -869,6 +883,7 @@ export default function App() {
     ? Math.min((threadContext.estimated_tokens / threadContext.token_budget) * 100, 100)
     : 0;
   const settingsDirty = apiKeyDraft !== apiKey
+    || sarvamApiKeyDraft !== sarvamApiKey
     || maxIterationsDraft !== String(maxIterations)
     || sendOnEnterDraft !== sendOnEnter
     || appearanceDraft !== appearance
@@ -1105,6 +1120,7 @@ export default function App() {
                 onOpenChange={(open) => {
                   if (open) {
                     setApiKeyDraft(apiKey);
+                    setSarvamApiKeyDraft(sarvamApiKey);
                     setMaxIterationsDraft(String(maxIterations));
                     setMaxIterationsError("");
                     setSendOnEnterDraft(sendOnEnter);
@@ -1149,6 +1165,7 @@ export default function App() {
                             return;
                           }
                           setApiKey(apiKeyDraft);
+                          setSarvamApiKey(sarvamApiKeyDraft);
                           setMaxIterations(iterationWarning);
                           setSendOnEnter(sendOnEnterDraft);
                           setUiScale(uiScaleDraft);
@@ -1177,6 +1194,16 @@ export default function App() {
                               type="password"
                               value={apiKeyDraft}
                               onChange={(event) => setApiKeyDraft(event.target.value)}
+                            />
+                          </label>
+                          <label className="block space-y-1.5 text-xs font-medium">
+                            <span>Sarvam API key</span>
+                            <Input
+                              autoComplete="off"
+                              placeholder="Enter your API key"
+                              type="password"
+                              value={sarvamApiKeyDraft}
+                              onChange={(event) => setSarvamApiKeyDraft(event.target.value)}
                             />
                           </label>
                           <label className="block space-y-1.5 text-xs font-medium">

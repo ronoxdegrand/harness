@@ -22,6 +22,10 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("GEMINI_API_KEY", "HARNESS_GEMINI_API_KEY"),
     )
+    sarvam_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SARVAM_API_KEY", "HARNESS_SARVAM_API_KEY"),
+    )
     model_config = SettingsConfigDict(
         env_prefix="HARNESS_",
         env_file=Path(__file__).resolve().parents[4] / ".env",

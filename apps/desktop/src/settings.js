@@ -1,6 +1,15 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
+function decrypt(value, encryption) {
+  if (!value) return "";
+  try {
+    return encryption.decryptString(Buffer.from(value, "base64"));
+  } catch {
+    return "";
+  }
+}
+
 function readSettings(file, encryption) {
   let settings;
   try {
@@ -8,22 +17,20 @@ function readSettings(file, encryption) {
   } catch {
     return {};
   }
-  try {
-    return {
-      ...settings,
-      apiKey: settings.apiKey
-        ? encryption.decryptString(Buffer.from(settings.apiKey, "base64"))
-        : "",
-    };
-  } catch {
-    return { ...settings, apiKey: "" };
-  }
+  return {
+    ...settings,
+    apiKey: decrypt(settings.apiKey, encryption),
+    sarvamApiKey: decrypt(settings.sarvamApiKey, encryption),
+  };
 }
 
 function writeSettings(file, settings, encryption) {
   const saved = {
     apiKey: settings.apiKey
       ? encryption.encryptString(settings.apiKey).toString("base64")
+      : "",
+    sarvamApiKey: settings.sarvamApiKey
+      ? encryption.encryptString(settings.sarvamApiKey).toString("base64")
       : "",
     maxIterations: settings.maxIterations,
     sendOnEnter: settings.sendOnEnter,
