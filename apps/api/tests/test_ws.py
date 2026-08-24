@@ -237,7 +237,7 @@ def test_run_websocket_accepts_iteration_warning_decisions(tmp_path: Path, monke
                     elif message["kind"] == "run.finished":
                         break
 
-    assert warnings == [2, 4]
+    assert warnings == [1, 3]
     assert final_payload is not None
     assert final_payload["iterations"] == 4
     assert final_payload["finalized_by_iteration_limit"] is True

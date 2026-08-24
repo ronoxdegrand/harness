@@ -194,15 +194,15 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
     def on_event(event: RuntimeEvent) -> None:
         _push_message(loop, queue, {"kind": "runtime.event", "event": event.as_dict()})
 
-    def decide_continuation(iteration: int) -> bool:
+    def decide_continuation(completed_iterations: int) -> bool:
         _push_message(
             loop,
             queue,
             {
                 "kind": "run.continuation_required",
                 "payload": {
-                    "iteration": iteration,
-                    "completed_iterations": iteration - 1,
+                    "iteration": completed_iterations,
+                    "completed_iterations": completed_iterations,
                     "additional_iterations": requested_max_iterations or 8,
                 },
             },

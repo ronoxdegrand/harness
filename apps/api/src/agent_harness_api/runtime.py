@@ -76,7 +76,7 @@ class AgentRuntime:
 
         iteration = 0
         warning_interval = iteration_limit
-        warning_iteration = iteration_limit
+        warning_after = iteration_limit - 1
         try:
             while True:
                 iteration += 1
@@ -84,16 +84,17 @@ class AgentRuntime:
                     raise TimeoutError(f"Run exceeded {timeout_limit} seconds.")
 
                 force_final_response = False
-                if iteration == warning_iteration:
+                completed_iterations = iteration - 1
+                if completed_iterations == warning_after:
                     self._emit(
                         active_run_id,
                         "run.continuation_requested",
-                        iteration=iteration,
-                        completed_iterations=iteration - 1,
+                        iteration=completed_iterations,
+                        completed_iterations=completed_iterations,
                     )
                     wait_started = time.monotonic()
                     continue_run = (
-                        self.continuation_decider(iteration)
+                        self.continuation_decider(completed_iterations)
                         if self.continuation_decider
                         else False
                     )
@@ -101,11 +102,11 @@ class AgentRuntime:
                     self._emit(
                         active_run_id,
                         "run.continuation_decided",
-                        iteration=iteration,
+                        iteration=completed_iterations,
                         continue_run=continue_run,
                     )
                     if continue_run:
-                        warning_iteration += warning_interval
+                        warning_after += warning_interval
                     else:
                         force_final_response = True
 
