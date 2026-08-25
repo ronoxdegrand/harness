@@ -7,6 +7,7 @@ interface DesktopSettings {
   sendOnEnter: boolean;
   sidebarWidth: number;
   activityWidth: number;
+  activityPlacement: "side" | "inline";
   contextWidth: number;
   threadSort: "recent-message" | "created";
   groupThreadsByPath: boolean;

@@ -36,6 +36,7 @@ function writeSettings(file, settings, encryption) {
     sendOnEnter: settings.sendOnEnter,
     sidebarWidth: settings.sidebarWidth,
     activityWidth: settings.activityWidth,
+    activityPlacement: settings.activityPlacement,
     contextWidth: settings.contextWidth,
     threadSort: settings.threadSort,
     groupThreadsByPath: settings.groupThreadsByPath,
