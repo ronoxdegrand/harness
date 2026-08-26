@@ -35,6 +35,7 @@ linux:
       arch: [x64]
 nsis:
   deleteAppDataOnUninstall: false
+  include: installer.nsh
 publish:
   provider: github
   owner: ronoxdegrand
