@@ -4,6 +4,13 @@ const path = require("node:path");
 
 const root = path.resolve(__dirname, "..");
 const version = process.argv[2];
+const localUv = path.join(
+  root,
+  ".tools",
+  "uv",
+  process.platform === "win32" ? "uv.exe" : "uv",
+);
+const uv = fs.existsSync(localUv) ? localUv : "uv";
 
 if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version || "")) {
   throw new Error("Usage: npm run version:set -- <semver>");
@@ -33,7 +40,15 @@ execFileSync(process.execPath, [process.env.npm_execpath, "install", "--package-
   cwd: root,
   stdio: "inherit",
 });
-execFileSync("uv", ["lock"], { cwd: root, stdio: "inherit" });
+execFileSync(uv, ["lock"], {
+  cwd: root,
+  stdio: "inherit",
+  env: {
+    ...process.env,
+    UV_CACHE_DIR: path.join(root, ".tools", "uv-cache"),
+    UV_PYTHON_INSTALL_DIR: path.join(root, ".tools", "python"),
+  },
+});
 execFileSync(process.execPath, [path.join(__dirname, "check-versions.js")], {
   cwd: root,
   stdio: "inherit",
