@@ -7,13 +7,15 @@
     "apps/desktop"
   ],
   "scripts": {
+    "setup": "node ./scripts/setup.js",
+    "start": "npm --workspace apps/desktop start",
     "dev:api": "node ./scripts/dev.js start-api",
     "dev:web": "node ./scripts/dev.js start-web",
     "stop:api": "node ./scripts/dev.js stop-api",
     "stop:web": "node ./scripts/dev.js stop-web",
     "build:web": "npm --workspace apps/web run build",
     "typecheck:web": "npm --workspace apps/web run typecheck",
-    "test:api": "uv run --package agent-harness-api pytest apps/api/tests -q --basetemp=.tmp/pytest -p no:cacheprovider",
+    "test:api": "node ./scripts/python.js -m pytest apps/api/tests -q --basetemp=.tmp/pytest -p no:cacheprovider",
     "test:desktop": "npm --workspace apps/desktop test",
     "check:versions": "node scripts/check-versions.js",
     "version:set": "node scripts/set-version.js",

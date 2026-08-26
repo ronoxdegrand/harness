@@ -8,8 +8,10 @@ A small coding-agent harness with a React UI, FastAPI backend, and optional Elec
 
 ```bash
 npm install
-uv sync --all-packages --all-groups
+npm run setup
 ```
+
+`npm run setup` installs a pinned, repository-local copy of `uv` when needed, then creates `.venv` and installs the locked backend, test, and packaging dependencies. It does not modify your shell profile or global `PATH`.
 
 ## Browser development
 
@@ -25,11 +27,10 @@ Open `http://localhost:5173`.
 ## Desktop development
 
 ```bash
-npm run build:web
-npm --workspace apps/desktop start
+npm start
 ```
 
-Electron uses the repository as its default workspace in development. Rebuild the web app after UI changes.
+`npm start` builds the renderer, starts the authenticated local backend, and opens Electron. It uses the repository as its default workspace in development. Rebuild the web app after UI changes.
 
 ## Verify and package
 
