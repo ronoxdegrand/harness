@@ -4,6 +4,8 @@ A desktop coding-agent harness built with Electron, React, and FastAPI.
 
 ![AI Agent Harness showing the thread list, active chat, activity inspector, and model picker](image.png)
 
+I don’t support packaged Mac releases because I don’t plan to buy Apple hardware or join the Apple Developer Program just to sign them yet. Running the project from source on a Mac should still work for devs.
+
 ## Setup
 
 ```bash
