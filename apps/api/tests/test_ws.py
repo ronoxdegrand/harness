@@ -244,6 +244,54 @@ def test_run_websocket_accepts_iteration_warning_decisions(tmp_path: Path, monke
     assert final_payload["finalized_by_iteration_limit"] is True
 
 
+def test_run_websocket_stops_at_a_safe_boundary(tmp_path: Path, monkeypatch) -> None:
+    workspace_root = tmp_path / "workspace"
+    repo_path = workspace_root / "demo"
+    _create_repo(repo_path)
+    monkeypatch.setenv("HARNESS_WORKSPACE_ROOT", str(workspace_root))
+    get_settings.cache_clear()
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [{"functionCall": {"name": "list_files", "args": {}}}]
+                        }
+                    }
+                ]
+            }
+
+    final_payload = None
+    with patch("agent_harness_api.gemini_model.httpx.post", return_value=FakeResponse()):
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws/run") as websocket:
+                assert websocket.receive_json()["kind"] == "session.ready"
+                websocket.send_json(
+                    {
+                        "task": "keep inspecting",
+                        "workspace_path": "demo",
+                        "api_key": "ui-key",
+                        "max_iterations": 2,
+                    }
+                )
+                while True:
+                    message = websocket.receive_json()
+                    if message["kind"] == "run.continuation_required":
+                        websocket.send_json({"kind": "run.stop"})
+                    elif message["kind"] == "run.completed":
+                        final_payload = message["payload"]
+                    elif message["kind"] == "run.finished":
+                        break
+
+    assert final_payload is not None
+    assert final_payload["status"] == "stopped"
+
+
 def test_run_websocket_routes_sarvam_model_and_key(tmp_path: Path, monkeypatch) -> None:
     workspace_root = tmp_path / "workspace"
     _create_repo(workspace_root)

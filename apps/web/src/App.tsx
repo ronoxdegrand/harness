@@ -2,7 +2,7 @@ import { type CSSProperties, FormEvent, Fragment, type PointerEvent as ReactPoin
 import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { Select as SelectPrimitive } from "@base-ui/react/select";
-import { Check, ChevronDown, ChevronUp, Copy, FolderGit2, Layers3, LoaderCircle, Minus, Minimize2, PanelLeft, PanelRight, Pencil, Plus, RefreshCw, Rows2, Send, Settings2, Trash2 } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Copy, FolderGit2, Layers3, LoaderCircle, Minus, Minimize2, PanelLeft, PanelRight, Pencil, Plus, RefreshCw, Rows2, Send, Settings2, Square, Trash2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -31,6 +31,7 @@ const ALT_LABEL = IS_MAC ? "Option" : "Alt";
 type Appearance = "light" | "dark" | "system";
 type ThreadSort = "recent-message" | "created";
 type ActivityPlacement = "side" | "inline";
+type MidRunEnterAction = "queue" | "steer";
 
 function validAppearance(value: unknown): Appearance {
   return value === "dark" || value === "system" ? value : "light";
@@ -42,6 +43,10 @@ function validThreadSort(value: unknown): ThreadSort {
 
 function validActivityPlacement(value: unknown): ActivityPlacement {
   return value === "inline" ? value : "side";
+}
+
+function validMidRunEnterAction(value: unknown): MidRunEnterAction {
+  return value === "steer" ? "steer" : "queue";
 }
 
 function clampActivityWidth(value: number) {
@@ -66,6 +71,8 @@ type RunSocketMessage =
       };
     }
   | { kind: "run.failed"; error: string }
+  | { kind: "run.stop_requested" }
+  | { kind: "run.steering_accepted"; payload: { content: string } }
   | {
       kind: "run.continuation_required";
       payload: { iteration: number; completed_iterations: number; additional_iterations: number };
@@ -97,6 +104,12 @@ type ThreadTurn = {
   role: "user" | "assistant";
   content: string;
   created_at: string;
+};
+
+type QueuedTask = {
+  id: string;
+  content: string;
+  createdAt: string;
 };
 
 type ContextState = {
@@ -222,6 +235,9 @@ export default function App() {
   const [sendOnEnter, setSendOnEnter] = useState(
     () => Boolean(desktop) || localStorage.getItem("send-on-enter") !== "false",
   );
+  const [midRunEnterAction, setMidRunEnterAction] = useState<MidRunEnterAction>(() =>
+    desktop ? "queue" : validMidRunEnterAction(localStorage.getItem("mid-run-enter-action")),
+  );
   const [uiScale, setUiScale] = useState(1);
   const [appearance, setAppearance] = useState<Appearance>(() =>
     desktop ? "light" : validAppearance(localStorage.getItem("appearance")),
@@ -236,6 +252,7 @@ export default function App() {
   const [maxIterationsDraft, setMaxIterationsDraft] = useState(String(maxIterations));
   const [maxIterationsError, setMaxIterationsError] = useState("");
   const [sendOnEnterDraft, setSendOnEnterDraft] = useState(sendOnEnter);
+  const [midRunEnterActionDraft, setMidRunEnterActionDraft] = useState(midRunEnterAction);
   const [uiScaleDraft, setUiScaleDraft] = useState(uiScale);
   const [appearanceDraft, setAppearanceDraft] = useState<Appearance>(appearance);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -247,9 +264,12 @@ export default function App() {
   const [threadToDelete, setThreadToDelete] = useState<ThreadSummary | null>(null);
   const [threadTurns, setThreadTurns] = useState<ThreadTurn[]>([]);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
+  const [collapsedActivityGroups, setCollapsedActivityGroups] = useState<Record<string, boolean>>({});
   const [threadContext, setThreadContext] = useState<ContextState | null>(null);
   const [expandedContextEntries, setExpandedContextEntries] = useState<Record<number, string | null>>({});
   const [assistantText, setAssistantText] = useState("");
+  const [queuedTasks, setQueuedTasks] = useState<QueuedTask[]>([]);
+  const [stopping, setStopping] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
   const [activityPlacement, setActivityPlacement] = useState<ActivityPlacement>(() =>
     desktop ? "side" : validActivityPlacement(localStorage.getItem("activity-placement")),
@@ -299,6 +319,8 @@ export default function App() {
   } | null>(null);
   const [error, setError] = useState("");
   const socketRef = useRef<WebSocket | null>(null);
+  const queuedTasksRef = useRef<QueuedTask[]>([]);
+  const syntheticTurnIdRef = useRef(-1);
   const activeThreadIdRef = useRef<string | null>(null);
   const taskInputRef = useRef<HTMLTextAreaElement | null>(null);
   const conversationBottomRef = useRef<HTMLDivElement | null>(null);
@@ -318,7 +340,7 @@ export default function App() {
 
   useEffect(() => {
     conversationBottomRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
-  }, [events, assistantText, continuationRequest, status]);
+  }, [events, assistantText, continuationRequest, queuedTasks, status]);
 
   useEffect(() => {
     const activityScroller = activityScrollRef.current;
@@ -384,6 +406,9 @@ export default function App() {
             Math.min(Math.max(Number(localStorage.getItem("max-iterations")) || 8, 1), 50),
         );
         setSendOnEnter(settings.sendOnEnter ?? localStorage.getItem("send-on-enter") !== "false");
+        setMidRunEnterAction(validMidRunEnterAction(
+          settings.midRunEnterAction ?? localStorage.getItem("mid-run-enter-action"),
+        ));
         setUiScale(settings.scale ?? 1);
         setAppearance(validAppearance(settings.appearance));
         setSidebarWidth(
@@ -423,6 +448,7 @@ export default function App() {
           sarvamApiKey,
           maxIterations,
           sendOnEnter,
+          midRunEnterAction,
           sidebarWidth,
           activityWidth,
           activityPlacement,
@@ -437,6 +463,7 @@ export default function App() {
           sessionStorage.removeItem("sarvam-api-key");
           localStorage.removeItem("max-iterations");
           localStorage.removeItem("send-on-enter");
+          localStorage.removeItem("mid-run-enter-action");
           localStorage.removeItem("sidebar-width");
           localStorage.removeItem("activity-width");
           localStorage.removeItem("activity-placement");
@@ -451,6 +478,7 @@ export default function App() {
     sessionStorage.setItem("sarvam-api-key", sarvamApiKey);
     localStorage.setItem("max-iterations", String(maxIterations));
     localStorage.setItem("send-on-enter", String(sendOnEnter));
+    localStorage.setItem("mid-run-enter-action", midRunEnterAction);
     localStorage.setItem("sidebar-width", String(sidebarWidth));
     localStorage.setItem("activity-width", String(activityWidth));
     localStorage.setItem("activity-placement", activityPlacement);
@@ -458,7 +486,7 @@ export default function App() {
     localStorage.setItem("thread-sort", threadSort);
     localStorage.setItem("group-threads-by-path", String(groupThreadsByPath));
     localStorage.setItem("appearance", appearance);
-  }, [activityPlacement, activityWidth, apiKey, appearance, contextWidth, desktop, groupThreadsByPath, maxIterations, sarvamApiKey, sendOnEnter, settingsLoaded, sidebarWidth, threadSort, uiScale]);
+  }, [activityPlacement, activityWidth, apiKey, appearance, contextWidth, desktop, groupThreadsByPath, maxIterations, midRunEnterAction, sarvamApiKey, sendOnEnter, settingsLoaded, sidebarWidth, threadSort, uiScale]);
 
   useEffect(() => {
     const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
@@ -491,10 +519,11 @@ export default function App() {
     setSarvamApiKeyDraft(sarvamApiKey);
     setMaxIterationsDraft(String(maxIterations));
     setSendOnEnterDraft(sendOnEnter);
+    setMidRunEnterActionDraft(midRunEnterAction);
     setUiScaleDraft(uiScale);
     setAppearanceDraft(appearance);
     setSettingsOpen(true);
-  }, [apiKey, appearance, maxIterations, sarvamApiKey, sendOnEnter, settingsLoaded, uiScale]);
+  }, [apiKey, appearance, maxIterations, midRunEnterAction, sarvamApiKey, sendOnEnter, settingsLoaded, uiScale]);
 
   useEffect(() => {
     if (!desktop) return;
@@ -648,6 +677,9 @@ export default function App() {
     setThreadContext(null);
     setExpandedContextEntries({});
     setAssistantText("");
+    queuedTasksRef.current = [];
+    setQueuedTasks([]);
+    setStopping(false);
     setEditingTitle(false);
     setActivityOpen(false);
     setActivityRunId(null);
@@ -703,14 +735,25 @@ export default function App() {
     }
   }
 
-  async function startRun(event: FormEvent<HTMLFormElement>) {
+  function startRun(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!task.trim() || !modelName || (!activeThread && !workspacePath.trim()) || status === "connecting" || status === "running") return;
+    if (status === "connecting" || status === "running") {
+      performMidRunAction(status === "running" ? midRunEnterAction : "queue");
+      return;
+    }
+    beginRun(task);
+  }
+
+  function beginRun(submittedTaskValue: string, threadOverride?: ThreadSummary | null) {
+    if (!submittedTaskValue.trim() || !modelName || (!activeThread && !threadOverride && !workspacePath.trim())) return;
     socketRef.current?.close();
 
-    const thread = activeThread;
+    const thread = threadOverride === undefined ? activeThread : threadOverride;
+    let runThread = thread;
     let runThreadId = thread?.id ?? null;
-    const submittedTask = task;
+    let activeRunId: string | null = null;
+    let completionRefresh: Promise<void> | null = null;
+    const submittedTask = submittedTaskValue.trim();
     setLastUsedModel(modelName);
 
     setStatus("connecting");
@@ -720,13 +763,14 @@ export default function App() {
     setActivityOpen(false);
     setActivityRunId(null);
     setFinalizedByIterationLimit(false);
+    setStopping(false);
     continuationPendingRef.current = false;
     setContinuationRequest(null);
     setError("");
     setThreadTurns((current) => [
       ...current,
       {
-        id: Date.now(),
+        id: syntheticTurnIdRef.current--,
         run_id: null,
         model_name: modelName,
         finalized_by_iteration_limit: false,
@@ -762,6 +806,8 @@ export default function App() {
       }
 
       if (payload.kind === "thread.opened") {
+        runThread = payload.payload.thread;
+        activeRunId = payload.payload.run_id;
         runThreadId = payload.payload.thread.id;
         activeThreadIdRef.current = runThreadId;
         setRunningThreadId(runThreadId);
@@ -829,6 +875,27 @@ export default function App() {
         return;
       }
 
+      if (payload.kind === "run.stop_requested") {
+        setStopping(true);
+        return;
+      }
+
+      if (payload.kind === "run.steering_accepted") {
+        setThreadTurns((current) => [
+          ...current,
+          {
+            id: syntheticTurnIdRef.current--,
+            run_id: activeRunId,
+            model_name: modelName,
+            finalized_by_iteration_limit: false,
+            role: "user",
+            content: payload.payload.content,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+        return;
+      }
+
       if (payload.kind === "run.completed") {
         setStatus(payload.payload.status);
         if (activeThreadIdRef.current === payload.payload.thread_id) {
@@ -836,7 +903,7 @@ export default function App() {
           if (payload.payload.output_text.trim()) {
             setAssistantText(payload.payload.output_text);
           }
-          void openThread(payload.payload.thread_id, true);
+          completionRefresh = openThread(payload.payload.thread_id, true);
         }
         void refreshThreads();
         return;
@@ -854,9 +921,19 @@ export default function App() {
       if (payload.kind === "run.finished") {
         continuationPendingRef.current = false;
         setContinuationRequest(null);
-        setRunningThreadId(null);
-        setStatus((current) => (current === "running" ? "completed" : current));
         socket.close();
+        const nextTask = queuedTasksRef.current.shift();
+        setQueuedTasks([...queuedTasksRef.current]);
+        if (nextTask && !stopping) {
+          setStatus("connecting");
+          void (completionRefresh ?? Promise.resolve()).then(() => {
+            beginRun(nextTask.content, runThread);
+          });
+        } else {
+          setRunningThreadId(null);
+          setStatus((current) => (current === "running" ? "completed" : current));
+          setStopping(false);
+        }
       }
     };
 
@@ -867,6 +944,53 @@ export default function App() {
       setStatus("failed");
       setError("WebSocket connection failed.");
     };
+  }
+
+  function queueTask() {
+    const content = task.trim();
+    if (!content || viewingOtherThreadDuringRun) return;
+    queuedTasksRef.current = [
+      ...queuedTasksRef.current,
+      {
+        id: crypto.randomUUID(),
+        content,
+        createdAt: new Date().toISOString(),
+      },
+    ];
+    setQueuedTasks([...queuedTasksRef.current]);
+    setTask("");
+  }
+
+  function deleteQueuedTask(id: string) {
+    queuedTasksRef.current = queuedTasksRef.current.filter((queuedTask) => queuedTask.id !== id);
+    setQueuedTasks([...queuedTasksRef.current]);
+  }
+
+  function steerRun() {
+    const content = task.trim();
+    if (!content || viewingOtherThreadDuringRun || socketRef.current?.readyState !== WebSocket.OPEN) return;
+    socketRef.current.send(JSON.stringify({ kind: "run.steer", content }));
+    setTask("");
+  }
+
+  function performMidRunAction(action: MidRunEnterAction) {
+    if (action === "steer") steerRun();
+    else queueTask();
+  }
+
+  function stopRun() {
+    queuedTasksRef.current = [];
+    setQueuedTasks([]);
+    if (status === "connecting") {
+      socketRef.current?.close();
+      setRunningThreadId(null);
+      setStatus("stopped");
+      setStopping(false);
+      return;
+    }
+    if (socketRef.current?.readyState !== WebSocket.OPEN) return;
+    setStopping(true);
+    socketRef.current.send(JSON.stringify({ kind: "run.stop" }));
   }
 
   function answerContinuation(continueRun: boolean) {
@@ -942,6 +1066,7 @@ export default function App() {
     setMaxIterationsDraft(String(maxIterations));
     setMaxIterationsError("");
     setSendOnEnterDraft(sendOnEnter);
+    setMidRunEnterActionDraft(midRunEnterAction);
     setUiScaleDraft(uiScale);
     setAppearanceDraft(appearance);
     setSettingsOpen(true);
@@ -997,6 +1122,12 @@ export default function App() {
     || activityPlacement === "inline"
     || !activitySideAvailable;
   const activityBesideThread = activityOpen && !activityStacked;
+  const activeRunEnterAction: MidRunEnterAction = status === "running"
+    ? midRunEnterAction
+    : "queue";
+  const alternateRunEnterAction: MidRunEnterAction = activeRunEnterAction === "queue"
+    ? "steer"
+    : "queue";
 
   useLayoutEffect(() => {
     const conversationScroller = activityBesideThread
@@ -1013,6 +1144,7 @@ export default function App() {
     || sarvamApiKeyDraft !== sarvamApiKey
     || maxIterationsDraft !== String(maxIterations)
     || sendOnEnterDraft !== sendOnEnter
+    || midRunEnterActionDraft !== midRunEnterAction
     || appearanceDraft !== appearance
     || Boolean(desktop && uiScaleDraft !== uiScale);
   const sortedThreads = [...threads].sort((left, right) => {
@@ -1110,6 +1242,8 @@ export default function App() {
           {eventGroups.length ? (
             eventGroups.map((group, groupIndex) => {
               const displayedEvents = group.events.filter(showInActivity);
+              const groupKey = `${activityRunId ?? "all"}-${group.iteration ?? "initialization"}-${groupIndex}`;
+              const groupCollapsed = collapsedActivityGroups[groupKey] === true;
               const iterationModel = group.events.find(
                 (runtimeEvent) => runtimeEvent.type === "model.started",
               )?.payload.model_name;
@@ -1133,11 +1267,27 @@ export default function App() {
                           {iterationModel}
                         </Badge>
                       ) : null}
-                      <Badge className="h-5 shrink-0 rounded-sm px-1.5 text-xs">
+                      <Button
+                        aria-expanded={!groupCollapsed}
+                        aria-controls={`activity-events-${groupIndex}`}
+                        className="h-5 shrink-0 gap-1 rounded-sm bg-secondary px-1.5 text-xs text-secondary-foreground hover:bg-secondary/80"
+                        size="xs"
+                        type="button"
+                        variant="ghost"
+                        onClick={() => setCollapsedActivityGroups((current) => ({
+                          ...current,
+                          [groupKey]: !groupCollapsed,
+                        }))}
+                      >
                         {displayedEvents.length
                           ? `${displayedEvents.length} ${displayedEvents.length === 1 ? "event" : "events"}`
                           : iterationFinished ? "Finished" : "In progress"}
-                      </Badge>
+                        {groupCollapsed ? (
+                          <ChevronDown aria-hidden="true" className="size-3" />
+                        ) : (
+                          <ChevronUp aria-hidden="true" className="size-3" />
+                        )}
+                      </Button>
                     </div>
                     {group.createdAt ? (
                       <time className="shrink-0 text-xs text-muted-foreground" dateTime={group.createdAt}>
@@ -1145,6 +1295,8 @@ export default function App() {
                       </time>
                     ) : null}
                   </div>
+                  {!groupCollapsed ? (
+                    <div className="space-y-2" id={`activity-events-${groupIndex}`}>
                   {displayedEvents.map((runtimeEvent, eventIndex) => {
                     const isToolEvent = runtimeEvent.type.startsWith("tool.");
                     const isFailedEvent = runtimeEvent.type.endsWith(".failed");
@@ -1215,6 +1367,8 @@ export default function App() {
                       </Card>
                     );
                   })}
+                    </div>
+                  ) : null}
                 </section>
               );
             })
@@ -1546,7 +1700,7 @@ export default function App() {
                     onClick={() => setSettingsOpen(false)}
                   />
                   <DialogPrimitive.Viewport className="pointer-events-none fixed inset-0 z-[70] flex items-center justify-center p-4">
-                    <DialogPrimitive.Popup className="pointer-events-auto w-full max-w-sm rounded-xl border bg-card p-4 text-card-foreground shadow-xl outline-none">
+                    <DialogPrimitive.Popup className="pointer-events-auto max-h-[calc(100vh-2rem)] w-full max-w-sm overflow-y-auto rounded-xl border bg-card p-4 text-card-foreground shadow-xl outline-none">
                       <form
                         noValidate
                         onSubmit={(event) => {
@@ -1565,6 +1719,7 @@ export default function App() {
                           setSarvamApiKey(sarvamApiKeyDraft);
                           setMaxIterations(iterationWarning);
                           setSendOnEnter(sendOnEnterDraft);
+                          setMidRunEnterAction(midRunEnterActionDraft);
                           setUiScale(uiScaleDraft);
                           setAppearance(appearanceDraft);
                           void desktop?.setScale(uiScaleDraft);
@@ -1702,6 +1857,26 @@ export default function App() {
                               </Button>
                             </div>
                           </div>
+                          <div className="space-y-2 text-xs font-medium">
+                            <span>Enter while a run is active</span>
+                            <div className="grid grid-cols-2 gap-2" role="group" aria-label="Mid-run Enter action">
+                              {(["queue", "steer"] as const).map((action) => (
+                                <Button
+                                  aria-pressed={midRunEnterActionDraft === action}
+                                  className="capitalize"
+                                  key={action}
+                                  type="button"
+                                  variant={midRunEnterActionDraft === action ? "default" : "outline"}
+                                  onClick={() => setMidRunEnterActionDraft(action)}
+                                >
+                                  {action}
+                                </Button>
+                              ))}
+                            </div>
+                            <span className="block font-normal text-muted-foreground">
+                              {SHORTCUT_LABEL} + Enter performs the other action. Shift + Enter adds a new line.
+                            </span>
+                          </div>
                         </div>
                         <div className="mt-5 flex min-h-9 items-center gap-3">
                           {settingsDirty ? (
@@ -1777,6 +1952,15 @@ export default function App() {
                   const activityIterationCount = countIterations(runEvents);
                   const isLatestPrompt =
                     turn.role === "user" && !threadTurns.slice(index + 1).some((item) => item.role === "user");
+                  const isSteered = turn.role === "user"
+                    && Boolean(turn.run_id)
+                    && threadTurns.slice(0, index).some(
+                      (item) => item.role === "user" && item.run_id === turn.run_id,
+                    );
+                  const isLastUserTurnForRun = turn.role === "user"
+                    && !threadTurns.slice(index + 1).some(
+                      (item) => item.role === "user" && item.run_id === turn.run_id,
+                    );
 
                   return (
                     <Fragment key={turn.id}>
@@ -1809,6 +1993,11 @@ export default function App() {
                               <p className="whitespace-pre-wrap text-sm leading-6">{turn.content}</p>
                             </div>
                             <div className="mt-1 flex items-center justify-end gap-1.5 pr-1 text-xs text-muted-foreground">
+                              {isSteered ? (
+                                <span className="rounded bg-muted px-1.5 py-0.5 font-semibold text-muted-foreground">
+                                  Steered
+                                </span>
+                              ) : null}
                               <time className="text-xs text-muted-foreground" dateTime={turn.created_at}>
                                 {formatTimestamp(turn.created_at)}
                               </time>
@@ -1817,7 +2006,7 @@ export default function App() {
                           </div>
                         )}
                       </article>
-                      {turn.role === "user" ? (
+                      {isLastUserTurnForRun ? (
                         <>
                           <div className="flex items-center gap-3 py-1">
                             <Separator className="flex-1" />
@@ -1886,6 +2075,42 @@ export default function App() {
                   </form>
                 </Card>
               ) : null}
+              {!viewingOtherThreadDuringRun ? queuedTasks.map((queuedTask) => (
+                <article className="message-in ml-auto max-w-[82%]" key={queuedTask.id}>
+                  <div>
+                    <div
+                      aria-disabled="true"
+                      className="rounded-2xl rounded-br-md border border-dashed bg-muted/60 px-4 py-3.5 text-muted-foreground"
+                    >
+                      <p className="whitespace-pre-wrap text-sm leading-6">{queuedTask.content}</p>
+                    </div>
+                    <div className="mt-1 flex items-center justify-end gap-1.5 pr-1 text-xs text-muted-foreground">
+                      <span className="rounded bg-muted px-1.5 py-0.5 font-semibold text-muted-foreground">
+                        Queued
+                      </span>
+                      <time className="text-xs text-muted-foreground" dateTime={queuedTask.createdAt}>
+                        {formatTimestamp(queuedTask.createdAt)}
+                      </time>
+                      <CopyButton
+                        className="!size-4 [&_svg]:!size-2.5"
+                        content={queuedTask.content}
+                        label="Copy queued message"
+                      />
+                      <Button
+                        aria-label="Delete queued message"
+                        className="!size-4 text-muted-foreground opacity-60 hover:text-destructive hover:opacity-100 [&_svg]:!size-2.5"
+                        size="icon-sm"
+                        title="Delete queued message"
+                        type="button"
+                        variant="ghost"
+                        onClick={() => deleteQueuedTask(queuedTask.id)}
+                      >
+                        <Trash2 aria-hidden="true" />
+                      </Button>
+                    </div>
+                  </div>
+                </article>
+              )) : null}
               <div ref={conversationBottomRef} />
                 </div>
               </div>
@@ -1894,16 +2119,33 @@ export default function App() {
           </div>
 
           <form className="relative z-30 col-start-1 row-start-3 border-t bg-background px-4 py-3 sm:px-5" onSubmit={startRun}>
-            <Card className="mx-auto w-full max-w-3xl rounded-2xl p-2 shadow-sm transition-shadow focus-within:shadow-md">
+            <Card className={`mx-auto w-full max-w-3xl rounded-2xl p-2 shadow-sm transition-shadow focus-within:shadow-md ${
+              status === "connecting" || status === "running" ? "composer-running" : ""
+            }`}>
               <Textarea
                 ref={taskInputRef}
                 className="min-h-16 max-h-60 resize-none overflow-y-auto border-0 bg-transparent px-3 py-2 text-sm leading-6 shadow-none focus-visible:ring-0"
                 disabled={viewingOtherThreadDuringRun}
-                placeholder={'Inspect the repo, search for "AgentRuntime", run tests, and show git diff'}
+                placeholder={status === "connecting" || status === "running"
+                  ? "Add a follow-up to queue or steer the current run"
+                  : 'Inspect the repo, search for "AgentRuntime", run tests, and show git diff'}
                 value={task}
                 onChange={(event) => setTask(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+                  if (status === "running") {
+                    if (event.shiftKey) return;
+                    event.preventDefault();
+                    const alternateAction = midRunEnterAction === "queue" ? "steer" : "queue";
+                    performMidRunAction(event.ctrlKey || event.metaKey ? alternateAction : midRunEnterAction);
+                    return;
+                  }
+                  if (status === "connecting") {
+                    if (event.shiftKey) return;
+                    event.preventDefault();
+                    queueTask();
+                    return;
+                  }
                   const shouldSend = sendOnEnter ? !event.shiftKey : event.shiftKey;
                   if (!shouldSend) return;
                   event.preventDefault();
@@ -2039,20 +2281,53 @@ export default function App() {
                   )}
                 </label>
                 {status === "connecting" || status === "running" ? (
-                  <span className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-                    <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" />
-                    Working
+                  <span className="text-xs font-medium text-muted-foreground">
+                    {stopping ? "Stopping" : "Working"}
+                    {queuedTasks.length ? ` · ${queuedTasks.length} queued` : ""}
                   </span>
                 ) : null}
-                <Button
-                  className="h-8 px-3 text-xs font-semibold"
-                  disabled={!task.trim() || !modelName || (!activeThread && !workspacePath.trim()) || status === "connecting" || status === "running"}
-                  size="sm"
-                  type="submit"
-                  variant="affirmative"
-                >
-                  <Send aria-hidden="true" className="size-3.5" /> Send
-                </Button>
+                {status === "connecting" || status === "running" ? (
+                  <>
+                    <Button
+                      aria-label="Stop run"
+                      className="size-8"
+                      disabled={stopping}
+                      size="icon-sm"
+                      type="button"
+                      variant="destructive"
+                      onClick={stopRun}
+                    >
+                      <Square aria-hidden="true" className="size-3.5 fill-current" />
+                    </Button>
+                    {task.trim() ? ([alternateRunEnterAction, activeRunEnterAction] as const).map((action) => {
+                      const primary = action === activeRunEnterAction;
+                      return (
+                        <Button
+                          className="h-8 px-3 text-xs font-semibold capitalize"
+                          disabled={stopping || viewingOtherThreadDuringRun || (action === "steer" && status !== "running")}
+                          key={action}
+                          size="sm"
+                          type="button"
+                          title={`${action === "queue" ? "Queue" : "Steer"} (${primary ? "Enter" : `${SHORTCUT_LABEL}+Enter`})`}
+                          variant={primary ? "affirmative" : "outline"}
+                          onClick={action === "queue" ? queueTask : steerRun}
+                        >
+                          {action}
+                        </Button>
+                      );
+                    }) : null}
+                  </>
+                ) : (
+                  <Button
+                    className="h-8 px-3 text-xs font-semibold"
+                    disabled={!task.trim() || !modelName || (!activeThread && !workspacePath.trim())}
+                    size="sm"
+                    type="submit"
+                    variant="affirmative"
+                  >
+                    <Send aria-hidden="true" className="size-3.5" /> Send
+                  </Button>
+                )}
               </div>
             </Card>
           </form>
@@ -2286,6 +2561,14 @@ export default function App() {
               <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
                 <span>New line</span>
                 <ShortcutKeys keys={sendOnEnter ? ["Shift", "Enter"] : ["Enter"]} />
+              </div>
+              <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
+                <span>{midRunEnterAction === "queue" ? "Queue during run" : "Steer during run"}</span>
+                <ShortcutKeys keys={["Enter"]} />
+              </div>
+              <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
+                <span>{midRunEnterAction === "queue" ? "Steer during run" : "Queue during run"}</span>
+                <ShortcutKeys keys={[SHORTCUT_LABEL, "Enter"]} />
               </div>
                 </div>
               </section>

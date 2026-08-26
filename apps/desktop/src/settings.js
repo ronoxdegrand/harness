@@ -34,6 +34,7 @@ function writeSettings(file, settings, encryption) {
       : "",
     maxIterations: settings.maxIterations,
     sendOnEnter: settings.sendOnEnter,
+    midRunEnterAction: settings.midRunEnterAction,
     sidebarWidth: settings.sidebarWidth,
     activityWidth: settings.activityWidth,
     activityPlacement: settings.activityPlacement,

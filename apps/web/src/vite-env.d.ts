@@ -5,6 +5,7 @@ interface DesktopSettings {
   sarvamApiKey: string;
   maxIterations: number;
   sendOnEnter: boolean;
+  midRunEnterAction: "queue" | "steer";
   sidebarWidth: number;
   activityWidth: number;
   activityPlacement: "side" | "inline";

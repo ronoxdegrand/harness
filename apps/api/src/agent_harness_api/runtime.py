@@ -22,6 +22,10 @@ class RunResult:
     finalized_by_iteration_limit: bool
 
 
+class RunStopped(Exception):
+    pass
+
+
 class AgentRuntime:
     def __init__(
         self,
@@ -33,6 +37,8 @@ class AgentRuntime:
         max_iterations: int = 12,
         timeout_seconds: int = 120,
         continuation_decider: Callable[[int], bool] | None = None,
+        stop_requested: Callable[[], bool] | None = None,
+        steering_provider: Callable[[], list[str]] | None = None,
     ) -> None:
         self.model = model
         self.model_name = getattr(model, "model_name", None)
@@ -43,6 +49,8 @@ class AgentRuntime:
         self.max_iterations = max_iterations
         self.timeout_seconds = timeout_seconds
         self.continuation_decider = continuation_decider
+        self.stop_requested = stop_requested
+        self.steering_provider = steering_provider
 
     def run(
         self,
@@ -80,6 +88,8 @@ class AgentRuntime:
         try:
             while True:
                 iteration += 1
+                self._check_stop()
+                self._apply_steering(active_run_id, iteration, context)
                 if time.monotonic() - started_at > timeout_limit:
                     raise TimeoutError(f"Run exceeded {timeout_limit} seconds.")
 
@@ -109,6 +119,8 @@ class AgentRuntime:
                         warning_after += warning_interval
                     else:
                         force_final_response = True
+
+                self._check_stop()
 
                 self._emit(active_run_id, "turn.started", iteration=iteration)
                 self._emit(
@@ -162,6 +174,17 @@ class AgentRuntime:
                         context=context.inspect(),
                     )
 
+                self._check_stop()
+                if self._apply_steering(active_run_id, iteration, context):
+                    self._emit(
+                        active_run_id,
+                        "turn.completed",
+                        iteration=iteration,
+                        status="steering_received",
+                    )
+                    self.store.save_snapshot(active_run_id, iteration, context.snapshot())
+                    continue
+
                 if not response.tool_calls:
                     self._emit(
                         active_run_id,
@@ -185,6 +208,7 @@ class AgentRuntime:
                     )
 
                 for call in response.tool_calls:
+                    self._check_stop()
                     self._execute_tool(
                         active_run_id,
                         iteration,
@@ -200,10 +224,44 @@ class AgentRuntime:
                     status="tool_results_available",
                 )
 
+        except RunStopped:
+            output_text = next(
+                (message.content for message in reversed(context.messages) if message.role == "assistant"),
+                "",
+            )
+            self._emit(active_run_id, "turn.stopped", iteration=max(iteration, 1))
+            self.store.save_snapshot(active_run_id, iteration, context.snapshot())
+            self.store.stop_run(active_run_id, output_text)
+            return RunResult(
+                run_id=active_run_id,
+                status="stopped",
+                output_text=output_text,
+                iterations=iteration,
+                finalized_by_iteration_limit=False,
+            )
         except Exception as exc:
             self._emit(active_run_id, "turn.failed", iteration=iteration or 1, error=str(exc))
             self.store.fail_run(active_run_id, str(exc))
             raise
+
+    def _check_stop(self) -> None:
+        if self.stop_requested and self.stop_requested():
+            raise RunStopped()
+
+    def _apply_steering(self, run_id: str, iteration: int, context: Context) -> bool:
+        messages = self.steering_provider() if self.steering_provider else []
+        if not messages:
+            return False
+        for content in messages:
+            context.add_user(content)
+            self._emit(run_id, "run.steered", iteration=iteration, content=content)
+        self._emit(
+            run_id,
+            "context.updated",
+            iteration=iteration,
+            context=context.inspect(),
+        )
+        return True
 
     def resume(self, run_id: str) -> Context:
         snapshot = self.store.load_latest_snapshot(run_id)
