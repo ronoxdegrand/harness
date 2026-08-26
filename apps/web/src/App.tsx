@@ -275,11 +275,15 @@ export default function App() {
     desktop ? "side" : validActivityPlacement(localStorage.getItem("activity-placement")),
   );
   const [conversationAreaWidth, setConversationAreaWidth] = useState(0);
-  const [contextOpen, setContextOpen] = useState(true);
+  const [contextOpen, setContextOpen] = useState(() =>
+    !desktop && localStorage.getItem("context-open") === "true",
+  );
   const [narrowView, setNarrowView] = useState(() => window.matchMedia("(max-width: 1023px)").matches);
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [activityRunId, setActivityRunId] = useState<string | null>(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
+    !desktop && localStorage.getItem("sidebar-collapsed") === "true",
+  );
   const [sidebarPreviewOpen, setSidebarPreviewOpen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(() =>
     desktop
@@ -411,6 +415,9 @@ export default function App() {
         ));
         setUiScale(settings.scale ?? 1);
         setAppearance(validAppearance(settings.appearance));
+        setSidebarCollapsed(
+          settings.sidebarCollapsed ?? localStorage.getItem("sidebar-collapsed") === "true",
+        );
         setSidebarWidth(
           settings.sidebarWidth ??
             Math.min(
@@ -431,6 +438,9 @@ export default function App() {
               MAX_CONTEXT_WIDTH,
             ),
         );
+        setContextOpen(
+          settings.contextOpen ?? localStorage.getItem("context-open") === "true",
+        );
         setThreadSort(validThreadSort(settings.threadSort));
         setGroupThreadsByPath(settings.groupThreadsByPath ?? false);
         setSettingsLoaded(true);
@@ -449,10 +459,12 @@ export default function App() {
           maxIterations,
           sendOnEnter,
           midRunEnterAction,
+          sidebarCollapsed,
           sidebarWidth,
           activityWidth,
           activityPlacement,
           contextWidth,
+          contextOpen,
           threadSort,
           groupThreadsByPath,
           scale: uiScale,
@@ -464,10 +476,12 @@ export default function App() {
           localStorage.removeItem("max-iterations");
           localStorage.removeItem("send-on-enter");
           localStorage.removeItem("mid-run-enter-action");
+          localStorage.removeItem("sidebar-collapsed");
           localStorage.removeItem("sidebar-width");
           localStorage.removeItem("activity-width");
           localStorage.removeItem("activity-placement");
           localStorage.removeItem("context-width");
+          localStorage.removeItem("context-open");
           localStorage.removeItem("thread-sort");
           localStorage.removeItem("group-threads-by-path");
         })
@@ -479,14 +493,16 @@ export default function App() {
     localStorage.setItem("max-iterations", String(maxIterations));
     localStorage.setItem("send-on-enter", String(sendOnEnter));
     localStorage.setItem("mid-run-enter-action", midRunEnterAction);
+    localStorage.setItem("sidebar-collapsed", String(sidebarCollapsed));
     localStorage.setItem("sidebar-width", String(sidebarWidth));
     localStorage.setItem("activity-width", String(activityWidth));
     localStorage.setItem("activity-placement", activityPlacement);
     localStorage.setItem("context-width", String(contextWidth));
+    localStorage.setItem("context-open", String(contextOpen));
     localStorage.setItem("thread-sort", threadSort);
     localStorage.setItem("group-threads-by-path", String(groupThreadsByPath));
     localStorage.setItem("appearance", appearance);
-  }, [activityPlacement, activityWidth, apiKey, appearance, contextWidth, desktop, groupThreadsByPath, maxIterations, midRunEnterAction, sarvamApiKey, sendOnEnter, settingsLoaded, sidebarWidth, threadSort, uiScale]);
+  }, [activityPlacement, activityWidth, apiKey, appearance, contextOpen, contextWidth, desktop, groupThreadsByPath, maxIterations, midRunEnterAction, sarvamApiKey, sendOnEnter, settingsLoaded, sidebarCollapsed, sidebarWidth, threadSort, uiScale]);
 
   useEffect(() => {
     const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
@@ -964,6 +980,25 @@ export default function App() {
   function deleteQueuedTask(id: string) {
     queuedTasksRef.current = queuedTasksRef.current.filter((queuedTask) => queuedTask.id !== id);
     setQueuedTasks([...queuedTasksRef.current]);
+  }
+
+  function steerQueuedTask(id: string) {
+    const queuedTask = queuedTasksRef.current.find((candidate) => candidate.id === id);
+    const socket = socketRef.current;
+    if (
+      !queuedTask
+      || status !== "running"
+      || stopping
+      || viewingOtherThreadDuringRun
+      || socket?.readyState !== WebSocket.OPEN
+    ) return;
+    try {
+      socket.send(JSON.stringify({ kind: "run.steer", content: queuedTask.content }));
+      deleteQueuedTask(id);
+      setError("");
+    } catch {
+      setError("Could not steer this queued message.");
+    }
   }
 
   function steerRun() {
@@ -1498,7 +1533,11 @@ export default function App() {
                     {groupThreads.map((thread) => (
                       <div className="group relative" key={thread.id}>
                     <Button
-                      className={`h-auto w-full justify-start rounded-lg px-3 py-2.5 pr-10 text-left ${
+                      className={`h-auto w-full justify-start rounded-lg px-3 py-2.5 text-left transition-[padding] ${
+                        runInProgress && runningThreadId === thread.id
+                          ? "pr-10"
+                          : "pr-3 group-hover:pr-10 group-focus-within:pr-10"
+                      } ${
                         activeThread?.id === thread.id
                           ? "bg-accent text-accent-foreground"
                           : "text-muted-foreground hover:bg-accent/70 hover:text-foreground"
@@ -1508,7 +1547,7 @@ export default function App() {
                       onClick={() => void openThread(thread.id)}
                     >
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm">{thread.title}</span>
+                        <span className="block truncate text-sm" title={thread.title}>{thread.title}</span>
                         {!groupThreadsByPath ? (
                           <span
                             className="mt-1 block overflow-hidden text-ellipsis whitespace-nowrap text-left font-mono text-xs text-muted-foreground [direction:rtl]"
@@ -1700,8 +1739,9 @@ export default function App() {
                     onClick={() => setSettingsOpen(false)}
                   />
                   <DialogPrimitive.Viewport className="pointer-events-none fixed inset-0 z-[70] flex items-center justify-center p-4">
-                    <DialogPrimitive.Popup className="pointer-events-auto max-h-[calc(100vh-2rem)] w-full max-w-sm overflow-y-auto rounded-xl border bg-card p-4 text-card-foreground shadow-xl outline-none">
+                    <DialogPrimitive.Popup className="pointer-events-auto max-h-[calc(100vh-2rem)] w-full max-w-xl overflow-hidden rounded-2xl border bg-card text-card-foreground shadow-xl outline-none">
                       <form
+                        className="flex max-h-[calc(100vh-2rem)] flex-col"
                         noValidate
                         onSubmit={(event) => {
                           event.preventDefault();
@@ -1727,164 +1767,211 @@ export default function App() {
                           setSettingsOpen(false);
                         }}
                       >
-                        <div className="flex items-center justify-between gap-3">
-                          <DialogPrimitive.Title className="text-sm font-semibold">Settings</DialogPrimitive.Title>
+                        <div className="flex shrink-0 items-center justify-between gap-3 border-b bg-muted/30 px-5 py-4">
+                          <DialogPrimitive.Title className="text-base font-semibold">Settings</DialogPrimitive.Title>
+                          <DialogPrimitive.Description className="sr-only">Configure Harness settings.</DialogPrimitive.Description>
                           <span className="rounded-full border border-brand-border bg-brand-muted px-2 py-0.5 text-xs font-semibold text-brand">
                             v{appVersion}
                           </span>
                         </div>
-                        <DialogPrimitive.Description className="sr-only">
-                          Changes are saved only when Done is selected.
-                        </DialogPrimitive.Description>
-                        <div className="mt-4 space-y-4">
-                          <label className="block space-y-1.5 text-xs font-medium">
-                            <span>Gemini API key</span>
-                            <Input
-                              autoFocus
-                              autoComplete="off"
-                              placeholder="Enter your API key"
-                              type="password"
-                              value={apiKeyDraft}
-                              onChange={(event) => setApiKeyDraft(event.target.value)}
-                            />
-                          </label>
-                          <label className="block space-y-1.5 text-xs font-medium">
-                            <span>Sarvam API key</span>
-                            <Input
-                              autoComplete="off"
-                              placeholder="Enter your API key"
-                              type="password"
-                              value={sarvamApiKeyDraft}
-                              onChange={(event) => setSarvamApiKeyDraft(event.target.value)}
-                            />
-                          </label>
-                          <label className="block space-y-1.5 text-xs font-medium">
-                            <span>Iteration warning</span>
-                            <Input
-                              aria-describedby={maxIterationsError ? "iteration-warning-error" : undefined}
-                              aria-invalid={Boolean(maxIterationsError)}
-                              max={50}
-                              min={1}
-                              required
-                              type="number"
-                              value={maxIterationsDraft}
-                              onChange={(event) => {
-                                setMaxIterationsDraft(event.target.value);
-                                setMaxIterationsError("");
-                              }}
-                            />
+                        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+                          <section className="rounded-xl border bg-muted/20 p-4">
+                            <div className="mb-3">
+                              <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Providers</h3>
+                              <p className="mt-1 text-xs text-muted-foreground">Keys stay on this device.</p>
+                            </div>
+                            <div className="grid gap-3 sm:grid-cols-2">
+                              <label className="block space-y-1.5 text-xs font-medium">
+                                <span>Gemini API key</span>
+                                <Input
+                                  autoFocus
+                                  autoComplete="off"
+                                  placeholder="Enter Gemini key"
+                                  type="password"
+                                  value={apiKeyDraft}
+                                  onChange={(event) => setApiKeyDraft(event.target.value)}
+                                />
+                              </label>
+                              <label className="block space-y-1.5 text-xs font-medium">
+                                <span>Sarvam API key</span>
+                                <Input
+                                  autoComplete="off"
+                                  placeholder="Enter Sarvam key"
+                                  type="password"
+                                  value={sarvamApiKeyDraft}
+                                  onChange={(event) => setSarvamApiKeyDraft(event.target.value)}
+                                />
+                              </label>
+                            </div>
+                          </section>
+
+                          <section className="rounded-xl border bg-muted/20 p-4">
+                            <div className="mb-3">
+                              <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Runs</h3>
+                              <p className="mt-1 text-xs text-muted-foreground">Choose when Harness pauses to ask whether it should continue.</p>
+                            </div>
+                            <label className="flex items-center justify-between gap-4 text-xs font-medium">
+                              <span>Iteration warning</span>
+                              <Input
+                                aria-describedby={maxIterationsError ? "iteration-warning-error" : undefined}
+                                aria-invalid={Boolean(maxIterationsError)}
+                                className="w-20"
+                                max={50}
+                                min={1}
+                                required
+                                type="number"
+                                value={maxIterationsDraft}
+                                onChange={(event) => {
+                                  setMaxIterationsDraft(event.target.value);
+                                  setMaxIterationsError("");
+                                }}
+                              />
+                            </label>
                             {maxIterationsError ? (
-                              <span className="block text-xs font-normal text-destructive" id="iteration-warning-error">
+                              <p className="mt-1.5 text-right text-xs text-destructive" id="iteration-warning-error">
                                 {maxIterationsError}
-                              </span>
+                              </p>
                             ) : null}
-                          </label>
-                          {desktop ? (
-                            <div className="space-y-2 text-xs font-medium">
-                              <span>Scale</span>
-                              <div className="grid grid-cols-[40px_minmax(0,1fr)_40px] gap-2">
+                          </section>
+
+                          <section className="rounded-xl border bg-muted/20 p-4">
+                            <div className="mb-3">
+                              <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Appearance</h3>
+                              <p className="mt-1 text-xs text-muted-foreground">Adjust the interface for this device.</p>
+                            </div>
+                            <div className={`grid gap-4 ${desktop ? "sm:grid-cols-[minmax(0,1fr)_11rem]" : ""}`}>
+                              <div className="space-y-2 text-xs font-medium">
+                                <span>Theme</span>
+                                <div className="grid grid-cols-3 gap-2">
+                                  {(["light", "dark", "system"] as const).map((option) => (
+                                    <Button
+                                      aria-pressed={appearanceDraft === option}
+                                      className="capitalize"
+                                      key={option}
+                                      type="button"
+                                      variant={appearanceDraft === option ? "default" : "outline"}
+                                      onClick={() => setAppearanceDraft(option)}
+                                    >
+                                      {option}
+                                    </Button>
+                                  ))}
+                                </div>
+                              </div>
+                              {desktop ? (
+                                <div className="space-y-2 text-xs font-medium">
+                                  <span>Interface scale</span>
+                                  <div className="grid grid-cols-[36px_minmax(0,1fr)_36px] gap-1.5">
                                 <Button
                                   aria-label="Zoom out"
-                                  className="size-10"
+                                      className="size-9"
                                   disabled={uiScaleDraft <= 0.5}
-                                  size="icon"
+                                      size="icon-sm"
                                   type="button"
                                   variant="outline"
                                   onClick={() => setUiScaleDraft((scale) => Math.max(scale - 0.1, 0.5))}
                                 >
                                   <Minus aria-hidden="true" className="size-4" />
                                 </Button>
-                                <div className="flex h-10 items-center justify-center rounded-md border bg-muted font-mono text-sm">
+                                    <div className="flex h-9 items-center justify-center rounded-md border bg-card font-mono text-xs">
                                   {Math.round(uiScaleDraft * 100)}%
                                 </div>
                                 <Button
                                   aria-label="Zoom in"
-                                  className="size-10"
+                                      className="size-9"
                                   disabled={uiScaleDraft >= 2}
-                                  size="icon"
+                                      size="icon-sm"
                                   type="button"
                                   variant="outline"
                                   onClick={() => setUiScaleDraft((scale) => Math.min(scale + 0.1, 2))}
                                 >
                                   <Plus aria-hidden="true" className="size-4" />
                                 </Button>
-                              </div>
+                                  </div>
+                                </div>
+                              ) : null}
                             </div>
-                          ) : null}
-                          <div className="space-y-2 text-xs font-medium">
-                            <span>Appearance</span>
-                            <div className="grid grid-cols-3 gap-2">
-                              {(["light", "dark", "system"] as const).map((option) => (
-                                <Button
-                                  aria-pressed={appearanceDraft === option}
-                                  className="capitalize"
-                                  key={option}
-                                  type="button"
-                                  variant={appearanceDraft === option ? "default" : "outline"}
-                                  onClick={() => setAppearanceDraft(option)}
-                                >
-                                  {option}
-                                </Button>
-                              ))}
+                          </section>
+
+                          <section className="rounded-xl border bg-muted/20 p-4">
+                            <div className="mb-4">
+                              <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Composer</h3>
+                              <p className="mt-1 text-xs text-muted-foreground">Set the primary keyboard action before and during a run.</p>
                             </div>
-                          </div>
-                          <div className="space-y-2 text-xs font-medium">
-                            <span>Message input</span>
-                            <div className="grid gap-2" role="group" aria-label="Message input shortcut">
+                            <div className="grid gap-4 sm:grid-cols-2">
+                              <div className="space-y-2 text-xs font-medium">
+                                <span>Send message</span>
+                                <div className="grid grid-cols-2 gap-2" role="group" aria-label="Message input shortcut">
                               <Button
                                 aria-pressed={sendOnEnterDraft}
-                                className="h-auto w-full justify-between gap-3 px-3 py-2"
+                                      className="h-auto flex-col gap-1 px-2 py-2.5"
                                 type="button"
                                 variant={sendOnEnterDraft ? "default" : "outline"}
                                 onClick={() => setSendOnEnterDraft(true)}
                               >
-                                <kbd className="shrink-0 rounded border bg-muted px-2 py-1 font-mono text-xs text-foreground">
-                                  Enter
-                                </kbd>
-                                <span>{sendOnEnterDraft ? "Sends" : "New line"}</span>
+                                      <span className="flex items-center gap-1">
+                                        {!sendOnEnterDraft && (
+                                          <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-[10px] text-foreground">Shift</kbd>
+                                        )}
+                                        <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-[10px] text-foreground">Enter</kbd>
+                                      </span>
+                                      <span>Send</span>
                               </Button>
                               <Button
                                 aria-pressed={!sendOnEnterDraft}
-                                className="h-auto w-full justify-between gap-3 px-3 py-2"
+                                      className="h-auto flex-col gap-1 px-2 py-2.5"
                                 type="button"
                                 variant={sendOnEnterDraft ? "outline" : "default"}
                                 onClick={() => setSendOnEnterDraft(false)}
                               >
-                                <kbd className="shrink-0 rounded border bg-muted px-2 py-1 font-mono text-xs text-foreground">
-                                  Shift + Enter
-                                </kbd>
-                                <span>{sendOnEnterDraft ? "New line" : "Sends"}</span>
+                                      <span className="flex items-center gap-1">
+                                        {sendOnEnterDraft && (
+                                          <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-[10px] text-foreground">Shift</kbd>
+                                        )}
+                                        <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-[10px] text-foreground">Enter</kbd>
+                                      </span>
+                                      <span>New line</span>
                               </Button>
+                                </div>
+                                <p className="font-normal leading-5 text-muted-foreground">The other shortcut inserts a new line.</p>
                             </div>
-                          </div>
-                          <div className="space-y-2 text-xs font-medium">
-                            <span>Enter while a run is active</span>
-                            <div className="grid grid-cols-2 gap-2" role="group" aria-label="Mid-run Enter action">
+                              <div className="space-y-2 text-xs font-medium">
+                                <span>Enter during a run</span>
+                                <div className="grid grid-cols-2 gap-2" role="group" aria-label="Mid-run Enter action">
                               {(["queue", "steer"] as const).map((action) => (
                                 <Button
                                   aria-pressed={midRunEnterActionDraft === action}
-                                  className="capitalize"
+                                  className="h-auto flex-col gap-1 px-2 py-2.5 capitalize"
                                   key={action}
                                   type="button"
                                   variant={midRunEnterActionDraft === action ? "default" : "outline"}
                                   onClick={() => setMidRunEnterActionDraft(action)}
                                 >
-                                  {action}
+                                  <span className="flex items-center gap-1">
+                                    {midRunEnterActionDraft === action ? (
+                                      <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-[10px] normal-case text-foreground">Enter</kbd>
+                                    ) : (
+                                      <>
+                                        <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-[10px] normal-case text-foreground">{SHORTCUT_LABEL}</kbd>
+                                        <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-[10px] normal-case text-foreground">Enter</kbd>
+                                      </>
+                                    )}
+                                  </span>
+                                  <span>{action}</span>
                                 </Button>
                               ))}
                             </div>
-                            <span className="block font-normal text-muted-foreground">
-                              {SHORTCUT_LABEL} + Enter performs the other action. Shift + Enter adds a new line.
-                            </span>
+                              </div>
+                            </div>
+                          </section>
                           </div>
-                        </div>
-                        <div className="mt-5 flex min-h-9 items-center gap-3">
+                        <div className="flex min-h-16 shrink-0 items-center gap-3 border-t bg-muted/20 px-5 py-3">
                           {settingsDirty ? (
                             <span className="text-xs font-medium text-warning" role="status">
                               Changes not saved yet
                             </span>
                           ) : null}
-                          <Button className="ml-auto" type="submit" variant="affirmative">Done</Button>
+                          <Button className="ml-auto" type="button" variant="ghost" onClick={() => setSettingsOpen(false)}>Cancel</Button>
+                          <Button type="submit" variant="affirmative">Save changes</Button>
                         </div>
                       </form>
                     </DialogPrimitive.Popup>
@@ -2091,6 +2178,18 @@ export default function App() {
                       <time className="text-xs text-muted-foreground" dateTime={queuedTask.createdAt}>
                         {formatTimestamp(queuedTask.createdAt)}
                       </time>
+                      <Button
+                        aria-label="Steer queued message now"
+                        className="!size-4 text-muted-foreground opacity-60 hover:text-foreground hover:opacity-100 [&_svg]:!size-2.5"
+                        disabled={status !== "running" || stopping}
+                        size="icon-sm"
+                        title="Steer now"
+                        type="button"
+                        variant="ghost"
+                        onClick={() => steerQueuedTask(queuedTask.id)}
+                      >
+                        <ChevronUp aria-hidden="true" />
+                      </Button>
                       <CopyButton
                         className="!size-4 [&_svg]:!size-2.5"
                         content={queuedTask.content}

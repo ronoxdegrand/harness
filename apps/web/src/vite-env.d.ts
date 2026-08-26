@@ -6,10 +6,12 @@ interface DesktopSettings {
   maxIterations: number;
   sendOnEnter: boolean;
   midRunEnterAction: "queue" | "steer";
+  sidebarCollapsed: boolean;
   sidebarWidth: number;
   activityWidth: number;
   activityPlacement: "side" | "inline";
   contextWidth: number;
+  contextOpen: boolean;
   threadSort: "recent-message" | "created";
   groupThreadsByPath: boolean;
   scale: number;
