@@ -28,7 +28,7 @@ function runShell(command) {
 
 function ensurePythonRuntime() {
   if (!fs.existsSync(venvPython)) {
-    console.error(`Python venv not found at: ${venvPython}`);
+    console.error(`Python venv not found at: ${venvPython}\nRun "npm run setup" first.`);
     process.exit(1);
   }
 }

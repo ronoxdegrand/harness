@@ -127,6 +127,25 @@ class EmptyModelProvider:
         return ModelResponse()
 
 
+class SteeringModelProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
+        self.calls += 1
+        if self.calls == 1:
+            return ModelResponse(output_text="Initial direction")
+        assert any(
+            message.role == "user" and message.content == "Focus on the API"
+            for message in context.messages
+        )
+        assert any(
+            message.role == "user" and message.content == "Keep the tests focused"
+            for message in context.messages
+        )
+        return ModelResponse(output_text="Steered result")
+
+
 class ContinuingModelProvider:
     def __init__(self) -> None:
         self.final_response_flags: list[bool] = []
@@ -195,6 +214,63 @@ def test_runtime_fails_when_model_returns_no_text_or_tools(tmp_path: Path, monke
         assert "empty response" in str(exc).lower()
     failure = next(event for event in captured_events if event.type == "turn.failed")
     assert failure.payload["iteration"] == 1
+
+
+def test_runtime_stops_before_starting_more_work(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(tmp_path / "stopped.db"))
+    get_settings.cache_clear()
+    initialize_database()
+    captured_events: list[RuntimeEvent] = []
+    emitter = EventEmitter()
+    emitter.subscribe(captured_events.append)
+    registry = build_default_tool_registry()
+    model = SteeringModelProvider()
+    runtime = AgentRuntime(
+        model=model,
+        tool_registry=registry,
+        tool_executor=ToolExecutor(registry),
+        store=RunStore(),
+        event_emitter=emitter,
+        stop_requested=lambda: True,
+    )
+
+    result = runtime.run("inspect", target_path=tmp_path)
+
+    assert result.status == "stopped"
+    assert model.calls == 0
+    assert "turn.stopped" in [event.type for event in captured_events]
+
+
+def test_runtime_applies_steering_before_finishing(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(tmp_path / "steered.db"))
+    get_settings.cache_clear()
+    initialize_database()
+    captured_events: list[RuntimeEvent] = []
+    emitter = EventEmitter()
+    emitter.subscribe(captured_events.append)
+    registry = build_default_tool_registry()
+    model = SteeringModelProvider()
+    polls = 0
+
+    def take_steering() -> list[str]:
+        nonlocal polls
+        polls += 1
+        return ["Focus on the API", "Keep the tests focused"] if polls == 2 else []
+
+    runtime = AgentRuntime(
+        model=model,
+        tool_registry=registry,
+        tool_executor=ToolExecutor(registry),
+        store=RunStore(),
+        event_emitter=emitter,
+        steering_provider=take_steering,
+    )
+
+    result = runtime.run("inspect", target_path=tmp_path)
+
+    assert result.output_text == "Steered result"
+    assert result.iterations == 2
+    assert [event.type for event in captured_events].count("run.steered") == 2
 
 
 def test_agent_runtime_executes_single_agent_loop(tmp_path: Path, monkeypatch) -> None:

@@ -445,6 +445,18 @@ class RunStore:
             )
             connection.commit()
 
+    def stop_run(self, run_id: str, output_text: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE harness_runs
+                SET status = ?, final_output = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                ("stopped", output_text, run_id),
+            )
+            connection.commit()
+
     def load_latest_snapshot(self, run_id: str) -> list[dict[str, Any]] | None:
         with self._connect() as connection:
             row = connection.execute(

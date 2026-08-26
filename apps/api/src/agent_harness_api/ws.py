@@ -4,7 +4,7 @@ import asyncio
 import threading
 import uuid
 from pathlib import Path
-from queue import Queue
+from queue import Empty, Queue
 from typing import Any, Callable
 
 from fastapi import WebSocket
@@ -48,6 +48,8 @@ def build_runtime(
     model_name: str,
     max_iterations: int,
     continuation_decider: Callable[[int], bool],
+    stop_requested: Callable[[], bool],
+    steering_provider: Callable[[], list[str]],
 ) -> AgentRuntime:
     registry = build_default_tool_registry()
     if model_name == "sarvam-105b":
@@ -69,6 +71,8 @@ def build_runtime(
         max_iterations=max_iterations,
         timeout_seconds=120,
         continuation_decider=continuation_decider,
+        stop_requested=stop_requested,
+        steering_provider=steering_provider,
     )
 
 
@@ -204,6 +208,8 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
 
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     continuation_decisions: Queue[bool] = Queue()
+    steering_messages: Queue[str] = Queue()
+    stop_event = threading.Event()
     loop = asyncio.get_running_loop()
     emitter = EventEmitter()
 
@@ -225,6 +231,14 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
         )
         return continuation_decisions.get()
 
+    def take_steering() -> list[str]:
+        messages: list[str] = []
+        while True:
+            try:
+                messages.append(steering_messages.get_nowait())
+            except Empty:
+                return messages
+
     emitter.subscribe(on_event)
     try:
         runtime = build_runtime(
@@ -241,6 +255,8 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
             model_name=model_name,
             max_iterations=requested_max_iterations or 8,
             continuation_decider=decide_continuation,
+            stop_requested=stop_event.is_set,
+            steering_provider=take_steering,
         )
     except ValueError as exc:
         await _fail_run(websocket, str(exc))
@@ -280,13 +296,14 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
                 thread_id=thread.id,
                 initial_context=history,
             )
-            store.append_turn(
-                thread_id=thread.id,
-                role="assistant",
-                content=result.output_text,
-                run_id=result.run_id,
-                model_name=model_name,
-            )
+            if result.output_text:
+                store.append_turn(
+                    thread_id=thread.id,
+                    role="assistant",
+                    content=result.output_text,
+                    run_id=result.run_id,
+                    model_name=model_name,
+                )
             _push_message(
                 loop,
                 queue,
@@ -310,22 +327,55 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
     agent_thread = threading.Thread(target=run_agent, daemon=True)
     agent_thread.start()
 
+    async def receive_controls() -> None:
+        try:
+            while True:
+                control = await websocket.receive_json()
+                if not isinstance(control, dict):
+                    continue
+                kind = control.get("kind")
+                if kind == "run.stop":
+                    stop_event.set()
+                    if continuation_decisions.empty():
+                        continuation_decisions.put(False)
+                    await queue.put({"kind": "run.stop_requested"})
+                elif kind == "run.steer":
+                    content = control.get("content")
+                    if isinstance(content, str) and (steering := content.strip()):
+                        steering_messages.put(steering)
+                        store.append_turn(
+                            thread_id=thread.id,
+                            role="user",
+                            content=steering,
+                            run_id=run_id,
+                            model_name=model_name,
+                        )
+                        await queue.put(
+                            {"kind": "run.steering_accepted", "payload": {"content": steering}}
+                        )
+                elif kind == "run.continuation_decision":
+                    continuation_decisions.put(control.get("continue") is True)
+        except (ValueError, WebSocketDisconnect):
+            stop_event.set()
+            if continuation_decisions.empty():
+                continuation_decisions.put(False)
+            await queue.put({"kind": "_client.disconnected"})
+
+    receiver_task = asyncio.create_task(receive_controls())
+
     try:
         while True:
             message = await queue.get()
+            if message["kind"] == "_client.disconnected":
+                break
             await websocket.send_json(message)
-            if message["kind"] == "run.continuation_required":
-                try:
-                    decision = await websocket.receive_json()
-                except (ValueError, WebSocketDisconnect):
-                    continuation_decisions.put(False)
-                    return
-                continuation_decisions.put(
-                    isinstance(decision, dict)
-                    and decision.get("kind") == "run.continuation_decision"
-                    and decision.get("continue") is True
-                )
             if message["kind"] == "run.finished":
                 break
     except WebSocketDisconnect:
-        return
+        stop_event.set()
+    finally:
+        receiver_task.cancel()
+        try:
+            await receiver_task
+        except asyncio.CancelledError:
+            pass

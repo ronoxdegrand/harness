@@ -1,17 +1,17 @@
 [project]
 name = "agent-harness-api"
-version = "0.4.1"
+version = "0.5.0"
 description = "FastAPI backend for the AI agent harness."
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.116.0,<1.0.0",
+    "httpx>=0.28.1,<1.0.0",
     "pydantic-settings>=2.10.1,<3.0.0",
     "uvicorn[standard]>=0.35.0,<1.0.0",
 ]
 
 [dependency-groups]
 dev = [
-    "httpx>=0.28.1,<1.0.0",
     "pyinstaller>=6.15.0,<7.0.0",
     "pytest>=8.4.1,<9.0.0",
 ]

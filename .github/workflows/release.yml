@@ -18,6 +18,9 @@ jobs:
           - runner: windows-latest
             name: windows-x64
             builder: --win --x64
+          - runner: macos-15
+            name: macos-arm64
+            builder: --mac --arm64
           - runner: ubuntu-latest
             name: linux-x64
             builder: --linux --x64
@@ -33,7 +36,7 @@ jobs:
           cache: npm
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
-          version: "0.8.12"
+          version: "0.12.5"
           enable-cache: true
       - run: npm ci
       - run: uv sync --all-packages --all-groups --frozen
@@ -54,6 +57,8 @@ jobs:
           if-no-files-found: error
           path: |
             apps/desktop/release/*.exe
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
             apps/desktop/release/*.AppImage
             apps/desktop/release/*.blockmap
 

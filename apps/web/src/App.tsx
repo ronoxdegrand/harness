@@ -1,8 +1,8 @@
-import { type CSSProperties, FormEvent, Fragment, type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from "react";
+import { type CSSProperties, FormEvent, Fragment, type PointerEvent as ReactPointerEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { Select as SelectPrimitive } from "@base-ui/react/select";
-import { Check, ChevronDown, ChevronUp, Copy, FolderGit2, Layers3, LoaderCircle, Minus, Minimize2, PanelLeft, Pencil, Plus, RefreshCw, Send, Settings2, Trash2 } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Copy, FolderGit2, Layers3, LoaderCircle, Minus, Minimize2, PanelLeft, PanelRight, Pencil, Plus, RefreshCw, Rows2, Send, Settings2, Square, Trash2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -15,8 +15,12 @@ const GEMINI_MODELS = [
 ];
 const SARVAM_MODELS = ["sarvam-105b"];
 const DEFAULT_SIDEBAR_WIDTH = 272;
-const DEFAULT_ACTIVITY_WIDTH = 340;
+const DEFAULT_ACTIVITY_WIDTH = 420;
+const MIN_ACTIVITY_WIDTH = 400;
 const DEFAULT_CONTEXT_WIDTH = 340;
+const MIN_THREAD_WIDTH_WITH_ACTIVITY = 480;
+const ACTIVITY_LAYOUT_GAP = 16;
+const CONVERSATION_HORIZONTAL_GUTTER = 48;
 const MAX_SIDEBAR_WIDTH = 600;
 const MAX_ACTIVITY_WIDTH = 720;
 const MAX_CONTEXT_WIDTH = 720;
@@ -26,6 +30,8 @@ const SHORTCUT_LABEL = IS_MAC ? "Cmd" : "Ctrl";
 const ALT_LABEL = IS_MAC ? "Option" : "Alt";
 type Appearance = "light" | "dark" | "system";
 type ThreadSort = "recent-message" | "created";
+type ActivityPlacement = "side" | "inline";
+type MidRunEnterAction = "queue" | "steer";
 
 function validAppearance(value: unknown): Appearance {
   return value === "dark" || value === "system" ? value : "light";
@@ -33,6 +39,18 @@ function validAppearance(value: unknown): Appearance {
 
 function validThreadSort(value: unknown): ThreadSort {
   return value === "created" ? value : "recent-message";
+}
+
+function validActivityPlacement(value: unknown): ActivityPlacement {
+  return value === "inline" ? value : "side";
+}
+
+function validMidRunEnterAction(value: unknown): MidRunEnterAction {
+  return value === "steer" ? "steer" : "queue";
+}
+
+function clampActivityWidth(value: number) {
+  return Math.min(Math.max(value || DEFAULT_ACTIVITY_WIDTH, MIN_ACTIVITY_WIDTH), MAX_ACTIVITY_WIDTH);
 }
 
 function selectableModel(model: string, options: string[]) {
@@ -53,6 +71,8 @@ type RunSocketMessage =
       };
     }
   | { kind: "run.failed"; error: string }
+  | { kind: "run.stop_requested" }
+  | { kind: "run.steering_accepted"; payload: { content: string } }
   | {
       kind: "run.continuation_required";
       payload: { iteration: number; completed_iterations: number; additional_iterations: number };
@@ -84,6 +104,12 @@ type ThreadTurn = {
   role: "user" | "assistant";
   content: string;
   created_at: string;
+};
+
+type QueuedTask = {
+  id: string;
+  content: string;
+  createdAt: string;
 };
 
 type ContextState = {
@@ -184,6 +210,12 @@ function countIterations(events: RuntimeEvent[]) {
   ).size;
 }
 
+function showInActivity(event: RuntimeEvent) {
+  return !event.type.endsWith(".started")
+    && event.type !== "model.delta"
+    && event.type !== "turn.completed";
+}
+
 export default function App() {
   const desktop = window.harnessDesktop;
   const macDesktop = desktop?.platform === "darwin";
@@ -203,6 +235,9 @@ export default function App() {
   const [sendOnEnter, setSendOnEnter] = useState(
     () => Boolean(desktop) || localStorage.getItem("send-on-enter") !== "false",
   );
+  const [midRunEnterAction, setMidRunEnterAction] = useState<MidRunEnterAction>(() =>
+    desktop ? "queue" : validMidRunEnterAction(localStorage.getItem("mid-run-enter-action")),
+  );
   const [uiScale, setUiScale] = useState(1);
   const [appearance, setAppearance] = useState<Appearance>(() =>
     desktop ? "light" : validAppearance(localStorage.getItem("appearance")),
@@ -217,6 +252,7 @@ export default function App() {
   const [maxIterationsDraft, setMaxIterationsDraft] = useState(String(maxIterations));
   const [maxIterationsError, setMaxIterationsError] = useState("");
   const [sendOnEnterDraft, setSendOnEnterDraft] = useState(sendOnEnter);
+  const [midRunEnterActionDraft, setMidRunEnterActionDraft] = useState(midRunEnterAction);
   const [uiScaleDraft, setUiScaleDraft] = useState(uiScale);
   const [appearanceDraft, setAppearanceDraft] = useState<Appearance>(appearance);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -228,10 +264,17 @@ export default function App() {
   const [threadToDelete, setThreadToDelete] = useState<ThreadSummary | null>(null);
   const [threadTurns, setThreadTurns] = useState<ThreadTurn[]>([]);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
+  const [collapsedActivityGroups, setCollapsedActivityGroups] = useState<Record<string, boolean>>({});
   const [threadContext, setThreadContext] = useState<ContextState | null>(null);
   const [expandedContextEntries, setExpandedContextEntries] = useState<Record<number, string | null>>({});
   const [assistantText, setAssistantText] = useState("");
+  const [queuedTasks, setQueuedTasks] = useState<QueuedTask[]>([]);
+  const [stopping, setStopping] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
+  const [activityPlacement, setActivityPlacement] = useState<ActivityPlacement>(() =>
+    desktop ? "side" : validActivityPlacement(localStorage.getItem("activity-placement")),
+  );
+  const [conversationAreaWidth, setConversationAreaWidth] = useState(0);
   const [contextOpen, setContextOpen] = useState(true);
   const [narrowView, setNarrowView] = useState(() => window.matchMedia("(max-width: 1023px)").matches);
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
@@ -249,10 +292,7 @@ export default function App() {
   const [activityWidth, setActivityWidth] = useState(() =>
     desktop
       ? DEFAULT_ACTIVITY_WIDTH
-      : Math.min(
-          Math.max(Number(localStorage.getItem("activity-width")) || DEFAULT_ACTIVITY_WIDTH, 280),
-          MAX_ACTIVITY_WIDTH,
-        ),
+      : clampActivityWidth(Number(localStorage.getItem("activity-width"))),
   );
   const [contextWidth, setContextWidth] = useState(() =>
     desktop
@@ -279,10 +319,15 @@ export default function App() {
   } | null>(null);
   const [error, setError] = useState("");
   const socketRef = useRef<WebSocket | null>(null);
+  const queuedTasksRef = useRef<QueuedTask[]>([]);
+  const syntheticTurnIdRef = useRef(-1);
   const activeThreadIdRef = useRef<string | null>(null);
   const taskInputRef = useRef<HTMLTextAreaElement | null>(null);
   const conversationBottomRef = useRef<HTMLDivElement | null>(null);
-  const activityBottomRef = useRef<HTMLDivElement | null>(null);
+  const conversationAreaRef = useRef<HTMLDivElement | null>(null);
+  const threadScrollRef = useRef<HTMLDivElement | null>(null);
+  const conversationScrollTopRef = useRef(0);
+  const activityScrollRef = useRef<HTMLDivElement | null>(null);
   const shortcutTimerRef = useRef<number | null>(null);
   const panelPreviewTimerRef = useRef<number | null>(null);
   const apiKeyPromptedRef = useRef(false);
@@ -295,10 +340,25 @@ export default function App() {
 
   useEffect(() => {
     conversationBottomRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
-    if (activityOpen) {
-      activityBottomRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
+  }, [events, assistantText, continuationRequest, queuedTasks, status]);
+
+  useEffect(() => {
+    const activityScroller = activityScrollRef.current;
+    if (!activityOpen || !activityScroller) return;
+    if (activityScroller.scrollHeight > activityScroller.clientHeight) {
+      activityScroller.scrollTop = activityScroller.scrollHeight;
     }
-  }, [activityOpen, events, assistantText, continuationRequest, status]);
+  }, [activityOpen, events]);
+
+  useEffect(() => {
+    const conversationArea = conversationAreaRef.current;
+    if (!conversationArea) return;
+    const updateWidth = () => setConversationAreaWidth(conversationArea.clientWidth);
+    updateWidth();
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(conversationArea);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const input = taskInputRef.current;
@@ -346,6 +406,9 @@ export default function App() {
             Math.min(Math.max(Number(localStorage.getItem("max-iterations")) || 8, 1), 50),
         );
         setSendOnEnter(settings.sendOnEnter ?? localStorage.getItem("send-on-enter") !== "false");
+        setMidRunEnterAction(validMidRunEnterAction(
+          settings.midRunEnterAction ?? localStorage.getItem("mid-run-enter-action"),
+        ));
         setUiScale(settings.scale ?? 1);
         setAppearance(validAppearance(settings.appearance));
         setSidebarWidth(
@@ -355,13 +418,12 @@ export default function App() {
               MAX_SIDEBAR_WIDTH,
             ),
         );
-        setActivityWidth(
-          settings.activityWidth ??
-            Math.min(
-              Math.max(Number(localStorage.getItem("activity-width")) || DEFAULT_ACTIVITY_WIDTH, 280),
-              MAX_ACTIVITY_WIDTH,
-            ),
-        );
+        setActivityWidth(clampActivityWidth(
+          settings.activityWidth ?? Number(localStorage.getItem("activity-width")),
+        ));
+        setActivityPlacement(validActivityPlacement(
+          settings.activityPlacement ?? localStorage.getItem("activity-placement"),
+        ));
         setContextWidth(
           settings.contextWidth ??
             Math.min(
@@ -386,8 +448,10 @@ export default function App() {
           sarvamApiKey,
           maxIterations,
           sendOnEnter,
+          midRunEnterAction,
           sidebarWidth,
           activityWidth,
+          activityPlacement,
           contextWidth,
           threadSort,
           groupThreadsByPath,
@@ -399,8 +463,10 @@ export default function App() {
           sessionStorage.removeItem("sarvam-api-key");
           localStorage.removeItem("max-iterations");
           localStorage.removeItem("send-on-enter");
+          localStorage.removeItem("mid-run-enter-action");
           localStorage.removeItem("sidebar-width");
           localStorage.removeItem("activity-width");
+          localStorage.removeItem("activity-placement");
           localStorage.removeItem("context-width");
           localStorage.removeItem("thread-sort");
           localStorage.removeItem("group-threads-by-path");
@@ -412,13 +478,15 @@ export default function App() {
     sessionStorage.setItem("sarvam-api-key", sarvamApiKey);
     localStorage.setItem("max-iterations", String(maxIterations));
     localStorage.setItem("send-on-enter", String(sendOnEnter));
+    localStorage.setItem("mid-run-enter-action", midRunEnterAction);
     localStorage.setItem("sidebar-width", String(sidebarWidth));
     localStorage.setItem("activity-width", String(activityWidth));
+    localStorage.setItem("activity-placement", activityPlacement);
     localStorage.setItem("context-width", String(contextWidth));
     localStorage.setItem("thread-sort", threadSort);
     localStorage.setItem("group-threads-by-path", String(groupThreadsByPath));
     localStorage.setItem("appearance", appearance);
-  }, [activityWidth, apiKey, appearance, contextWidth, desktop, groupThreadsByPath, maxIterations, sarvamApiKey, sendOnEnter, settingsLoaded, sidebarWidth, threadSort, uiScale]);
+  }, [activityPlacement, activityWidth, apiKey, appearance, contextWidth, desktop, groupThreadsByPath, maxIterations, midRunEnterAction, sarvamApiKey, sendOnEnter, settingsLoaded, sidebarWidth, threadSort, uiScale]);
 
   useEffect(() => {
     const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
@@ -451,10 +519,11 @@ export default function App() {
     setSarvamApiKeyDraft(sarvamApiKey);
     setMaxIterationsDraft(String(maxIterations));
     setSendOnEnterDraft(sendOnEnter);
+    setMidRunEnterActionDraft(midRunEnterAction);
     setUiScaleDraft(uiScale);
     setAppearanceDraft(appearance);
     setSettingsOpen(true);
-  }, [apiKey, appearance, maxIterations, sarvamApiKey, sendOnEnter, settingsLoaded, uiScale]);
+  }, [apiKey, appearance, maxIterations, midRunEnterAction, sarvamApiKey, sendOnEnter, settingsLoaded, uiScale]);
 
   useEffect(() => {
     if (!desktop) return;
@@ -507,7 +576,12 @@ export default function App() {
       }
       if (modifierHeld && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "t") {
         event.preventDefault();
-        startNewThread();
+        startNewThread("current");
+        return;
+      }
+      if (modifierHeld && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "n") {
+        event.preventDefault();
+        startNewThread("unselected");
         return;
       }
       if (modifierHeld && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "r") {
@@ -591,7 +665,10 @@ export default function App() {
     }
   }
 
-  function startNewThread() {
+  function startNewThread(pathMode: "current" | "unselected" = "current") {
+    const nextWorkspacePath = pathMode === "unselected"
+      ? ""
+      : activeThread?.workspace_path ?? workspacePath;
     socketRef.current?.close();
     activeThreadIdRef.current = null;
     setActiveThread(null);
@@ -600,6 +677,9 @@ export default function App() {
     setThreadContext(null);
     setExpandedContextEntries({});
     setAssistantText("");
+    queuedTasksRef.current = [];
+    setQueuedTasks([]);
+    setStopping(false);
     setEditingTitle(false);
     setActivityOpen(false);
     setActivityRunId(null);
@@ -611,7 +691,7 @@ export default function App() {
     setTask("");
     setNewThreadTitle(null);
     setModelName(selectableModel(lastUsedModel, availableModels));
-    setWorkspacePath(threads[0]?.workspace_path ?? workspacePath);
+    setWorkspacePath(nextWorkspacePath);
   }
 
   async function renameActiveThread(event: FormEvent<HTMLFormElement>) {
@@ -655,14 +735,25 @@ export default function App() {
     }
   }
 
-  async function startRun(event: FormEvent<HTMLFormElement>) {
+  function startRun(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!task.trim() || !modelName || (!activeThread && !workspacePath.trim()) || status === "connecting" || status === "running") return;
+    if (status === "connecting" || status === "running") {
+      performMidRunAction(status === "running" ? midRunEnterAction : "queue");
+      return;
+    }
+    beginRun(task);
+  }
+
+  function beginRun(submittedTaskValue: string, threadOverride?: ThreadSummary | null) {
+    if (!submittedTaskValue.trim() || !modelName || (!activeThread && !threadOverride && !workspacePath.trim())) return;
     socketRef.current?.close();
 
-    const thread = activeThread;
+    const thread = threadOverride === undefined ? activeThread : threadOverride;
+    let runThread = thread;
     let runThreadId = thread?.id ?? null;
-    const submittedTask = task;
+    let activeRunId: string | null = null;
+    let completionRefresh: Promise<void> | null = null;
+    const submittedTask = submittedTaskValue.trim();
     setLastUsedModel(modelName);
 
     setStatus("connecting");
@@ -672,13 +763,14 @@ export default function App() {
     setActivityOpen(false);
     setActivityRunId(null);
     setFinalizedByIterationLimit(false);
+    setStopping(false);
     continuationPendingRef.current = false;
     setContinuationRequest(null);
     setError("");
     setThreadTurns((current) => [
       ...current,
       {
-        id: Date.now(),
+        id: syntheticTurnIdRef.current--,
         run_id: null,
         model_name: modelName,
         finalized_by_iteration_limit: false,
@@ -714,6 +806,8 @@ export default function App() {
       }
 
       if (payload.kind === "thread.opened") {
+        runThread = payload.payload.thread;
+        activeRunId = payload.payload.run_id;
         runThreadId = payload.payload.thread.id;
         activeThreadIdRef.current = runThreadId;
         setRunningThreadId(runThreadId);
@@ -781,6 +875,27 @@ export default function App() {
         return;
       }
 
+      if (payload.kind === "run.stop_requested") {
+        setStopping(true);
+        return;
+      }
+
+      if (payload.kind === "run.steering_accepted") {
+        setThreadTurns((current) => [
+          ...current,
+          {
+            id: syntheticTurnIdRef.current--,
+            run_id: activeRunId,
+            model_name: modelName,
+            finalized_by_iteration_limit: false,
+            role: "user",
+            content: payload.payload.content,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+        return;
+      }
+
       if (payload.kind === "run.completed") {
         setStatus(payload.payload.status);
         if (activeThreadIdRef.current === payload.payload.thread_id) {
@@ -788,7 +903,7 @@ export default function App() {
           if (payload.payload.output_text.trim()) {
             setAssistantText(payload.payload.output_text);
           }
-          void openThread(payload.payload.thread_id, true);
+          completionRefresh = openThread(payload.payload.thread_id, true);
         }
         void refreshThreads();
         return;
@@ -806,9 +921,19 @@ export default function App() {
       if (payload.kind === "run.finished") {
         continuationPendingRef.current = false;
         setContinuationRequest(null);
-        setRunningThreadId(null);
-        setStatus((current) => (current === "running" ? "completed" : current));
         socket.close();
+        const nextTask = queuedTasksRef.current.shift();
+        setQueuedTasks([...queuedTasksRef.current]);
+        if (nextTask && !stopping) {
+          setStatus("connecting");
+          void (completionRefresh ?? Promise.resolve()).then(() => {
+            beginRun(nextTask.content, runThread);
+          });
+        } else {
+          setRunningThreadId(null);
+          setStatus((current) => (current === "running" ? "completed" : current));
+          setStopping(false);
+        }
       }
     };
 
@@ -819,6 +944,53 @@ export default function App() {
       setStatus("failed");
       setError("WebSocket connection failed.");
     };
+  }
+
+  function queueTask() {
+    const content = task.trim();
+    if (!content || viewingOtherThreadDuringRun) return;
+    queuedTasksRef.current = [
+      ...queuedTasksRef.current,
+      {
+        id: crypto.randomUUID(),
+        content,
+        createdAt: new Date().toISOString(),
+      },
+    ];
+    setQueuedTasks([...queuedTasksRef.current]);
+    setTask("");
+  }
+
+  function deleteQueuedTask(id: string) {
+    queuedTasksRef.current = queuedTasksRef.current.filter((queuedTask) => queuedTask.id !== id);
+    setQueuedTasks([...queuedTasksRef.current]);
+  }
+
+  function steerRun() {
+    const content = task.trim();
+    if (!content || viewingOtherThreadDuringRun || socketRef.current?.readyState !== WebSocket.OPEN) return;
+    socketRef.current.send(JSON.stringify({ kind: "run.steer", content }));
+    setTask("");
+  }
+
+  function performMidRunAction(action: MidRunEnterAction) {
+    if (action === "steer") steerRun();
+    else queueTask();
+  }
+
+  function stopRun() {
+    queuedTasksRef.current = [];
+    setQueuedTasks([]);
+    if (status === "connecting") {
+      socketRef.current?.close();
+      setRunningThreadId(null);
+      setStatus("stopped");
+      setStopping(false);
+      return;
+    }
+    if (socketRef.current?.readyState !== WebSocket.OPEN) return;
+    setStopping(true);
+    socketRef.current.send(JSON.stringify({ kind: "run.stop" }));
   }
 
   function answerContinuation(continueRun: boolean) {
@@ -846,11 +1018,31 @@ export default function App() {
     const resize = resizeRef.current;
     if (!resize) return;
     const delta = event.clientX - resize.startX;
-    const width = resize.startWidth + (resize.panel === "sidebar" ? delta : -delta);
+    const activityLeft = event.currentTarget.parentElement?.getBoundingClientRect().left;
+    const width = resize.panel === "activity" && typeof activityLeft === "number"
+      ? event.clientX - activityLeft
+      : resize.startWidth + (resize.panel === "sidebar" ? delta : -delta);
+    const activityMaximum = Math.min(
+      MAX_ACTIVITY_WIDTH,
+      Math.max(
+        MIN_ACTIVITY_WIDTH,
+        conversationAreaWidth
+          - MIN_THREAD_WIDTH_WITH_ACTIVITY
+          - ACTIVITY_LAYOUT_GAP
+          - CONVERSATION_HORIZONTAL_GUTTER,
+      ),
+    );
     (resize.panel === "sidebar" ? setSidebarWidth : resize.panel === "activity" ? setActivityWidth : setContextWidth)(
       Math.min(
-        Math.max(width, resize.panel === "sidebar" ? 220 : 280),
-        resize.panel === "sidebar" ? MAX_SIDEBAR_WIDTH : resize.panel === "activity" ? MAX_ACTIVITY_WIDTH : MAX_CONTEXT_WIDTH,
+        Math.max(
+          width,
+          resize.panel === "sidebar"
+            ? 220
+            : resize.panel === "activity" ? MIN_ACTIVITY_WIDTH : 280,
+        ),
+        resize.panel === "sidebar"
+          ? MAX_SIDEBAR_WIDTH
+          : resize.panel === "activity" ? activityMaximum : MAX_CONTEXT_WIDTH,
       ),
     );
   }
@@ -874,6 +1066,7 @@ export default function App() {
     setMaxIterationsDraft(String(maxIterations));
     setMaxIterationsError("");
     setSendOnEnterDraft(sendOnEnter);
+    setMidRunEnterActionDraft(midRunEnterAction);
     setUiScaleDraft(uiScale);
     setAppearanceDraft(appearance);
     setSettingsOpen(true);
@@ -912,6 +1105,38 @@ export default function App() {
     }
   }
   const iterationCount = countIterations(visibleEvents);
+  const effectiveActivityWidth = clampActivityWidth(activityWidth);
+  const activitySideAvailable = conversationAreaWidth > 0
+    && conversationAreaWidth >= (
+      effectiveActivityWidth
+      + MIN_THREAD_WIDTH_WITH_ACTIVITY
+      + ACTIVITY_LAYOUT_GAP
+      + CONVERSATION_HORIZONTAL_GUTTER
+    );
+  const latestUserRunId = [...threadTurns].reverse().find((turn) => turn.role === "user")?.run_id ?? null;
+  const activityForcedInline = activityOpen
+    && status === "running"
+    && activeThread?.id === runningThreadId
+    && activityRunId === latestUserRunId;
+  const activityStacked = activityForcedInline
+    || activityPlacement === "inline"
+    || !activitySideAvailable;
+  const activityBesideThread = activityOpen && !activityStacked;
+  const activeRunEnterAction: MidRunEnterAction = status === "running"
+    ? midRunEnterAction
+    : "queue";
+  const alternateRunEnterAction: MidRunEnterAction = activeRunEnterAction === "queue"
+    ? "steer"
+    : "queue";
+
+  useLayoutEffect(() => {
+    const conversationScroller = activityBesideThread
+      ? threadScrollRef.current
+      : conversationAreaRef.current;
+    if (conversationScroller) {
+      conversationScroller.scrollTop = conversationScrollTopRef.current;
+    }
+  }, [activityBesideThread]);
   const contextUsage = threadContext
     ? Math.min((threadContext.estimated_tokens / threadContext.token_budget) * 100, 100)
     : 0;
@@ -919,6 +1144,7 @@ export default function App() {
     || sarvamApiKeyDraft !== sarvamApiKey
     || maxIterationsDraft !== String(maxIterations)
     || sendOnEnterDraft !== sendOnEnter
+    || midRunEnterActionDraft !== midRunEnterAction
     || appearanceDraft !== appearance
     || Boolean(desktop && uiScaleDraft !== uiScale);
   const sortedThreads = [...threads].sort((left, right) => {
@@ -942,12 +1168,226 @@ export default function App() {
     contextPinnedOpen ? "var(--context-column-width)" : null,
   ].filter(Boolean).join(" ");
 
+  function renderActivityIsland(resizable: boolean) {
+    return (
+      <aside
+        aria-label="Activity"
+        className={`activity-island relative flex min-h-0 w-full flex-col rounded-xl border bg-sidebar shadow-sm ${
+          resizable ? "h-full" : "my-3"
+        }`}
+        style={resizable ? { minWidth: `${MIN_ACTIVITY_WIDTH}px` } : undefined}
+      >
+        {resizable ? (
+          <div
+            aria-label="Resize activity"
+            className="group absolute inset-y-0 -right-1 z-30 hidden w-2 cursor-col-resize touch-none lg:block"
+            role="separator"
+            onDoubleClick={() => setActivityWidth(DEFAULT_ACTIVITY_WIDTH)}
+            onPointerCancel={() => (resizeRef.current = null)}
+            onPointerDown={(event) => startResize("activity", event)}
+            onPointerMove={resizePanel}
+            onPointerUp={() => (resizeRef.current = null)}
+          >
+            <span className="absolute inset-y-0 left-1/2 w-px bg-transparent group-hover:bg-border" />
+          </div>
+        ) : null}
+        <header className="flex h-12 shrink-0 items-center justify-between rounded-t-xl border-b px-3">
+          <div className="flex items-center gap-2">
+            <Button
+              aria-label="Close activity"
+              className="size-8 bg-card"
+              size="icon-sm"
+              type="button"
+              variant="outline"
+              onClick={() => setActivityOpen(false)}
+            >
+              <Minimize2 aria-hidden="true" className="size-3.5" />
+            </Button>
+            <p className="text-sm font-semibold">Activity</p>
+            <span className="text-xs text-muted-foreground">
+              {iterationCount} {iterationCount === 1 ? "iteration" : "iterations"}
+            </span>
+          </div>
+          <div className="flex items-center gap-1">
+            <CopyButton
+              className=""
+              content={JSON.stringify(visibleEvents, null, 2)}
+              label="Copy activity"
+            />
+            {activitySideAvailable && !activityForcedInline ? (
+              <Button
+                aria-label={`Move activity ${activityPlacement === "side" ? "inline" : "beside the thread"}`}
+                className="size-7 bg-card text-muted-foreground"
+                size="icon-sm"
+                title={`Move activity ${activityPlacement === "side" ? "inline" : "beside the thread"}`}
+                type="button"
+                variant="outline"
+                onClick={() => setActivityPlacement((current) => current === "side" ? "inline" : "side")}
+              >
+                {activityPlacement === "side" ? (
+                  <PanelRight aria-hidden="true" className="size-3.5" />
+                ) : (
+                  <Rows2 aria-hidden="true" className="size-3.5" />
+                )}
+              </Button>
+            ) : null}
+          </div>
+        </header>
+        <div
+          className={`space-y-4 rounded-b-xl p-3 ${
+            resizable ? "min-h-0 flex-1 overflow-y-auto" : "overflow-visible"
+          }`}
+          ref={activityScrollRef}
+        >
+          {eventGroups.length ? (
+            eventGroups.map((group, groupIndex) => {
+              const displayedEvents = group.events.filter(showInActivity);
+              const groupKey = `${activityRunId ?? "all"}-${group.iteration ?? "initialization"}-${groupIndex}`;
+              const groupCollapsed = collapsedActivityGroups[groupKey] === true;
+              const iterationModel = group.events.find(
+                (runtimeEvent) => runtimeEvent.type === "model.started",
+              )?.payload.model_name;
+              const iterationFinished = group.events.some(
+                (runtimeEvent) =>
+                  runtimeEvent.type === "turn.completed" || runtimeEvent.type === "turn.failed",
+              );
+
+              return (
+                <section
+                  className="space-y-2 border-b pb-4 last:border-b-0 last:pb-0"
+                  key={`${group.iteration}-${groupIndex}`}
+                >
+                  <div className="flex items-center justify-between gap-2 px-1.5">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <p className="shrink-0 text-xs font-semibold">
+                        {group.iteration === null ? "Initialization" : `Iteration ${group.iteration}`}
+                      </p>
+                      {typeof iterationModel === "string" && iterationModel ? (
+                        <Badge className="h-5 min-w-0 max-w-40 truncate rounded-sm px-1.5 text-xs" title={iterationModel}>
+                          {iterationModel}
+                        </Badge>
+                      ) : null}
+                      <Button
+                        aria-expanded={!groupCollapsed}
+                        aria-controls={`activity-events-${groupIndex}`}
+                        className="h-5 shrink-0 gap-1 rounded-sm bg-secondary px-1.5 text-xs text-secondary-foreground hover:bg-secondary/80"
+                        size="xs"
+                        type="button"
+                        variant="ghost"
+                        onClick={() => setCollapsedActivityGroups((current) => ({
+                          ...current,
+                          [groupKey]: !groupCollapsed,
+                        }))}
+                      >
+                        {displayedEvents.length
+                          ? `${displayedEvents.length} ${displayedEvents.length === 1 ? "event" : "events"}`
+                          : iterationFinished ? "Finished" : "In progress"}
+                        {groupCollapsed ? (
+                          <ChevronDown aria-hidden="true" className="size-3" />
+                        ) : (
+                          <ChevronUp aria-hidden="true" className="size-3" />
+                        )}
+                      </Button>
+                    </div>
+                    {group.createdAt ? (
+                      <time className="shrink-0 text-xs text-muted-foreground" dateTime={group.createdAt}>
+                        {formatTimestamp(group.createdAt)}
+                      </time>
+                    ) : null}
+                  </div>
+                  {!groupCollapsed ? (
+                    <div className="space-y-2" id={`activity-events-${groupIndex}`}>
+                  {displayedEvents.map((runtimeEvent, eventIndex) => {
+                    const isToolEvent = runtimeEvent.type.startsWith("tool.");
+                    const isFailedEvent = runtimeEvent.type.endsWith(".failed");
+                    const toolCall = runtimeEvent.payload.tool_call as
+                      | { name?: string; arguments?: Record<string, unknown> }
+                      | undefined;
+                    const result = runtimeEvent.payload.result as
+                      | { output?: string; error?: string }
+                      | undefined;
+                    const { iteration: _, run_id: __, ...eventPayload } = runtimeEvent.payload;
+
+                    if (runtimeEvent.type === "context.updated") {
+                      return (
+                        <Card className="rounded-lg p-3 text-sm shadow-none" key={`${runtimeEvent.type}-${eventIndex}`}>
+                          <details>
+                            <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                              Context updated
+                            </summary>
+                            <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs text-muted-foreground">
+                              {JSON.stringify(eventPayload, null, 2)}
+                            </pre>
+                          </details>
+                        </Card>
+                      );
+                    }
+
+                    return (
+                      <Card
+                        key={`${runtimeEvent.type}-${eventIndex}`}
+                        className={`rounded-lg p-3 text-sm shadow-none ${
+                          isFailedEvent
+                            ? "border-destructive/30 bg-destructive/5"
+                            : runtimeEvent.type === "tool.completed"
+                              ? "border-success-border bg-success-muted"
+                              : "bg-card"
+                        }`}
+                      >
+                        <p className={`text-[10px] font-semibold uppercase tracking-[0.12em] ${
+                          isFailedEvent
+                            ? "text-destructive"
+                            : runtimeEvent.type === "tool.completed"
+                              ? "text-success"
+                              : "text-muted-foreground"
+                        }`}>
+                          {runtimeEvent.type.replaceAll(".", " ")}
+                        </p>
+
+                        {isToolEvent ? (
+                          <div className="mt-2 space-y-2">
+                            <p className="font-medium">{toolCall?.name || "tool"}</p>
+                            <pre className="overflow-x-auto whitespace-pre-wrap text-xs text-muted-foreground">
+                              {JSON.stringify(toolCall?.arguments ?? {}, null, 2)}
+                            </pre>
+                            {result?.output ? (
+                              <pre className="overflow-x-auto whitespace-pre-wrap rounded-md border bg-muted/40 p-2 text-xs text-muted-foreground">
+                                {String(result.output).slice(0, 1200)}
+                              </pre>
+                            ) : null}
+                            {result?.error ? (
+                              <p className="text-xs text-destructive">{String(result.error)}</p>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs text-muted-foreground">
+                            {JSON.stringify(eventPayload, null, 2)}
+                          </pre>
+                        )}
+                      </Card>
+                    );
+                  })}
+                    </div>
+                  ) : null}
+                </section>
+              );
+            })
+          ) : (
+            <p className="px-2 py-8 text-center text-sm leading-6 text-muted-foreground">
+              Tool calls, model events, and run details will appear here.
+            </p>
+          )}
+        </div>
+      </aside>
+    );
+  }
+
   return (
     <main className="h-dvh overflow-hidden bg-background text-foreground">
       <section
         style={{
           "--sidebar-width": `${sidebarWidth}px`,
-          "--activity-width": `${activityWidth}px`,
+          "--activity-width": `${effectiveActivityWidth}px`,
           "--context-column-width": `${contextWidth}px`,
           "--layout-columns": layoutColumns,
         } as CSSProperties}
@@ -958,7 +1398,7 @@ export default function App() {
             className={`drawer-left fixed top-14 bottom-0 left-0 z-40 flex w-[var(--sidebar-width)] max-w-[calc(100vw-3rem)] min-h-0 flex-col border-r bg-sidebar shadow-[12px_0_30px_rgba(31,31,30,0.12)] lg:max-w-none ${
               sidebarPinnedOpen
                 ? "lg:relative lg:inset-y-auto lg:z-auto lg:shadow-none"
-                : "sidebar-preview lg:absolute lg:top-14 lg:bottom-0 lg:left-0 lg:z-20"
+                : "sidebar-preview lg:absolute lg:top-14 lg:bottom-0 lg:left-0 lg:z-40"
             }`}
             onMouseEnter={holdPanelPreview}
             onMouseLeave={() => {
@@ -986,7 +1426,7 @@ export default function App() {
                   className="h-10 flex-1 justify-start bg-card px-3"
                   variant="outline"
                   type="button"
-                  onClick={startNewThread}
+                  onClick={() => startNewThread()}
                 >
                   <Plus aria-hidden="true" className="size-4" /> New chat
                 </Button>
@@ -1169,7 +1609,7 @@ export default function App() {
                   size="icon-lg"
                   type="button"
                   variant="outline"
-                  onClick={startNewThread}
+                  onClick={() => startNewThread()}
                 >
                   <Plus aria-hidden="true" className="size-4" />
                 </Button>
@@ -1260,7 +1700,7 @@ export default function App() {
                     onClick={() => setSettingsOpen(false)}
                   />
                   <DialogPrimitive.Viewport className="pointer-events-none fixed inset-0 z-[70] flex items-center justify-center p-4">
-                    <DialogPrimitive.Popup className="pointer-events-auto w-full max-w-sm rounded-xl border bg-card p-4 text-card-foreground shadow-xl outline-none">
+                    <DialogPrimitive.Popup className="pointer-events-auto max-h-[calc(100vh-2rem)] w-full max-w-sm overflow-y-auto rounded-xl border bg-card p-4 text-card-foreground shadow-xl outline-none">
                       <form
                         noValidate
                         onSubmit={(event) => {
@@ -1279,6 +1719,7 @@ export default function App() {
                           setSarvamApiKey(sarvamApiKeyDraft);
                           setMaxIterations(iterationWarning);
                           setSendOnEnter(sendOnEnterDraft);
+                          setMidRunEnterAction(midRunEnterActionDraft);
                           setUiScale(uiScaleDraft);
                           setAppearance(appearanceDraft);
                           void desktop?.setScale(uiScaleDraft);
@@ -1416,6 +1857,26 @@ export default function App() {
                               </Button>
                             </div>
                           </div>
+                          <div className="space-y-2 text-xs font-medium">
+                            <span>Enter while a run is active</span>
+                            <div className="grid grid-cols-2 gap-2" role="group" aria-label="Mid-run Enter action">
+                              {(["queue", "steer"] as const).map((action) => (
+                                <Button
+                                  aria-pressed={midRunEnterActionDraft === action}
+                                  className="capitalize"
+                                  key={action}
+                                  type="button"
+                                  variant={midRunEnterActionDraft === action ? "default" : "outline"}
+                                  onClick={() => setMidRunEnterActionDraft(action)}
+                                >
+                                  {action}
+                                </Button>
+                              ))}
+                            </div>
+                            <span className="block font-normal text-muted-foreground">
+                              {SHORTCUT_LABEL} + Enter performs the other action. Shift + Enter adds a new line.
+                            </span>
+                          </div>
                         </div>
                         <div className="mt-5 flex min-h-9 items-center gap-3">
                           {settingsDirty ? (
@@ -1453,8 +1914,36 @@ export default function App() {
             </div>
           </header>
 
-          <div className="col-start-1 row-start-2 min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">
-            <div className="mx-auto w-full max-w-3xl space-y-4">
+          <div
+            className={`col-start-1 row-start-2 min-h-0 px-4 py-4 sm:px-5 ${
+              activityBesideThread ? "" : "overflow-y-auto"
+            }`}
+            ref={conversationAreaRef}
+            onScroll={(event) => {
+              if (!activityBesideThread) conversationScrollTopRef.current = event.currentTarget.scrollTop;
+            }}
+          >
+            <div
+              className={`mx-auto grid min-h-0 w-full justify-center gap-4 ${
+                activityBesideThread ? "h-full" : "min-h-full"
+              }`}
+              style={{
+                gridTemplateColumns: activityBesideThread
+                  ? "minmax(480px, 768px) var(--activity-width)"
+                  : "minmax(0, 768px)",
+                maxWidth: activityBesideThread
+                  ? "calc(768px + var(--activity-width) + 16px)"
+                  : "768px",
+              }}
+            >
+              <div
+                className={activityBesideThread ? "min-h-0 overflow-y-auto" : "min-h-0"}
+                ref={threadScrollRef}
+                onScroll={(event) => {
+                  if (activityBesideThread) conversationScrollTopRef.current = event.currentTarget.scrollTop;
+                }}
+              >
+                <div className="mx-auto w-full space-y-4">
               {threadTurns.length ? (
                 threadTurns.map((turn, index) => {
                   const runEvents = turn.run_id
@@ -1463,6 +1952,15 @@ export default function App() {
                   const activityIterationCount = countIterations(runEvents);
                   const isLatestPrompt =
                     turn.role === "user" && !threadTurns.slice(index + 1).some((item) => item.role === "user");
+                  const isSteered = turn.role === "user"
+                    && Boolean(turn.run_id)
+                    && threadTurns.slice(0, index).some(
+                      (item) => item.role === "user" && item.run_id === turn.run_id,
+                    );
+                  const isLastUserTurnForRun = turn.role === "user"
+                    && !threadTurns.slice(index + 1).some(
+                      (item) => item.role === "user" && item.run_id === turn.run_id,
+                    );
 
                   return (
                     <Fragment key={turn.id}>
@@ -1495,6 +1993,11 @@ export default function App() {
                               <p className="whitespace-pre-wrap text-sm leading-6">{turn.content}</p>
                             </div>
                             <div className="mt-1 flex items-center justify-end gap-1.5 pr-1 text-xs text-muted-foreground">
+                              {isSteered ? (
+                                <span className="rounded bg-muted px-1.5 py-0.5 font-semibold text-muted-foreground">
+                                  Steered
+                                </span>
+                              ) : null}
                               <time className="text-xs text-muted-foreground" dateTime={turn.created_at}>
                                 {formatTimestamp(turn.created_at)}
                               </time>
@@ -1503,38 +2006,43 @@ export default function App() {
                           </div>
                         )}
                       </article>
-                      {turn.role === "user" ? (
-                        <div className="flex items-center gap-3 py-1">
-                          <Separator className="flex-1" />
-                          <Button
-                            className="h-6 gap-1.5 border border-transparent px-2 text-muted-foreground hover:border-border"
-                            size="xs"
-                            type="button"
-                            variant="ghost"
-                            onClick={() => {
-                              if (activityOpen && activityRunId === turn.run_id) {
-                                setActivityOpen(false);
-                                return;
-                              }
-                              setActivityRunId(turn.run_id);
-                              setActivityOpen(true);
-                            }}
-                          >
-                            <span>Activity</span>
-                            <Badge className="h-4 rounded-sm px-1.5 py-px text-[10px] font-semibold">
-                              {activityIterationCount}
-                            </Badge>
-                            <span className="text-muted-foreground/80">
-                              {activityIterationCount === 1 ? "iteration" : "iterations"}
-                            </span>
-                          </Button>
-                          {turn.finalized_by_iteration_limit || (finalizedByIterationLimit && isLatestPrompt) ? (
-                            <Badge className="bg-warning-muted text-warning">
-                              Limit reached
-                            </Badge>
-                          ) : null}
-                          <Separator className="flex-1" />
-                        </div>
+                      {isLastUserTurnForRun ? (
+                        <>
+                          <div className="flex items-center gap-3 py-1">
+                            <Separator className="flex-1" />
+                            <Button
+                              className="h-6 gap-1.5 border border-transparent px-2 text-muted-foreground hover:border-border"
+                              size="xs"
+                              type="button"
+                              variant="ghost"
+                              onClick={() => {
+                                if (activityOpen && activityRunId === turn.run_id) {
+                                  setActivityOpen(false);
+                                  return;
+                                }
+                                setActivityRunId(turn.run_id);
+                                setActivityOpen(true);
+                              }}
+                            >
+                              <span>Activity</span>
+                              <Badge className="h-4 rounded-sm px-1.5 py-px text-[10px] font-semibold">
+                                {activityIterationCount}
+                              </Badge>
+                              <span className="text-muted-foreground/80">
+                                {activityIterationCount === 1 ? "iteration" : "iterations"}
+                              </span>
+                            </Button>
+                            {turn.finalized_by_iteration_limit || (finalizedByIterationLimit && isLatestPrompt) ? (
+                              <Badge className="bg-warning-muted text-warning">
+                                Limit reached
+                              </Badge>
+                            ) : null}
+                            <Separator className="flex-1" />
+                          </div>
+                          {activityOpen && activityStacked && activityRunId === turn.run_id
+                            ? renderActivityIsland(false)
+                            : null}
+                        </>
                       ) : null}
                     </Fragment>
                   );
@@ -1567,21 +2075,77 @@ export default function App() {
                   </form>
                 </Card>
               ) : null}
+              {!viewingOtherThreadDuringRun ? queuedTasks.map((queuedTask) => (
+                <article className="message-in ml-auto max-w-[82%]" key={queuedTask.id}>
+                  <div>
+                    <div
+                      aria-disabled="true"
+                      className="rounded-2xl rounded-br-md border border-dashed bg-muted/60 px-4 py-3.5 text-muted-foreground"
+                    >
+                      <p className="whitespace-pre-wrap text-sm leading-6">{queuedTask.content}</p>
+                    </div>
+                    <div className="mt-1 flex items-center justify-end gap-1.5 pr-1 text-xs text-muted-foreground">
+                      <span className="rounded bg-muted px-1.5 py-0.5 font-semibold text-muted-foreground">
+                        Queued
+                      </span>
+                      <time className="text-xs text-muted-foreground" dateTime={queuedTask.createdAt}>
+                        {formatTimestamp(queuedTask.createdAt)}
+                      </time>
+                      <CopyButton
+                        className="!size-4 [&_svg]:!size-2.5"
+                        content={queuedTask.content}
+                        label="Copy queued message"
+                      />
+                      <Button
+                        aria-label="Delete queued message"
+                        className="!size-4 text-muted-foreground opacity-60 hover:text-destructive hover:opacity-100 [&_svg]:!size-2.5"
+                        size="icon-sm"
+                        title="Delete queued message"
+                        type="button"
+                        variant="ghost"
+                        onClick={() => deleteQueuedTask(queuedTask.id)}
+                      >
+                        <Trash2 aria-hidden="true" />
+                      </Button>
+                    </div>
+                  </div>
+                </article>
+              )) : null}
               <div ref={conversationBottomRef} />
+                </div>
+              </div>
+              {activityBesideThread ? renderActivityIsland(true) : null}
             </div>
           </div>
 
           <form className="relative z-30 col-start-1 row-start-3 border-t bg-background px-4 py-3 sm:px-5" onSubmit={startRun}>
-            <Card className="mx-auto max-w-3xl rounded-2xl p-2 shadow-sm transition-shadow focus-within:shadow-md">
+            <Card className={`mx-auto w-full max-w-3xl rounded-2xl p-2 shadow-sm transition-shadow focus-within:shadow-md ${
+              status === "connecting" || status === "running" ? "composer-running" : ""
+            }`}>
               <Textarea
                 ref={taskInputRef}
                 className="min-h-16 max-h-60 resize-none overflow-y-auto border-0 bg-transparent px-3 py-2 text-sm leading-6 shadow-none focus-visible:ring-0"
                 disabled={viewingOtherThreadDuringRun}
-                placeholder={'Inspect the repo, search for "AgentRuntime", run tests, and show git diff'}
+                placeholder={status === "connecting" || status === "running"
+                  ? "Add a follow-up to queue or steer the current run"
+                  : 'Inspect the repo, search for "AgentRuntime", run tests, and show git diff'}
                 value={task}
                 onChange={(event) => setTask(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+                  if (status === "running") {
+                    if (event.shiftKey) return;
+                    event.preventDefault();
+                    const alternateAction = midRunEnterAction === "queue" ? "steer" : "queue";
+                    performMidRunAction(event.ctrlKey || event.metaKey ? alternateAction : midRunEnterAction);
+                    return;
+                  }
+                  if (status === "connecting") {
+                    if (event.shiftKey) return;
+                    event.preventDefault();
+                    queueTask();
+                    return;
+                  }
                   const shouldSend = sendOnEnter ? !event.shiftKey : event.shiftKey;
                   if (!shouldSend) return;
                   event.preventDefault();
@@ -1717,150 +2281,57 @@ export default function App() {
                   )}
                 </label>
                 {status === "connecting" || status === "running" ? (
-                  <span className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-                    <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" />
-                    Working
+                  <span className="text-xs font-medium text-muted-foreground">
+                    {stopping ? "Stopping" : "Working"}
+                    {queuedTasks.length ? ` · ${queuedTasks.length} queued` : ""}
                   </span>
                 ) : null}
-                <Button
-                  className="h-8 px-3 text-xs font-semibold"
-                  disabled={!task.trim() || !modelName || (!activeThread && !workspacePath.trim()) || status === "connecting" || status === "running"}
-                  size="sm"
-                  type="submit"
-                  variant="affirmative"
-                >
-                  <Send aria-hidden="true" className="size-3.5" /> Send
-                </Button>
+                {status === "connecting" || status === "running" ? (
+                  <>
+                    <Button
+                      aria-label="Stop run"
+                      className="size-8"
+                      disabled={stopping}
+                      size="icon-sm"
+                      type="button"
+                      variant="destructive"
+                      onClick={stopRun}
+                    >
+                      <Square aria-hidden="true" className="size-3.5 fill-current" />
+                    </Button>
+                    {task.trim() ? ([alternateRunEnterAction, activeRunEnterAction] as const).map((action) => {
+                      const primary = action === activeRunEnterAction;
+                      return (
+                        <Button
+                          className="h-8 px-3 text-xs font-semibold capitalize"
+                          disabled={stopping || viewingOtherThreadDuringRun || (action === "steer" && status !== "running")}
+                          key={action}
+                          size="sm"
+                          type="button"
+                          title={`${action === "queue" ? "Queue" : "Steer"} (${primary ? "Enter" : `${SHORTCUT_LABEL}+Enter`})`}
+                          variant={primary ? "affirmative" : "outline"}
+                          onClick={action === "queue" ? queueTask : steerRun}
+                        >
+                          {action}
+                        </Button>
+                      );
+                    }) : null}
+                  </>
+                ) : (
+                  <Button
+                    className="h-8 px-3 text-xs font-semibold"
+                    disabled={!task.trim() || !modelName || (!activeThread && !workspacePath.trim())}
+                    size="sm"
+                    type="submit"
+                    variant="affirmative"
+                  >
+                    <Send aria-hidden="true" className="size-3.5" /> Send
+                  </Button>
+                )}
               </div>
             </Card>
           </form>
 
-        {activityOpen ? (
-          <aside className="drawer-right relative z-20 col-start-1 row-start-2 flex min-h-0 w-[var(--activity-width)] max-w-[calc(100vw-3rem)] flex-col justify-self-end self-stretch border-l bg-sidebar shadow-[-8px_0_24px_rgba(31,31,30,0.1)] lg:max-w-none">
-            <div
-              aria-label="Resize activity panel"
-              className="group absolute inset-y-0 -left-1 z-30 hidden w-2 cursor-col-resize touch-none lg:block"
-              role="separator"
-              onDoubleClick={() => setActivityWidth(DEFAULT_ACTIVITY_WIDTH)}
-              onPointerCancel={() => (resizeRef.current = null)}
-              onPointerDown={(event) => startResize("activity", event)}
-              onPointerMove={resizePanel}
-              onPointerUp={() => (resizeRef.current = null)}
-            >
-              <span className="absolute inset-y-0 left-1/2 w-px bg-transparent group-hover:bg-border" />
-            </div>
-            <header className="flex h-14 shrink-0 items-center justify-between border-b px-3">
-              <div className="flex items-center gap-2">
-                <Button
-                  aria-label="Close activity"
-                  className="size-10 bg-card"
-                  size="icon-lg"
-                  type="button"
-                  variant="outline"
-                  onClick={() => setActivityOpen(false)}
-                >
-                  <Minimize2 aria-hidden="true" className="size-4" />
-                </Button>
-                <p className="text-sm font-semibold">Activity</p>
-              </div>
-              <div className="flex items-center gap-1">
-                <span className="text-xs text-muted-foreground">
-                  {iterationCount} {iterationCount === 1 ? "iteration" : "iterations"}
-                </span>
-                <CopyButton
-                  className=""
-                  content={JSON.stringify(visibleEvents, null, 2)}
-                  label="Copy activity"
-                />
-              </div>
-            </header>
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
-            {eventGroups.length ? (
-              eventGroups.map((group, groupIndex) => (
-                <section className="space-y-2 border-b pb-4 last:border-b-0 last:pb-0" key={`${group.iteration}-${groupIndex}`}>
-                  <div className="flex items-center justify-between px-1.5">
-                    <div className="flex items-center gap-2">
-                      <p className="text-xs font-semibold">
-                        {group.iteration === null ? "Initialization" : `Iteration ${group.iteration}`}
-                      </p>
-                      <Badge className="h-5 rounded-sm px-1.5 text-xs">
-                        {group.events.length} {group.events.length === 1 ? "event" : "events"}
-                      </Badge>
-                    </div>
-                    {group.createdAt ? (
-                      <time className="text-xs text-muted-foreground" dateTime={group.createdAt}>
-                        {formatTimestamp(group.createdAt)}
-                      </time>
-                    ) : null}
-                  </div>
-                  {group.events.map((runtimeEvent, eventIndex) => {
-                    const isToolEvent = runtimeEvent.type.startsWith("tool.");
-                    const isFailedEvent = runtimeEvent.type.endsWith(".failed");
-                    const toolCall = runtimeEvent.payload.tool_call as
-                      | { name?: string; arguments?: Record<string, unknown> }
-                      | undefined;
-                    const result = runtimeEvent.payload.result as
-                      | { output?: string; error?: string }
-                      | undefined;
-                    const { iteration: _, run_id: __, ...eventPayload } = runtimeEvent.payload;
-
-                    return (
-                      <Card
-                        key={`${runtimeEvent.type}-${eventIndex}`}
-                        className={`rounded-lg p-3 text-sm shadow-none ${
-                          isFailedEvent
-                            ? "border-destructive/30 bg-destructive/5"
-                            : runtimeEvent.type === "tool.completed"
-                              ? "border-success-border bg-success-muted"
-                              : "bg-card"
-                        }`}
-                      >
-                        <p className={`text-[10px] font-semibold uppercase tracking-[0.12em] ${
-                          isFailedEvent
-                            ? "text-destructive"
-                            : runtimeEvent.type === "tool.completed"
-                              ? "text-success"
-                              : "text-muted-foreground"
-                        }`}>
-                          {runtimeEvent.type.replaceAll(".", " ")}
-                        </p>
-
-                        {isToolEvent ? (
-                          <div className="mt-2 space-y-2">
-                            <p className="font-medium">
-                              {toolCall?.name || "tool"}
-                            </p>
-                            <pre className="overflow-x-auto whitespace-pre-wrap text-xs text-muted-foreground">
-                              {JSON.stringify(toolCall?.arguments ?? {}, null, 2)}
-                            </pre>
-                            {result?.output ? (
-                              <pre className="overflow-x-auto whitespace-pre-wrap rounded-md border bg-muted/40 p-2 text-xs text-muted-foreground">
-                                {String(result.output).slice(0, 1200)}
-                              </pre>
-                            ) : null}
-                            {result?.error ? (
-                              <p className="text-xs text-destructive">{String(result.error)}</p>
-                            ) : null}
-                          </div>
-                        ) : (
-                          <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs text-muted-foreground">
-                            {JSON.stringify(eventPayload, null, 2)}
-                          </pre>
-                        )}
-                      </Card>
-                    );
-                  })}
-                </section>
-              ))
-            ) : (
-              <p className="px-2 py-8 text-center text-sm leading-6 text-muted-foreground">
-                Tool calls, model events, and run details will appear here.
-              </p>
-            )}
-            <div ref={activityBottomRef} />
-            </div>
-          </aside>
-        ) : null}
         </section>
 
         {contextVisible ? (
@@ -1868,7 +2339,7 @@ export default function App() {
             className={`drawer-right fixed top-14 right-0 bottom-0 z-40 flex w-[var(--context-column-width)] max-w-[calc(100vw-3rem)] min-h-0 flex-col border-l bg-sidebar shadow-[-12px_0_30px_rgba(31,31,30,0.12)] lg:max-w-none ${
               contextPinnedOpen
                 ? "lg:relative lg:inset-y-auto lg:z-auto lg:shadow-none"
-                : "lg:absolute lg:top-14 lg:right-0 lg:bottom-0 lg:z-20"
+                : "lg:absolute lg:top-14 lg:right-0 lg:bottom-0 lg:z-40"
             }`}
             onMouseEnter={holdPanelPreview}
             onMouseLeave={() => {
@@ -2053,8 +2524,12 @@ export default function App() {
                 </p>
                 <div>
               <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
-                <span>New thread</span>
+                <span>New thread in current path</span>
                 <ShortcutKeys keys={[SHORTCUT_LABEL, "T"]} />
+              </div>
+              <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
+                <span>New thread without path</span>
+                <ShortcutKeys keys={[SHORTCUT_LABEL, "N"]} />
               </div>
               <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
                 <span>Refresh current thread</span>
@@ -2086,6 +2561,14 @@ export default function App() {
               <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
                 <span>New line</span>
                 <ShortcutKeys keys={sendOnEnter ? ["Shift", "Enter"] : ["Enter"]} />
+              </div>
+              <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
+                <span>{midRunEnterAction === "queue" ? "Queue during run" : "Steer during run"}</span>
+                <ShortcutKeys keys={["Enter"]} />
+              </div>
+              <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
+                <span>{midRunEnterAction === "queue" ? "Steer during run" : "Queue during run"}</span>
+                <ShortcutKeys keys={[SHORTCUT_LABEL, "Enter"]} />
               </div>
                 </div>
               </section>
