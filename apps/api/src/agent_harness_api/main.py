@@ -4,10 +4,11 @@ import secrets
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .config import DEFAULT_MODEL, get_settings
 from .db import LATEST_SCHEMA_VERSION, database_status, initialize_database
+from .git_status import GitStatus, discard_git_changes, read_git_status, update_git_index
 from .store import RunStore, Thread, thread_title_from_prompt
 from .ws import handle_run_websocket, resolve_workspace_path
 
@@ -20,6 +21,14 @@ class ThreadCreateRequest(BaseModel):
 
 class ThreadRenameRequest(BaseModel):
     title: str
+
+
+class GitStatusRequest(BaseModel):
+    workspace_path: str
+
+
+class GitIndexRequest(GitStatusRequest):
+    paths: list[str] = Field(default_factory=list)
 
 
 def _thread_payload(store: RunStore, thread: Thread) -> dict[str, object]:
@@ -130,6 +139,69 @@ async def get_thread_context_entry(thread_id: str, message_index: int) -> dict[s
     if content is None:
         raise HTTPException(status_code=404, detail="Context entry not found.")
     return {"content": content}
+
+
+@app.post("/git/status")
+async def git_status(request: GitStatusRequest) -> GitStatus:
+    settings = get_settings()
+    if not request.workspace_path.strip():
+        raise HTTPException(status_code=400, detail="Workspace path is required.")
+    try:
+        workspace_path = resolve_workspace_path(
+            settings.workspace_root,
+            request.workspace_path.strip(),
+            settings.allow_absolute_workspaces,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not workspace_path.is_dir():
+        raise HTTPException(status_code=400, detail="Workspace path does not exist or is not a directory.")
+    return read_git_status(workspace_path)
+
+
+def _update_git_index(request: GitIndexRequest, *, stage: bool) -> GitStatus:
+    settings = get_settings()
+    if not request.workspace_path.strip():
+        raise HTTPException(status_code=400, detail="Workspace path is required.")
+    try:
+        workspace_path = resolve_workspace_path(
+            settings.workspace_root,
+            request.workspace_path.strip(),
+            settings.allow_absolute_workspaces,
+        )
+        if not workspace_path.is_dir():
+            raise ValueError("Workspace path does not exist or is not a directory.")
+        return update_git_index(workspace_path, request.paths, stage=stage)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/git/stage")
+async def git_stage(request: GitIndexRequest) -> GitStatus:
+    return _update_git_index(request, stage=True)
+
+
+@app.post("/git/unstage")
+async def git_unstage(request: GitIndexRequest) -> GitStatus:
+    return _update_git_index(request, stage=False)
+
+
+@app.post("/git/discard")
+async def git_discard(request: GitIndexRequest) -> GitStatus:
+    settings = get_settings()
+    if not request.workspace_path.strip():
+        raise HTTPException(status_code=400, detail="Workspace path is required.")
+    try:
+        workspace_path = resolve_workspace_path(
+            settings.workspace_root,
+            request.workspace_path.strip(),
+            settings.allow_absolute_workspaces,
+        )
+        if not workspace_path.is_dir():
+            raise ValueError("Workspace path does not exist or is not a directory.")
+        return discard_git_changes(workspace_path, request.paths)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.patch("/threads/{thread_id}")
