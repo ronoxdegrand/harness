@@ -366,6 +366,86 @@ def sync_git_branch(path: Path) -> GitStatus:
     return read_git_status(path)
 
 
+def read_staged_diff(path: Path, *, max_characters: int = 16_000) -> str:
+    status = read_git_status(path)
+    if not status["is_repository"]:
+        raise ValueError(status["error"] or "This path is not inside a Git repository.")
+    if not status["staged"]:
+        raise ValueError("There are no staged changes to describe.")
+    try:
+        summary = _run_git(path, "diff", "--cached", "--stat")
+        diff = _run_git(path, "diff", "--cached", "--no-ext-diff", "--unified=2")
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError("Git did not respond in time.") from exc
+    if diff.returncode != 0:
+        raise ValueError(diff.stderr.strip() or "Could not read the staged diff.")
+    content = "\n".join(part for part in (summary.stdout.strip(), diff.stdout.strip()) if part)
+    if len(content) > max_characters:
+        content = f"{content[:max_characters]}\n[staged diff truncated]"
+    return content
+
+
+def read_commit_message_diff(path: Path, *, max_characters: int = 16_000) -> str:
+    status = read_git_status(path)
+    if not status["is_repository"]:
+        raise ValueError(status["error"] or "This path is not inside a Git repository.")
+    if status["staged"]:
+        return read_staged_diff(path, max_characters=max_characters)
+    if not status["modified"] and not status["untracked"]:
+        raise ValueError("There are no changes to describe.")
+
+    try:
+        summary = _run_git(path, "diff", "--stat")
+        diff = _run_git(path, "diff", "--no-ext-diff", "--unified=2")
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError("Git did not respond in time.") from exc
+    if diff.returncode != 0:
+        raise ValueError(diff.stderr.strip() or "Could not read the working-tree diff.")
+
+    parts = [part for part in (summary.stdout.strip(), diff.stdout.strip()) if part]
+    if status["untracked"]:
+        parts.append("Untracked files:")
+        for item in status["untracked"]:
+            relative_path = item["path"]
+            parts.append(f"--- {relative_path}")
+            candidate = path / relative_path
+            resolved_candidate = candidate.resolve()
+            resolved_path = path.resolve()
+            inside_workspace = (
+                resolved_candidate == resolved_path or resolved_path in resolved_candidate.parents
+            )
+            if inside_workspace and candidate.is_file() and not candidate.is_symlink():
+                try:
+                    with resolved_candidate.open("r", encoding="utf-8", errors="replace") as handle:
+                        parts.append(handle.read(max_characters))
+                except OSError:
+                    pass
+            if sum(len(part) for part in parts) >= max_characters:
+                break
+    content = "\n".join(parts)
+    if len(content) > max_characters:
+        content = f"{content[:max_characters]}\n[change details truncated]"
+    return content
+
+
+def commit_git_changes(path: Path, message: str) -> GitStatus:
+    status = read_git_status(path)
+    if not status["is_repository"]:
+        raise ValueError(status["error"] or "This path is not inside a Git repository.")
+    if not status["staged"]:
+        raise ValueError("There are no staged changes to commit.")
+    message = " ".join(message.split())
+    if not message:
+        raise ValueError("A commit message is required.")
+    try:
+        result = _run_git(path, "commit", "-m", message, timeout=60)
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError("Git commit timed out.") from exc
+    if result.returncode != 0:
+        raise ValueError(result.stderr.strip() or result.stdout.strip() or "Could not create the commit.")
+    return read_git_status(path)
+
+
 def update_git_index(path: Path, paths: list[str], *, stage: bool) -> GitStatus:
     status = read_git_status(path)
     if not status["is_repository"]:

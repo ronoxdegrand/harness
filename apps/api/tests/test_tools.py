@@ -37,7 +37,7 @@ def test_tool_registry_exposes_metadata_and_schemas() -> None:
     assert "read_file" in tool_names
     assert "write_file" in tool_names
     assert "git_status" in tool_names
-    assert {"git_refresh", "git_switch", "git_sync", "git_stage", "git_unstage", "git_discard"} <= set(tool_names)
+    assert {"git_refresh", "git_switch", "git_sync", "git_commit", "git_stage", "git_unstage", "git_discard"} <= set(tool_names)
     assert any(tool["name"] == "shell" for tool in definitions)
     assert registry.get("write_file").input_schema["required"] == ["path", "content"]
     assert registry.get("git_diff").input_schema["properties"]["staged"]["type"] == "boolean"

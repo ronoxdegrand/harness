@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from .git_status import (
     GitBranchSwitchError,
+    commit_git_changes,
     discard_git_changes,
     read_git_status,
     sync_git_branch,
@@ -263,6 +264,15 @@ def build_default_tool_registry() -> ToolRegistry:
                 ),
                 input_schema=_object_schema({"path": {"type": "string"}}),
                 handler=_git_sync,
+            ),
+            ToolDefinition(
+                name="git_commit",
+                description="Commit all staged changes with a one-line commit message.",
+                input_schema=_object_schema(
+                    {"message": {"type": "string"}, "path": {"type": "string"}},
+                    required=["message"],
+                ),
+                handler=_git_commit,
             ),
             ToolDefinition(
                 name="git_stage",
@@ -522,6 +532,12 @@ def _git_switch(arguments: dict[str, Any], root: Path) -> ToolResult:
 
 def _git_sync(arguments: dict[str, Any], root: Path) -> ToolResult:
     return _git_state_result(sync_git_branch(_git_target(arguments, root)))
+
+
+def _git_commit(arguments: dict[str, Any], root: Path) -> ToolResult:
+    return _git_state_result(
+        commit_git_changes(_git_target(arguments, root), arguments["message"])
+    )
 
 
 def _git_paths(arguments: dict[str, Any]) -> list[str]:

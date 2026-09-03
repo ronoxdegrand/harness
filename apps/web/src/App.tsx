@@ -2,7 +2,7 @@ import { type CSSProperties, FormEvent, Fragment, type PointerEvent as ReactPoin
 import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { Select as SelectPrimitive } from "@base-ui/react/select";
-import { AlertTriangle, ArrowDownUp, Check, ChevronDown, ChevronUp, Copy, FolderGit2, GitBranch, Layers3, LoaderCircle, Minus, Minimize2, PanelLeft, PanelRight, Pencil, Plus, RefreshCw, Rows2, Send, Settings2, Square, Trash2, Undo2 } from "lucide-react";
+import { AlertTriangle, ArrowDownUp, Check, ChevronDown, ChevronUp, Copy, FolderGit2, GitBranch, Layers3, LoaderCircle, Minus, Minimize2, PanelLeft, PanelRight, Pencil, Plus, RefreshCw, Rows2, Send, Settings2, Sparkles, Square, Trash2, Undo2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -341,6 +341,8 @@ export default function App() {
   const [gitStatusLoading, setGitStatusLoading] = useState(false);
   const [gitFetchError, setGitFetchError] = useState<string | null>(null);
   const [gitMutation, setGitMutation] = useState<string | null>(null);
+  const [commitMessage, setCommitMessage] = useState("");
+  const [commitMessageGenerating, setCommitMessageGenerating] = useState(false);
   const [collapsedGitGroups, setCollapsedGitGroups] = useState<Record<GitGroup, boolean>>({
     staged: false,
     changes: false,
@@ -744,6 +746,7 @@ export default function App() {
 
   useEffect(() => {
     setGitFetchError(null);
+    setCommitMessage("");
   }, [workspacePath]);
 
   useEffect(() => {
@@ -911,6 +914,7 @@ export default function App() {
       const nextStatus = await readJson<GitStatusState>(response);
       setGitStatus(nextStatus);
       setGitFetchError(null);
+      setCommitMessage("");
       setBranchPickerOpen(false);
     } catch (reason) {
       setBranchSwitchError({
@@ -945,6 +949,60 @@ export default function App() {
       void loadGitStatus(true);
     } finally {
       setGitMutation(null);
+    }
+  }
+
+  async function createGitCommit() {
+    if (!workspacePath.trim() || gitMutation || !gitStatus?.staged.length || !commitMessage.trim()) return;
+    gitStatusRequestRef.current?.abort();
+    setGitMutation("commit");
+    try {
+      const response = await fetch("/git/commit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspace_path: workspacePath, message: commitMessage.trim() }),
+      });
+      if (!response.ok) {
+        const payload = await readJson<{ detail?: string }>(response);
+        throw new Error(payload.detail || "Could not create the commit.");
+      }
+      setGitStatus(await readJson<GitStatusState>(response));
+      setCommitMessage("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not create the commit.");
+    } finally {
+      setGitMutation(null);
+    }
+  }
+
+  async function generateCommitMessage() {
+    const hasChanges = Boolean(
+      gitStatus?.staged.length || gitStatus?.modified.length || gitStatus?.untracked.length,
+    );
+    if (!workspacePath.trim() || !modelName || !hasChanges || commitMessageGenerating || gitMutation) return;
+    setCommitMessageGenerating(true);
+    try {
+      const response = await fetch("/git/commit-message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspace_path: workspacePath,
+          model_name: modelName,
+          ...(modelName === "sarvam-105b"
+            ? sarvamApiKey.trim() ? { sarvam_api_key: sarvamApiKey.trim() } : {}
+            : apiKey.trim() ? { api_key: apiKey.trim() } : {}),
+        }),
+      });
+      if (!response.ok) {
+        const payload = await readJson<{ detail?: string }>(response);
+        throw new Error(payload.detail || "Could not generate a commit message.");
+      }
+      const payload = await readJson<{ message: string }>(response);
+      setCommitMessage(payload.message);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not generate a commit message.");
+    } finally {
+      setCommitMessageGenerating(false);
     }
   }
 
@@ -1457,6 +1515,10 @@ export default function App() {
   const gitBranchLabel = gitTracked
     ? gitStatus.branch || "Detached HEAD"
     : gitStatusLoading ? "Checking Git..." : "No Git";
+  const gitHasStagedChanges = Boolean(gitStatus?.staged.length);
+  const gitHasChanges = Boolean(
+    gitStatus?.staged.length || gitStatus?.modified.length || gitStatus?.untracked.length,
+  );
   const eventGroups: Array<{
     iteration: number | null;
     createdAt?: string;
@@ -3166,6 +3228,51 @@ export default function App() {
                 </div>
               ) : gitStatus ? (
                 <>
+                  <form
+                    className="flex min-w-0 items-center gap-2"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void createGitCommit();
+                    }}
+                  >
+                    <label className="min-w-0 flex-1">
+                      <span className="sr-only">Commit message</span>
+                      <Input
+                        className="h-8 bg-card px-2.5 text-xs"
+                        maxLength={200}
+                        placeholder="Commit message"
+                        value={commitMessage}
+                        onChange={(event) => setCommitMessage(event.target.value)}
+                      />
+                    </label>
+                    {modelName ? (
+                      <Button
+                        aria-label="Generate commit message with AI"
+                        className="size-8 text-muted-foreground"
+                        disabled={!gitHasChanges || commitMessageGenerating || Boolean(gitMutation)}
+                        size="icon-sm"
+                        title={gitHasStagedChanges ? "Generate from staged changes" : "Generate from working-tree changes"}
+                        type="button"
+                        variant="outline"
+                        onClick={() => void generateCommitMessage()}
+                      >
+                        {commitMessageGenerating ? (
+                          <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" />
+                        ) : (
+                          <Sparkles aria-hidden="true" className="size-3.5" />
+                        )}
+                      </Button>
+                    ) : null}
+                    <Button
+                      className="h-8 px-2.5 text-xs"
+                      disabled={!gitHasStagedChanges || !commitMessage.trim() || Boolean(gitMutation)}
+                      size="sm"
+                      type="submit"
+                      variant="affirmative"
+                    >
+                      Commit
+                    </Button>
+                  </form>
                   {renderGitFileGroup("staged", "Staged changes", gitStatus.staged, "unstage")}
                   {renderGitFileGroup("changes", "Changes", [...gitStatus.modified, ...gitStatus.untracked], "stage")}
                   {!gitStatus.staged.length && !gitStatus.modified.length && !gitStatus.untracked.length ? (

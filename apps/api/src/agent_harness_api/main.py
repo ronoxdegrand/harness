@@ -5,19 +5,26 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from .config import DEFAULT_MODEL, get_settings
+from .context import Context
 from .db import LATEST_SCHEMA_VERSION, database_status, initialize_database
+from .gemini_model import GeminiModelProvider
 from .git_status import (
     GitBranchSwitchError,
     GitStatus,
+    commit_git_changes,
     discard_git_changes,
+    read_commit_message_diff,
     read_git_status,
     sync_git_branch,
     switch_git_branch,
     update_git_index,
 )
+from .sarvam_model import SarvamModelProvider
 from .store import RunStore, Thread, thread_title_from_prompt
+from .tools import build_default_tool_registry
 from .ws import handle_run_websocket, resolve_workspace_path
 
 
@@ -43,6 +50,16 @@ class GitIndexRequest(GitStatusRequest):
 class GitSwitchRequest(GitStatusRequest):
     branch: str
     force: bool = False
+
+
+class GitCommitRequest(GitStatusRequest):
+    message: str
+
+
+class GitCommitMessageRequest(GitStatusRequest):
+    model_name: str
+    api_key: str | None = None
+    sarvam_api_key: str | None = None
 
 
 def _thread_payload(store: RunStore, thread: Thread) -> dict[str, object]:
@@ -198,6 +215,76 @@ async def git_stage(request: GitIndexRequest) -> GitStatus:
 @app.post("/git/unstage")
 async def git_unstage(request: GitIndexRequest) -> GitStatus:
     return _update_git_index(request, stage=False)
+
+
+@app.post("/git/commit")
+async def git_commit(request: GitCommitRequest) -> GitStatus:
+    settings = get_settings()
+    if not request.workspace_path.strip():
+        raise HTTPException(status_code=400, detail="Workspace path is required.")
+    try:
+        workspace_path = resolve_workspace_path(
+            settings.workspace_root,
+            request.workspace_path.strip(),
+            settings.allow_absolute_workspaces,
+        )
+        if not workspace_path.is_dir():
+            raise ValueError("Workspace path does not exist or is not a directory.")
+        return commit_git_changes(workspace_path, request.message)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/git/commit-message")
+async def git_commit_message(request: GitCommitMessageRequest) -> dict[str, str]:
+    settings = get_settings()
+    if not request.workspace_path.strip():
+        raise HTTPException(status_code=400, detail="Workspace path is required.")
+    try:
+        workspace_path = resolve_workspace_path(
+            settings.workspace_root,
+            request.workspace_path.strip(),
+            settings.allow_absolute_workspaces,
+        )
+        if not workspace_path.is_dir():
+            raise ValueError("Workspace path does not exist or is not a directory.")
+        change_details = read_commit_message_diff(workspace_path)
+        registry = build_default_tool_registry()
+        if request.model_name == "sarvam-105b":
+            provider = SarvamModelProvider(
+                api_key=request.sarvam_api_key or settings.sarvam_api_key,
+                model_name=request.model_name,
+                tool_registry=registry,
+            )
+        elif request.model_name.startswith("gemini-"):
+            provider = GeminiModelProvider(
+                api_key=request.api_key or settings.gemini_api_key,
+                model_name=request.model_name,
+                tool_registry=registry,
+            )
+        else:
+            raise ValueError(f"Unsupported model: {request.model_name}")
+        context = Context()
+        context.add_user(
+            "Write exactly one concise Git commit subject for the changes below. "
+            "Use imperative mood, return no quotes or Markdown, and keep it under 72 characters.\n\n"
+            f"{change_details}"
+        )
+        response = await run_in_threadpool(provider.complete, context, final_response=True)
+        lines = [line.strip() for line in response.output_text.splitlines() if line.strip()]
+        if not lines:
+            raise ValueError("The model did not generate a commit message.")
+        message = lines[0].removeprefix("- ").strip("`\"'")
+        if message.lower().startswith("commit message:"):
+            message = message.split(":", 1)[1].strip()
+        message = " ".join(message.split())[:72].rstrip()
+        if not message:
+            raise ValueError("The model did not generate a commit message.")
+        return {"message": message}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="The selected model could not generate a commit message.") from exc
 
 
 @app.post("/git/switch")

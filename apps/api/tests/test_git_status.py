@@ -5,7 +5,9 @@ import pytest
 
 from agent_harness_api.git_status import (
     GitBranchSwitchError,
+    commit_git_changes,
     discard_git_changes,
+    read_commit_message_diff,
     read_git_status,
     sync_git_branch,
     switch_git_branch,
@@ -215,6 +217,41 @@ def test_git_index_can_stage_and_unstage_individual_files_or_all(tmp_path: Path)
 
     status = update_git_index(tmp_path, [], stage=False)
     assert status["staged"] == []
+
+
+def test_commit_message_diff_falls_back_to_unstaged_and_untracked_changes(tmp_path: Path) -> None:
+    _git(tmp_path, "init")
+    _git(tmp_path, "config", "user.name", "Test")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("original\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "initial")
+    tracked.write_text("modified content\n")
+    (tmp_path / "new.txt").write_text("new content\n")
+
+    details = read_commit_message_diff(tmp_path)
+
+    assert "modified content" in details
+    assert "new.txt" in details
+    assert "new content" in details
+
+
+def test_git_can_commit_staged_changes(tmp_path: Path) -> None:
+    _git(tmp_path, "init")
+    _git(tmp_path, "config", "user.name", "Test")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    (tmp_path / "tracked.txt").write_text("initial\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "initial")
+    (tmp_path / "tracked.txt").write_text("changed\n")
+    _git(tmp_path, "add", ".")
+
+    status = commit_git_changes(tmp_path, "  update   tracked file  ")
+
+    assert status["staged"] == []
+    assert status["modified"] == []
+    assert status["local_commits"][0]["subject"] == "update tracked file"
 
 
 def test_git_index_can_unstage_files_before_the_first_commit(tmp_path: Path) -> None:
