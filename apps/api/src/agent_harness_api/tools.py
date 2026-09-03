@@ -11,6 +11,7 @@ from .git_status import (
     GitBranchSwitchError,
     discard_git_changes,
     read_git_status,
+    sync_git_branch,
     switch_git_branch,
     update_git_index,
 )
@@ -253,6 +254,15 @@ def build_default_tool_registry() -> ToolRegistry:
                     required=["branch"],
                 ),
                 handler=_git_switch,
+            ),
+            ToolDefinition(
+                name="git_sync",
+                description=(
+                    "Synchronize the current branch with its upstream by pulling remote commits, "
+                    "then pushing local commits. Stops without pushing if the pull fails."
+                ),
+                input_schema=_object_schema({"path": {"type": "string"}}),
+                handler=_git_sync,
             ),
             ToolDefinition(
                 name="git_stage",
@@ -508,6 +518,10 @@ def _git_switch(arguments: dict[str, Any], root: Path) -> ToolResult:
             error=str(exc),
         )
     return _git_state_result(status)
+
+
+def _git_sync(arguments: dict[str, Any], root: Path) -> ToolResult:
+    return _git_state_result(sync_git_branch(_git_target(arguments, root)))
 
 
 def _git_paths(arguments: dict[str, Any]) -> list[str]:

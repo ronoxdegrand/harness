@@ -345,6 +345,27 @@ def switch_git_branch(path: Path, branch: str, *, force: bool = False) -> GitSta
     return read_git_status(path)
 
 
+def sync_git_branch(path: Path) -> GitStatus:
+    status = read_git_status(path)
+    if not status["is_repository"]:
+        raise ValueError(status["error"] or "This path is not inside a Git repository.")
+    if not status["upstream"]:
+        raise ValueError("The current branch has no upstream branch to synchronize with.")
+
+    try:
+        pull = _run_git(path, "pull", "--no-rebase", "--no-edit", timeout=60, no_prompt=True)
+        if pull.returncode != 0:
+            detail = pull.stderr.strip() or pull.stdout.strip()
+            raise ValueError(detail or "Could not pull remote commits.")
+        push = _run_git(path, "push", timeout=60, no_prompt=True)
+        if push.returncode != 0:
+            detail = push.stderr.strip() or push.stdout.strip()
+            raise ValueError(detail or "Could not push local commits.")
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError("Git synchronization timed out.") from exc
+    return read_git_status(path)
+
+
 def update_git_index(path: Path, paths: list[str], *, stage: bool) -> GitStatus:
     status = read_git_status(path)
     if not status["is_repository"]:

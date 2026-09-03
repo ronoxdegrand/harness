@@ -2,7 +2,7 @@ import { type CSSProperties, FormEvent, Fragment, type PointerEvent as ReactPoin
 import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { Select as SelectPrimitive } from "@base-ui/react/select";
-import { AlertTriangle, Check, ChevronDown, ChevronUp, Copy, FolderGit2, GitBranch, Layers3, LoaderCircle, Minus, Minimize2, PanelLeft, PanelRight, Pencil, Plus, RefreshCw, Rows2, Send, Settings2, Square, Trash2, Undo2 } from "lucide-react";
+import { AlertTriangle, ArrowDownUp, Check, ChevronDown, ChevronUp, Copy, FolderGit2, GitBranch, Layers3, LoaderCircle, Minus, Minimize2, PanelLeft, PanelRight, Pencil, Plus, RefreshCw, Rows2, Send, Settings2, Square, Trash2, Undo2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -919,6 +919,30 @@ export default function App() {
         files: [],
         canForce: false,
       });
+    } finally {
+      setGitMutation(null);
+    }
+  }
+
+  async function syncGitBranch() {
+    if (!workspacePath.trim() || gitMutation || !gitStatus?.upstream) return;
+    gitStatusRequestRef.current?.abort();
+    setGitMutation("sync");
+    try {
+      const response = await fetch("/git/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspace_path: workspacePath }),
+      });
+      if (!response.ok) {
+        const payload = await readJson<{ detail?: string }>(response);
+        throw new Error(payload.detail || "Could not synchronize this branch.");
+      }
+      setGitStatus(await readJson<GitStatusState>(response));
+      setGitFetchError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not synchronize this branch.");
+      void loadGitStatus(true);
     } finally {
       setGitMutation(null);
     }
@@ -3115,38 +3139,6 @@ export default function App() {
               </header>
             ) : null}
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
-              <div
-                className="flex min-h-6 items-center gap-3 px-1 text-xs text-muted-foreground"
-                title={gitStatus?.upstream ? `Tracking ${gitStatus.upstream}` : undefined}
-              >
-                {gitStatus?.is_repository ? (
-                  gitStatus.upstream ? (
-                    <>
-                      <span className={`inline-flex items-center gap-0.5 ${gitStatus.ahead ? "text-foreground" : ""}`}>
-                        <ChevronUp aria-hidden="true" className="size-3.5" /> {gitStatus.ahead} to push
-                      </span>
-                      <span className={`inline-flex items-center gap-0.5 ${gitStatus.behind ? "text-foreground" : ""}`}>
-                        <ChevronDown aria-hidden="true" className="size-3.5" /> {gitStatus.behind} to pull
-                      </span>
-                    </>
-                  ) : (
-                    <span title="This branch has no upstream">No upstream</span>
-                  )
-                ) : null}
-                <Button
-                  aria-label={gitFetchError ? "Retry remote Git refresh" : "Refresh Git status and fetch remote"}
-                  className={`ml-auto h-6 gap-1 px-1.5 text-[11px] ${gitFetchError ? "text-warning" : "text-muted-foreground"}`}
-                  disabled={gitStatusLoading || Boolean(gitMutation) || !workspacePath.trim()}
-                  size="xs"
-                  title={gitFetchError ? `Remote refresh failed: ${gitFetchError}. Local status is still current.` : "Fetch remote and refresh local status"}
-                  type="button"
-                  variant="ghost"
-                  onClick={() => void loadGitStatus(false, true)}
-                >
-                  <RefreshCw aria-hidden="true" className={`size-3 ${gitStatusLoading ? "animate-spin" : ""}`} />
-                  Refresh
-                </Button>
-              </div>
               {gitStatusLoading && !gitStatus ? (
                 <div className="flex items-center justify-center gap-2 px-2 py-8 text-sm text-muted-foreground">
                   <LoaderCircle aria-hidden="true" className="size-4 animate-spin" /> Reading Git status...
@@ -3181,7 +3173,49 @@ export default function App() {
                       Working tree clean.
                     </p>
                   ) : null}
+                  <div className="space-y-3 border-t pt-3">
+                  <div className="flex items-center gap-2">
+                    <Button
+                      aria-label={`Synchronize ${gitBranchLabel}: ${gitStatus.ahead} to push, ${gitStatus.behind} to pull`}
+                      className="h-8 min-w-0 flex-1 justify-start gap-2 px-2.5 text-xs"
+                      disabled={!gitStatus.upstream || (!gitStatus.ahead && !gitStatus.behind) || Boolean(gitMutation)}
+                      title={gitStatus.upstream ? `Synchronize with ${gitStatus.upstream}` : "This branch has no upstream"}
+                      type="button"
+                      variant="outline"
+                      onClick={() => void syncGitBranch()}
+                    >
+                      <ArrowDownUp aria-hidden="true" className="size-3.5 shrink-0" />
+                      <span className="shrink-0">{gitStatus.upstream ? "Sync" : "No upstream"}</span>
+                      <span className="min-w-0 truncate font-mono text-[10px] font-normal text-muted-foreground">
+                        {gitBranchLabel}
+                      </span>
+                      {gitStatus.upstream ? (
+                        <span className="ml-auto flex shrink-0 items-center gap-2 font-normal text-muted-foreground">
+                          <span className={gitStatus.ahead ? "text-foreground" : ""}>
+                            <ChevronUp aria-hidden="true" className="inline size-3.5" />{gitStatus.ahead}
+                          </span>
+                          <span className={gitStatus.behind ? "text-foreground" : ""}>
+                            <ChevronDown aria-hidden="true" className="inline size-3.5" />{gitStatus.behind}
+                          </span>
+                        </span>
+                      ) : null}
+                    </Button>
+                    <Button
+                      aria-label={gitFetchError ? "Retry remote Git refresh" : "Refresh Git status and fetch remote"}
+                      className={`h-8 gap-1 px-2 text-[11px] ${gitFetchError ? "text-warning" : "text-muted-foreground"}`}
+                      disabled={gitStatusLoading || Boolean(gitMutation)}
+                      size="xs"
+                      title={gitFetchError ? `Remote refresh failed: ${gitFetchError}. Local status is still current.` : "Fetch remote and refresh local status"}
+                      type="button"
+                      variant="ghost"
+                      onClick={() => void loadGitStatus(false, true)}
+                    >
+                      <RefreshCw aria-hidden="true" className={`size-3 ${gitStatusLoading ? "animate-spin" : ""}`} />
+                      Refresh
+                    </Button>
+                  </div>
                   {renderGitCommits()}
+                  </div>
                 </>
               ) : null}
             </div>

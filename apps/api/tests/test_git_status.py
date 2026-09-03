@@ -7,6 +7,7 @@ from agent_harness_api.git_status import (
     GitBranchSwitchError,
     discard_git_changes,
     read_git_status,
+    sync_git_branch,
     switch_git_branch,
     update_git_index,
 )
@@ -100,6 +101,11 @@ def test_git_status_reports_commits_to_push_and_pull(tmp_path: Path) -> None:
     assert status["behind"] == 1
     assert [commit["subject"] for commit in status["local_commits"]] == ["local"]
     assert status["base_commit"]["subject"] == "initial"
+
+    synchronized = sync_git_branch(repository)
+    assert synchronized["ahead"] == 0
+    assert synchronized["behind"] == 0
+    assert synchronized["local_commits"] == []
 
 
 def test_git_status_infers_local_commits_from_other_branches_without_upstream(tmp_path: Path) -> None:

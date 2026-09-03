@@ -13,6 +13,7 @@ from .git_status import (
     GitStatus,
     discard_git_changes,
     read_git_status,
+    sync_git_branch,
     switch_git_branch,
     update_git_index,
 )
@@ -218,6 +219,24 @@ async def git_switch(request: GitSwitchRequest) -> GitStatus:
             status_code=409,
             detail={"message": str(exc), "files": exc.files, "can_force": exc.can_force},
         ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/git/sync")
+async def git_sync(request: GitStatusRequest) -> GitStatus:
+    settings = get_settings()
+    if not request.workspace_path.strip():
+        raise HTTPException(status_code=400, detail="Workspace path is required.")
+    try:
+        workspace_path = resolve_workspace_path(
+            settings.workspace_root,
+            request.workspace_path.strip(),
+            settings.allow_absolute_workspaces,
+        )
+        if not workspace_path.is_dir():
+            raise ValueError("Workspace path does not exist or is not a directory.")
+        return sync_git_branch(workspace_path)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
