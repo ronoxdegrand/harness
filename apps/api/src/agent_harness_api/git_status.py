@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import TypedDict
@@ -10,14 +11,37 @@ class GitFile(TypedDict):
     status: str
 
 
+class GitCommit(TypedDict):
+    hash: str
+    short_hash: str
+    subject: str
+    author: str
+    authored_at: str
+
+
+class GitBranchSwitchError(ValueError):
+    def __init__(self, message: str, files: list[str], *, can_force: bool) -> None:
+        super().__init__(message)
+        self.files = files
+        self.can_force = can_force
+
+
 class GitStatus(TypedDict):
     is_repository: bool
     root: str | None
     branch: str | None
+    upstream: str | None
+    ahead: int
+    behind: int
+    branches: list[str]
     staged: list[GitFile]
     modified: list[GitFile]
     untracked: list[GitFile]
+    local_commits: list[GitCommit]
+    local_commits_truncated: bool
+    base_commit: GitCommit | None
     error: str | None
+    fetch_error: str | None
 
 
 def _empty_status(*, error: str | None = None) -> GitStatus:
@@ -25,14 +49,30 @@ def _empty_status(*, error: str | None = None) -> GitStatus:
         "is_repository": False,
         "root": None,
         "branch": None,
+        "upstream": None,
+        "ahead": 0,
+        "behind": 0,
+        "branches": [],
         "staged": [],
         "modified": [],
         "untracked": [],
+        "local_commits": [],
+        "local_commits_truncated": False,
+        "base_commit": None,
         "error": error,
+        "fetch_error": None,
     }
 
 
-def _run_git(path: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+def _run_git(
+    path: Path,
+    *arguments: str,
+    timeout: int = 10,
+    no_prompt: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    environment = None
+    if no_prompt:
+        environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "Never"}
     return subprocess.run(
         ["git", "-c", f"safe.directory={path}", *arguments],
         cwd=path,
@@ -40,12 +80,100 @@ def _run_git(path: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=10,
+        timeout=timeout,
         check=False,
+        env=environment,
     )
 
 
-def read_git_status(path: Path) -> GitStatus:
+_COMMIT_FORMAT = "%H%x1f%h%x1f%an%x1f%aI%x1f%s"
+_MAX_LOCAL_COMMITS = 100
+
+
+def _parse_commits(output: str) -> list[GitCommit]:
+    commits: list[GitCommit] = []
+    for entry in output.split("\0"):
+        if not entry:
+            continue
+        fields = entry.split("\x1f", 4)
+        if len(fields) != 5:
+            continue
+        commit_hash, short_hash, author, authored_at, subject = fields
+        commits.append(
+            {
+                "hash": commit_hash,
+                "short_hash": short_hash,
+                "subject": subject,
+                "author": author,
+                "authored_at": authored_at,
+            }
+        )
+    return commits
+
+
+def _read_commit(path: Path, revision: str) -> GitCommit | None:
+    result = _run_git(path, "show", "-s", "-z", f"--format={_COMMIT_FORMAT}", revision)
+    commits = _parse_commits(result.stdout) if result.returncode == 0 else []
+    return commits[0] if commits else None
+
+
+def _read_local_commits(
+    path: Path,
+    upstream: str | None,
+    branch: str | None,
+) -> tuple[list[GitCommit], bool, GitCommit | None]:
+    if upstream:
+        count_result = _run_git(path, "rev-list", "--count", f"{upstream}..HEAD")
+        count = int(count_result.stdout.strip()) if count_result.returncode == 0 else 0
+        log_result = _run_git(
+            path,
+            "log",
+            "-z",
+            f"--format={_COMMIT_FORMAT}",
+            f"--max-count={_MAX_LOCAL_COMMITS}",
+            f"{upstream}..HEAD",
+        )
+        base_result = _run_git(path, "merge-base", "HEAD", upstream)
+        base_hash = base_result.stdout.strip() if base_result.returncode == 0 else ""
+        return (
+            _parse_commits(log_result.stdout) if log_result.returncode == 0 else [],
+            count > _MAX_LOCAL_COMMITS,
+            _read_commit(path, base_hash) if base_hash else None,
+        )
+
+    refs_result = _run_git(
+        path,
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads",
+        "refs/remotes",
+    )
+    other_refs = [
+        ref
+        for ref in refs_result.stdout.splitlines()
+        if ref and ref != branch and not ref.endswith("/HEAD")
+    ] if refs_result.returncode == 0 else []
+    revision_arguments = ["HEAD", "--not", *other_refs] if other_refs else ["HEAD"]
+    rev_list_result = _run_git(path, "rev-list", "--boundary", *revision_arguments)
+    revisions = rev_list_result.stdout.splitlines() if rev_list_result.returncode == 0 else []
+    local_count = sum(1 for revision in revisions if revision and not revision.startswith("-"))
+    boundary_hash = next((revision[1:] for revision in revisions if revision.startswith("-")), "")
+    log_result = _run_git(
+        path,
+        "log",
+        "-z",
+        f"--format={_COMMIT_FORMAT}",
+        f"--max-count={_MAX_LOCAL_COMMITS}",
+        *revision_arguments,
+    )
+    return (
+        _parse_commits(log_result.stdout) if log_result.returncode == 0 else [],
+        local_count > _MAX_LOCAL_COMMITS,
+        _read_commit(path, boundary_hash) if boundary_hash else None,
+    )
+
+
+def read_git_status(path: Path, *, fetch_remote: bool = False) -> GitStatus:
     try:
         repository = _run_git(path, "rev-parse", "--is-inside-work-tree")
     except FileNotFoundError:
@@ -56,9 +184,35 @@ def read_git_status(path: Path) -> GitStatus:
     if repository.returncode != 0 or repository.stdout.strip() != "true":
         return _empty_status()
 
+    fetch_error: str | None = None
+    if fetch_remote:
+        try:
+            fetch_result = _run_git(path, "fetch", timeout=30, no_prompt=True)
+            if fetch_result.returncode != 0:
+                detail = fetch_result.stderr.strip()
+                fetch_error = next((line.strip() for line in detail.splitlines() if line.strip()), None)
+                fetch_error = fetch_error or "Could not fetch from the remote."
+        except subprocess.TimeoutExpired:
+            fetch_error = "Remote refresh timed out."
+
     try:
         root_result = _run_git(path, "rev-parse", "--show-toplevel")
         branch_result = _run_git(path, "branch", "--show-current")
+        upstream_result = _run_git(
+            path,
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        )
+        divergence_result = _run_git(path, "rev-list", "--left-right", "--count", "HEAD...@{upstream}")
+        branches_result = _run_git(
+            path,
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "--sort=refname",
+            "refs/heads",
+        )
         status_result = _run_git(
             path,
             "status",
@@ -96,15 +250,99 @@ def read_git_status(path: Path) -> GitStatus:
         if code[1] not in {" ", "?"}:
             modified.append(item)
 
+    ahead = 0
+    behind = 0
+    if divergence_result.returncode == 0:
+        counts = divergence_result.stdout.split()
+        if len(counts) == 2:
+            try:
+                ahead, behind = (int(count) for count in counts)
+            except ValueError:
+                pass
+    branch = branch_result.stdout.strip() if branch_result.returncode == 0 else None
+    upstream = upstream_result.stdout.strip() if upstream_result.returncode == 0 else None
+    branches = branches_result.stdout.splitlines() if branches_result.returncode == 0 else []
+    if branch and branch not in branches:
+        branches.append(branch)
+    try:
+        local_commits, local_commits_truncated, base_commit = _read_local_commits(
+            path,
+            upstream,
+            branch,
+        )
+    except subprocess.TimeoutExpired:
+        local_commits, local_commits_truncated, base_commit = [], False, None
+
     return {
         "is_repository": True,
         "root": str(Path(root_result.stdout.strip())) if root_result.returncode == 0 else str(path),
-        "branch": branch_result.stdout.strip() if branch_result.returncode == 0 else None,
+        "branch": branch,
+        "upstream": upstream,
+        "ahead": ahead,
+        "behind": behind,
+        "branches": branches,
         "staged": staged,
         "modified": modified,
         "untracked": untracked,
+        "local_commits": local_commits,
+        "local_commits_truncated": local_commits_truncated,
+        "base_commit": base_commit,
         "error": None,
+        "fetch_error": fetch_error,
     }
+
+
+def _switch_conflicting_files(detail: str) -> list[str]:
+    files: list[str] = []
+    reading_files = False
+    for line in detail.splitlines():
+        stripped = line.strip()
+        if "following files would be overwritten" in stripped.lower():
+            reading_files = True
+            continue
+        if not reading_files:
+            continue
+        if not stripped or stripped.lower().startswith(("please ", "aborting")):
+            reading_files = False
+            continue
+        files.append(stripped)
+    return list(dict.fromkeys(files))
+
+
+def switch_git_branch(path: Path, branch: str, *, force: bool = False) -> GitStatus:
+    status = read_git_status(path)
+    if not status["is_repository"]:
+        raise ValueError(status["error"] or "This path is not inside a Git repository.")
+
+    branch = branch.strip()
+    if not branch or branch not in status["branches"]:
+        raise ValueError("That local branch does not exist.")
+    if branch == status["branch"]:
+        return status
+
+    try:
+        arguments = ("switch", "--discard-changes", branch) if force else ("switch", branch)
+        result = _run_git(path, *arguments)
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError("Git did not respond in time.") from exc
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        normalized_detail = detail.lower()
+        files = _switch_conflicting_files(detail)
+        overwritten = "would be overwritten" in normalized_detail
+        if "local changes" in normalized_detail and "would be overwritten" in normalized_detail:
+            message = "Local changes would be overwritten."
+        elif "untracked working tree files" in normalized_detail and "would be overwritten" in normalized_detail:
+            message = "Untracked files would be overwritten."
+        elif "resolve your current index first" in normalized_detail:
+            message = "Resolve the current merge conflicts before switching branches."
+        else:
+            first_line = next((line.strip() for line in detail.splitlines() if line.strip()), "")
+            if first_line.lower().startswith("error:"):
+                first_line = first_line[6:].strip()
+            message = first_line or f"Git could not switch to {branch}."
+        raise GitBranchSwitchError(message, files, can_force=not force and overwritten)
+    return read_git_status(path)
 
 
 def update_git_index(path: Path, paths: list[str], *, stage: bool) -> GitStatus:

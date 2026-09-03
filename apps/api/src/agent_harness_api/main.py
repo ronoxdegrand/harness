@@ -8,7 +8,14 @@ from pydantic import BaseModel, Field
 
 from .config import DEFAULT_MODEL, get_settings
 from .db import LATEST_SCHEMA_VERSION, database_status, initialize_database
-from .git_status import GitStatus, discard_git_changes, read_git_status, update_git_index
+from .git_status import (
+    GitBranchSwitchError,
+    GitStatus,
+    discard_git_changes,
+    read_git_status,
+    switch_git_branch,
+    update_git_index,
+)
 from .store import RunStore, Thread, thread_title_from_prompt
 from .ws import handle_run_websocket, resolve_workspace_path
 
@@ -25,10 +32,16 @@ class ThreadRenameRequest(BaseModel):
 
 class GitStatusRequest(BaseModel):
     workspace_path: str
+    fetch_remote: bool = False
 
 
 class GitIndexRequest(GitStatusRequest):
     paths: list[str] = Field(default_factory=list)
+
+
+class GitSwitchRequest(GitStatusRequest):
+    branch: str
+    force: bool = False
 
 
 def _thread_payload(store: RunStore, thread: Thread) -> dict[str, object]:
@@ -156,7 +169,7 @@ async def git_status(request: GitStatusRequest) -> GitStatus:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not workspace_path.is_dir():
         raise HTTPException(status_code=400, detail="Workspace path does not exist or is not a directory.")
-    return read_git_status(workspace_path)
+    return read_git_status(workspace_path, fetch_remote=request.fetch_remote)
 
 
 def _update_git_index(request: GitIndexRequest, *, stage: bool) -> GitStatus:
@@ -184,6 +197,29 @@ async def git_stage(request: GitIndexRequest) -> GitStatus:
 @app.post("/git/unstage")
 async def git_unstage(request: GitIndexRequest) -> GitStatus:
     return _update_git_index(request, stage=False)
+
+
+@app.post("/git/switch")
+async def git_switch(request: GitSwitchRequest) -> GitStatus:
+    settings = get_settings()
+    if not request.workspace_path.strip():
+        raise HTTPException(status_code=400, detail="Workspace path is required.")
+    try:
+        workspace_path = resolve_workspace_path(
+            settings.workspace_root,
+            request.workspace_path.strip(),
+            settings.allow_absolute_workspaces,
+        )
+        if not workspace_path.is_dir():
+            raise ValueError("Workspace path does not exist or is not a directory.")
+        return switch_git_branch(workspace_path, request.branch, force=request.force)
+    except GitBranchSwitchError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": str(exc), "files": exc.files, "can_force": exc.can_force},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/git/discard")

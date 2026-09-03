@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -36,6 +37,7 @@ def test_tool_registry_exposes_metadata_and_schemas() -> None:
     assert "read_file" in tool_names
     assert "write_file" in tool_names
     assert "git_status" in tool_names
+    assert {"git_refresh", "git_switch", "git_stage", "git_unstage", "git_discard"} <= set(tool_names)
     assert any(tool["name"] == "shell" for tool in definitions)
     assert registry.get("write_file").input_schema["required"] == ["path", "content"]
     assert registry.get("git_diff").input_schema["properties"]["staged"]["type"] == "boolean"
@@ -227,3 +229,51 @@ def test_git_tools_and_repo_workflow(tmp_path: Path) -> None:
     assert "src/math_utils.py" in staged_diff.output
     assert "-    return a + b" in staged_diff.output
     assert unstaged_diff.output == ""
+
+
+def test_first_class_git_tools_match_ui_actions(tmp_path: Path) -> None:
+    workspace = tmp_path / "repo"
+    _create_repo(workspace)
+    executor = ToolExecutor(build_default_tool_registry())
+    original_branch = subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=workspace,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(["git", "branch", "alternate"], cwd=workspace, check=True, capture_output=True)
+    tracked = workspace / "src" / "math_utils.py"
+    original_content = tracked.read_text(encoding="utf-8")
+    tracked.write_text("changed\n", encoding="utf-8")
+
+    staged = executor.execute(
+        ToolCall(id="stage", name="git_stage", arguments={"paths": ["src/math_utils.py"]}),
+        target_path=workspace,
+    )
+    unstaged = executor.execute(
+        ToolCall(id="unstage", name="git_unstage", arguments={"paths": ["src/math_utils.py"]}),
+        target_path=workspace,
+    )
+    discarded = executor.execute(
+        ToolCall(id="discard", name="git_discard", arguments={"paths": ["src/math_utils.py"]}),
+        target_path=workspace,
+    )
+    switched = executor.execute(
+        ToolCall(id="switch", name="git_switch", arguments={"branch": "alternate"}),
+        target_path=workspace,
+    )
+    refreshed = executor.execute(
+        ToolCall(id="refresh", name="git_refresh", arguments={}),
+        target_path=workspace,
+    )
+
+    assert staged.success is True
+    assert any(item["path"] == "src/math_utils.py" for item in json.loads(staged.output)["staged"])
+    assert unstaged.success is True
+    assert discarded.success is True
+    assert tracked.read_text(encoding="utf-8") == original_content
+    assert switched.success is True
+    assert json.loads(switched.output)["branch"] == "alternate"
+    assert json.loads(refreshed.output)["branch"] == "alternate"
+    assert original_branch != "alternate"

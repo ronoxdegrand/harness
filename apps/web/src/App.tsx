@@ -36,7 +36,23 @@ type ThreadSort = "recent-message" | "created";
 type ActivityPlacement = "side" | "inline";
 type MidRunEnterAction = "queue" | "steer";
 type PreviewPanel = "sidebar" | "git" | "context";
-type GitGroup = "staged" | "changes";
+type GitGroup = "staged" | "changes" | "commits";
+
+type BranchSwitchError = {
+  to: string;
+  message: string;
+  files: string[];
+  canForce: boolean;
+};
+
+function gitPathParts(filePath: string) {
+  const normalizedPath = filePath.replaceAll("\\", "/");
+  const separator = normalizedPath.lastIndexOf("/");
+  return {
+    fileName: separator >= 0 ? normalizedPath.slice(separator + 1) : normalizedPath,
+    relativeDirectory: separator >= 0 ? normalizedPath.slice(0, separator) : "",
+  };
+}
 
 function validAppearance(value: unknown): Appearance {
   return value === "dark" || value === "system" ? value : "light";
@@ -139,14 +155,30 @@ type GitFileState = {
   status: string;
 };
 
+type GitCommitState = {
+  hash: string;
+  short_hash: string;
+  subject: string;
+  author: string;
+  authored_at: string;
+};
+
 type GitStatusState = {
   is_repository: boolean;
   root: string | null;
   branch: string | null;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  branches: string[];
   staged: GitFileState[];
   modified: GitFileState[];
   untracked: GitFileState[];
+  local_commits: GitCommitState[];
+  local_commits_truncated: boolean;
+  base_commit: GitCommitState | null;
   error: string | null;
+  fetch_error: string | null;
 };
 
 type ThreadDetail = {
@@ -267,6 +299,7 @@ export default function App() {
   const [status, setStatus] = useState("idle");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [branchPickerOpen, setBranchPickerOpen] = useState(false);
   const [apiKeyDraft, setApiKeyDraft] = useState(apiKey);
   const [sarvamApiKeyDraft, setSarvamApiKeyDraft] = useState(sarvamApiKey);
   const [maxIterationsDraft, setMaxIterationsDraft] = useState(String(maxIterations));
@@ -306,10 +339,12 @@ export default function App() {
   const [gitPreviewOpen, setGitPreviewOpen] = useState(false);
   const [gitStatus, setGitStatus] = useState<GitStatusState | null>(null);
   const [gitStatusLoading, setGitStatusLoading] = useState(false);
+  const [gitFetchError, setGitFetchError] = useState<string | null>(null);
   const [gitMutation, setGitMutation] = useState<string | null>(null);
   const [collapsedGitGroups, setCollapsedGitGroups] = useState<Record<GitGroup, boolean>>({
     staged: false,
     changes: false,
+    commits: false,
   });
   const [activityRunId, setActivityRunId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
@@ -361,6 +396,7 @@ export default function App() {
     additional_iterations: number;
   } | null>(null);
   const [error, setError] = useState("");
+  const [branchSwitchError, setBranchSwitchError] = useState<BranchSwitchError | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const queuedTasksRef = useRef<QueuedTask[]>([]);
   const syntheticTurnIdRef = useRef(-1);
@@ -641,6 +677,7 @@ export default function App() {
         setGitPreviewOpen(false);
         setContextPreviewOpen(false);
         setThreadToDelete(null);
+        setBranchSwitchError(null);
         setError("");
       }
       if (desktop && modifierHeld && ["-", "=", "+", "0"].includes(event.key)) {
@@ -706,6 +743,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    setGitFetchError(null);
+  }, [workspacePath]);
+
+  useEffect(() => {
     let interval: number | null = null;
     let attentionTimer: number | null = null;
 
@@ -768,10 +809,11 @@ export default function App() {
     }
   }
 
-  async function loadGitStatus(silent = false) {
+  async function loadGitStatus(silent = false, fetchRemote = false) {
     gitStatusRequestRef.current?.abort();
     if (!workspacePath.trim()) {
       setGitStatus(null);
+      setGitFetchError(null);
       setGitStatusLoading(false);
       return;
     }
@@ -782,22 +824,33 @@ export default function App() {
       const response = await fetch("/git/status", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspace_path: workspacePath }),
+        body: JSON.stringify({ workspace_path: workspacePath, fetch_remote: fetchRemote }),
         signal: controller.signal,
       });
       if (!response.ok) throw new Error();
-      setGitStatus(await readJson<GitStatusState>(response));
+      const nextStatus = await readJson<GitStatusState>(response);
+      setGitStatus(nextStatus);
+      if (fetchRemote) setGitFetchError(nextStatus.fetch_error);
     } catch (reason) {
       if (reason instanceof DOMException && reason.name === "AbortError") return;
       setGitStatus({
         is_repository: false,
         root: null,
         branch: null,
+        upstream: null,
+        ahead: 0,
+        behind: 0,
+        branches: [],
         staged: [],
         modified: [],
         untracked: [],
+        local_commits: [],
+        local_commits_truncated: false,
+        base_commit: null,
         error: "Could not read Git status.",
+        fetch_error: null,
       });
+      if (fetchRemote) setGitFetchError("Could not contact the Git service.");
     } finally {
       if (gitStatusRequestRef.current === controller) {
         gitStatusRequestRef.current = null;
@@ -824,6 +877,48 @@ export default function App() {
       setGitStatus(await readJson<GitStatusState>(response));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : `Could not ${action} files.`);
+    } finally {
+      setGitMutation(null);
+    }
+  }
+
+  async function switchGitBranch(branch: string, force = false) {
+    if (!workspacePath.trim() || gitMutation || branch === gitStatus?.branch) return;
+    gitStatusRequestRef.current?.abort();
+    setGitMutation(`${force ? "force-switch" : "switch"}:${branch}`);
+    try {
+      const response = await fetch("/git/switch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspace_path: workspacePath, branch, force }),
+      });
+      if (!response.ok) {
+        const payload = await readJson<{
+          detail?: string | { message?: string; files?: string[]; can_force?: boolean };
+        }>(response);
+        const detail = payload.detail;
+        setBranchSwitchError({
+          to: branch,
+          message: typeof detail === "object" && detail?.message
+            ? detail.message
+            : typeof detail === "string" ? detail : `Git could not switch to ${branch}.`,
+          files: typeof detail === "object" && Array.isArray(detail?.files) ? detail.files : [],
+          canForce: typeof detail === "object" && detail?.can_force === true,
+        });
+        setBranchPickerOpen(false);
+        return;
+      }
+      const nextStatus = await readJson<GitStatusState>(response);
+      setGitStatus(nextStatus);
+      setGitFetchError(null);
+      setBranchPickerOpen(false);
+    } catch (reason) {
+      setBranchSwitchError({
+        to: branch,
+        message: reason instanceof Error ? reason.message : `Git could not switch to ${branch}.`,
+        files: [],
+        canForce: false,
+      });
     } finally {
       setGitMutation(null);
     }
@@ -1441,7 +1536,7 @@ export default function App() {
     const collapsed = collapsedGitGroups[group];
     return (
       <section>
-        <div className="group/git-section mb-1 flex items-center justify-between px-1">
+        <div className="group/git-section mb-1 flex h-5 items-center justify-between px-1">
           <button
             aria-expanded={!collapsed}
             className="flex min-w-0 items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground"
@@ -1487,14 +1582,11 @@ export default function App() {
         {!collapsed ? (
         <div className="overflow-hidden rounded-lg border bg-card">
           {files.map((file) => {
-            const normalizedPath = file.path.replaceAll("\\", "/");
-            const separator = normalizedPath.lastIndexOf("/");
-            const fileName = separator >= 0 ? normalizedPath.slice(separator + 1) : normalizedPath;
-            const relativeDirectory = separator >= 0 ? normalizedPath.slice(0, separator) : "";
+            const { fileName, relativeDirectory } = gitPathParts(file.path);
             return (
             <div className="group relative" key={`${title}-${file.status}-${file.path}`}>
               <div
-                className={`flex min-w-0 items-center gap-2 px-2.5 py-1 transition-[padding] group-hover:bg-accent/50 group-focus-within:bg-accent/50 ${
+                className={`flex min-w-0 items-center gap-2 px-2.5 py-1.5 transition-[padding] group-hover:bg-accent/50 group-focus-within:bg-accent/50 ${
                   action === "stage"
                     ? "group-hover:pr-14 group-focus-within:pr-14"
                     : "group-hover:pr-10 group-focus-within:pr-10"
@@ -1544,6 +1636,74 @@ export default function App() {
             );
           })}
         </div>
+        ) : null}
+      </section>
+    );
+  }
+
+  function renderGitCommits() {
+    const commits = gitStatus?.local_commits ?? [];
+    if (!commits.length) return null;
+    const collapsed = collapsedGitGroups.commits;
+    return (
+      <section>
+        <div className="mb-1 flex h-5 items-center px-1">
+          <button
+            aria-expanded={!collapsed}
+            className="flex min-w-0 items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground"
+            type="button"
+            onClick={() => setCollapsedGitGroups((current) => ({ ...current, commits: !current.commits }))}
+          >
+            <ChevronDown
+              aria-hidden="true"
+              className={`size-3 shrink-0 transition-transform ${collapsed ? "-rotate-90" : ""}`}
+            />
+            <span className="truncate">Unsynced commits</span>
+            <span className="font-normal tabular-nums">
+              {commits.length}{gitStatus?.local_commits_truncated ? "+" : ""}
+            </span>
+          </button>
+        </div>
+        {!collapsed ? (
+          <div className="overflow-hidden rounded-lg border bg-card">
+            {commits.map((commit) => (
+              <div className="group/commit relative min-w-0" key={commit.hash}>
+                <div className="min-w-0 px-2.5 py-1.5 transition-[padding] group-hover/commit:pr-[5.25rem] group-focus-within/commit:pr-[5.25rem]" title={commit.subject}>
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate text-xs text-foreground">{commit.subject}</span>
+                </div>
+                <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
+                  {commit.author} · {formatTimestamp(commit.authored_at)}
+                </div>
+                </div>
+                <div className="absolute top-1/2 right-1.5 flex -translate-y-1/2 items-center gap-1 opacity-0 transition-opacity group-hover/commit:opacity-100 group-focus-within/commit:opacity-100">
+                  <code className="font-mono text-[10px] text-muted-foreground">{commit.short_hash}</code>
+                  <CopyButton className="size-5" content={commit.hash} label={`Copy commit ${commit.short_hash}`} />
+                </div>
+              </div>
+            ))}
+            {gitStatus?.base_commit ? (
+              <div className="group/commit relative min-w-0 bg-muted/45">
+                <div className="flex min-w-0 items-start gap-2 px-2.5 py-1.5 pr-2.5 transition-[padding] group-hover/commit:pr-[5.25rem] group-focus-within/commit:pr-[5.25rem]" title={gitStatus.base_commit.subject}>
+                  <Check aria-hidden="true" className="mt-0.5 size-3 shrink-0 text-success" />
+                  <div className="min-w-0 flex-1">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                      {gitStatus.base_commit.subject}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 text-[10px] font-medium text-muted-foreground">
+                    {gitStatus.upstream ? "Last synced commit" : "Last shared commit"}
+                  </div>
+                  </div>
+                </div>
+                <div className="absolute top-1/2 right-1.5 flex -translate-y-1/2 items-center gap-1 opacity-0 transition-opacity group-hover/commit:opacity-100 group-focus-within/commit:opacity-100">
+                  <code className="font-mono text-[10px] text-muted-foreground">{gitStatus.base_commit.short_hash}</code>
+                  <CopyButton className="size-5" content={gitStatus.base_commit.hash} label={`Copy commit ${gitStatus.base_commit.short_hash}`} />
+                </div>
+              </div>
+            ) : null}
+          </div>
         ) : null}
       </section>
     );
@@ -2630,19 +2790,24 @@ export default function App() {
                 }}
               />
               <div className="flex flex-wrap items-center gap-2 px-1 pt-1">
-                <div className="mr-auto flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+                <div className={`mr-auto flex min-w-0 items-stretch overflow-hidden rounded-lg border bg-card text-xs text-muted-foreground ${
+                  repositoryRequired ? "border-warning-border ring-2 ring-warning-border" : "border-border"
+                }`}>
                   {activeThread ? (
                     <span
-                      className="block max-w-52 overflow-hidden text-ellipsis whitespace-nowrap px-2 text-left font-mono [direction:rtl]"
+                      className="flex h-8 min-w-0 max-w-52 items-center gap-2 px-2 font-mono"
                       title={activeThread.workspace_path}
                     >
-                      {activeThread.workspace_path}
+                      <FolderGit2 aria-hidden="true" className="size-4 shrink-0" />
+                      <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-left [direction:rtl]">
+                        {activeThread.workspace_path}
+                      </span>
                     </span>
                   ) : desktop ? (
                     <Button
-                      className={`h-8 max-w-52 justify-start gap-2 px-2 font-mono text-xs font-normal ${
+                      className={`h-8 max-w-52 justify-start gap-2 rounded-none px-2 font-mono text-xs font-normal ${
                         repositoryRequired
-                          ? "bg-warning-muted text-warning ring-2 ring-warning-border hover:bg-warning-muted/80"
+                          ? "bg-warning-muted text-warning hover:bg-warning-muted/80"
                           : "text-muted-foreground"
                       }`}
                       title={workspacePath || "Select repository"}
@@ -2662,9 +2827,9 @@ export default function App() {
                     <label>
                       <span className="sr-only">Workspace path</span>
                       <Input
-                        className={`h-7 w-36 border-0 bg-transparent px-0 font-mono text-xs shadow-none sm:w-52 ${
+                        className={`h-8 w-36 rounded-none border-0 bg-transparent px-2 font-mono text-xs shadow-none sm:w-52 ${
                           repositoryRequired
-                            ? "bg-warning-muted px-2 text-warning ring-2 ring-warning-border"
+                            ? "bg-warning-muted text-warning"
                             : "focus-visible:ring-0"
                         }`}
                         value={workspacePath}
@@ -2673,15 +2838,54 @@ export default function App() {
                       />
                     </label>
                   )}
-                  {workspacePath.trim() ? (
+                  {workspacePath.trim() && gitTracked && gitStatus.branches.length ? (
+                    <SelectPrimitive.Root
+                      open={branchPickerOpen}
+                      value={gitStatus.branch ?? undefined}
+                      onOpenChange={setBranchPickerOpen}
+                      onValueChange={(value) => value && void switchGitBranch(value as string)}
+                    >
+                      <SelectPrimitive.Trigger
+                        aria-label={`Switch branch, currently ${gitBranchLabel}`}
+                        className="flex h-8 max-w-40 cursor-pointer items-center gap-1.5 border-l px-2 font-mono text-[10px] font-semibold outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50"
+                        disabled={Boolean(gitMutation) || runInProgress}
+                        title={`Branch: ${gitBranchLabel}`}
+                      >
+                        <GitBranch aria-hidden="true" className="size-3.5 shrink-0" />
+                        <span className="truncate">{gitBranchLabel}</span>
+                        <SelectPrimitive.Icon render={<ChevronUp className="size-3.5 shrink-0" />} />
+                      </SelectPrimitive.Trigger>
+                      <SelectPrimitive.Portal>
+                        <SelectPrimitive.Positioner alignItemWithTrigger sideOffset={4} className="z-50">
+                          <SelectPrimitive.Popup className="min-w-44 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md">
+                            <SelectPrimitive.List>
+                              {gitStatus.branches.map((branch) => (
+                                <SelectPrimitive.Item
+                                  className="relative flex cursor-default items-center rounded-md py-1.5 pr-8 pl-2 font-mono text-xs outline-none focus:bg-accent focus:text-accent-foreground"
+                                  key={branch}
+                                  value={branch}
+                                >
+                                  <SelectPrimitive.ItemText>{branch}</SelectPrimitive.ItemText>
+                                  <SelectPrimitive.ItemIndicator
+                                    className="absolute right-2"
+                                    render={<Check className="size-3.5" />}
+                                  />
+                                </SelectPrimitive.Item>
+                              ))}
+                            </SelectPrimitive.List>
+                          </SelectPrimitive.Popup>
+                        </SelectPrimitive.Positioner>
+                      </SelectPrimitive.Portal>
+                    </SelectPrimitive.Root>
+                  ) : workspacePath.trim() ? (
                     <Button
-                      aria-label={`Open Git panel, ${gitBranchLabel}`}
-                      className={`h-7 max-w-36 shrink-0 px-2 font-mono text-[10px] font-semibold ${
+                      aria-label="Open Git panel"
+                      className={`h-8 max-w-36 shrink-0 gap-1.5 rounded-none border-l px-2 font-mono text-[10px] font-semibold ${
                         !gitStatusLoading && !gitTracked
-                          ? "bg-warning-muted text-warning ring-2 ring-warning-border hover:bg-warning-muted/80"
+                          ? "bg-warning-muted text-warning hover:bg-warning-muted/80"
                           : "text-muted-foreground"
                       }`}
-                      title={gitTracked ? `Branch: ${gitBranchLabel}` : "This path is not tracked by Git"}
+                      title={gitTracked ? gitBranchLabel : "This path is not tracked by Git"}
                       type="button"
                       variant="ghost"
                       onClick={() => {
@@ -2911,18 +3115,36 @@ export default function App() {
               </header>
             ) : null}
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
-              <div className="flex items-center justify-between gap-3 px-1">
-                <p className="text-sm font-semibold">Git</p>
+              <div
+                className="flex min-h-6 items-center gap-3 px-1 text-xs text-muted-foreground"
+                title={gitStatus?.upstream ? `Tracking ${gitStatus.upstream}` : undefined}
+              >
+                {gitStatus?.is_repository ? (
+                  gitStatus.upstream ? (
+                    <>
+                      <span className={`inline-flex items-center gap-0.5 ${gitStatus.ahead ? "text-foreground" : ""}`}>
+                        <ChevronUp aria-hidden="true" className="size-3.5" /> {gitStatus.ahead} to push
+                      </span>
+                      <span className={`inline-flex items-center gap-0.5 ${gitStatus.behind ? "text-foreground" : ""}`}>
+                        <ChevronDown aria-hidden="true" className="size-3.5" /> {gitStatus.behind} to pull
+                      </span>
+                    </>
+                  ) : (
+                    <span title="This branch has no upstream">No upstream</span>
+                  )
+                ) : null}
                 <Button
-                  aria-label="Refresh Git status"
-                  className="size-8 text-muted-foreground"
+                  aria-label={gitFetchError ? "Retry remote Git refresh" : "Refresh Git status and fetch remote"}
+                  className={`ml-auto h-6 gap-1 px-1.5 text-[11px] ${gitFetchError ? "text-warning" : "text-muted-foreground"}`}
                   disabled={gitStatusLoading || Boolean(gitMutation) || !workspacePath.trim()}
-                  size="icon-sm"
+                  size="xs"
+                  title={gitFetchError ? `Remote refresh failed: ${gitFetchError}. Local status is still current.` : "Fetch remote and refresh local status"}
                   type="button"
                   variant="ghost"
-                  onClick={() => void loadGitStatus()}
+                  onClick={() => void loadGitStatus(false, true)}
                 >
-                  <RefreshCw aria-hidden="true" className={`size-3.5 ${gitStatusLoading ? "animate-spin" : ""}`} />
+                  <RefreshCw aria-hidden="true" className={`size-3 ${gitStatusLoading ? "animate-spin" : ""}`} />
+                  Refresh
                 </Button>
               </div>
               {gitStatusLoading && !gitStatus ? (
@@ -2955,10 +3177,11 @@ export default function App() {
                   {renderGitFileGroup("staged", "Staged changes", gitStatus.staged, "unstage")}
                   {renderGitFileGroup("changes", "Changes", [...gitStatus.modified, ...gitStatus.untracked], "stage")}
                   {!gitStatus.staged.length && !gitStatus.modified.length && !gitStatus.untracked.length ? (
-                    <p className="px-2 py-8 text-center text-sm leading-6 text-muted-foreground">
+                    <p className="px-2 py-2 text-center text-sm leading-6 text-muted-foreground">
                       Working tree clean.
                     </p>
                   ) : null}
+                  {renderGitCommits()}
                 </>
               ) : null}
             </div>
@@ -3010,12 +3233,6 @@ export default function App() {
               </header>
             ) : null}
             <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
-              <div className="flex items-center justify-between gap-3 px-1">
-                <p className="text-sm font-semibold">Context</p>
-                <span className="text-xs text-muted-foreground">
-                  {threadContext ? `${threadContext.messages.length} entries` : "Empty"}
-                </span>
-              </div>
               {threadContext ? (
                 <>
                   <section className="rounded-lg border bg-card p-3">
@@ -3228,10 +3445,11 @@ export default function App() {
         </div>
       ) : null}
       <AlertDialogPrimitive.Root
-        open={Boolean(threadToDelete || error)}
+        open={Boolean(threadToDelete || branchSwitchError || error)}
         onOpenChange={(open) => {
           if (!open) {
             setThreadToDelete(null);
+            setBranchSwitchError(null);
             setError("");
           }
         }}
@@ -3241,6 +3459,7 @@ export default function App() {
             className="fixed inset-0 z-50 bg-black/25 backdrop-blur-[1px]"
             onClick={() => {
               setThreadToDelete(null);
+              setBranchSwitchError(null);
               setError("");
             }}
           />
@@ -3249,6 +3468,7 @@ export default function App() {
             onPointerDown={(event) => {
               if (event.target !== event.currentTarget) return;
               setThreadToDelete(null);
+              setBranchSwitchError(null);
               setError("");
             }}
           >
@@ -3257,28 +3477,96 @@ export default function App() {
                 onSubmit={(event) => {
                   event.preventDefault();
                   if (threadToDelete) void deleteThread();
+                  else if (branchSwitchError) setBranchSwitchError(null);
                   else setError("");
                 }}
               >
-                <AlertDialogPrimitive.Title className="text-base font-semibold">
-                  {threadToDelete ? "Delete thread?" : "Something went wrong"}
+                <AlertDialogPrimitive.Title className="flex items-center gap-2 text-base font-semibold">
+                  {branchSwitchError ? <GitBranch aria-hidden="true" className="size-4 text-warning" /> : null}
+                  {threadToDelete
+                    ? "Delete thread?"
+                    : branchSwitchError ? `Couldn’t switch to ${branchSwitchError.to}` : "Something went wrong"}
                 </AlertDialogPrimitive.Title>
                 <AlertDialogPrimitive.Description className="mt-2 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] text-sm leading-6 text-muted-foreground">
                   {threadToDelete
                     ? `This will permanently delete "${threadToDelete.title}" and its activity.`
-                    : error}
+                    : branchSwitchError ? (
+                      <>
+                        <span className="block text-foreground">
+                          {branchSwitchError.message}
+                        </span>
+                        {branchSwitchError.files.length ? (
+                          <span className="mt-3 block">
+                            <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                              Blocking changes
+                            </span>
+                            <span className="block max-h-40 overflow-y-auto rounded-lg border bg-card">
+                              {branchSwitchError.files.map((file) => {
+                                const { fileName, relativeDirectory } = gitPathParts(file);
+                                return (
+                                  <span className="flex min-w-0 items-center px-2.5 py-1 font-mono text-xs" key={file} title={file}>
+                                    <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                                      <span className="text-foreground">{fileName}</span>
+                                      {relativeDirectory ? (
+                                        <span className="ml-2 text-[10px] text-muted-foreground">{relativeDirectory}</span>
+                                      ) : null}
+                                    </span>
+                                  </span>
+                                );
+                              })}
+                            </span>
+                          </span>
+                        ) : null}
+                        <span className="mt-3 block">
+                          {branchSwitchError.canForce
+                            ? "Force switch discards tracked changes; blocking untracked files may be removed."
+                            : "Resolve these changes and try again."}
+                        </span>
+                      </>
+                    ) : error}
                 </AlertDialogPrimitive.Description>
-                <div className="mt-5 flex justify-end gap-2">
-                  {!threadToDelete ? (
+                <div className="mt-5 flex flex-wrap justify-end gap-2">
+                  {!threadToDelete && !branchSwitchError ? (
                     <CopyButton className="mr-auto" content={error} label="Copy error" />
+                  ) : null}
+                  {branchSwitchError ? (
+                    <Button
+                      className="mr-auto"
+                      type="button"
+                      variant="outline"
+                      onClick={() => {
+                        setBranchSwitchError(null);
+                        void loadGitStatus();
+                        if (narrowView) openPanelPreview("git");
+                        else {
+                          setGitOpen(true);
+                          setGitPreviewOpen(false);
+                        }
+                      }}
+                    >
+                      Open Git
+                    </Button>
                   ) : null}
                   {threadToDelete ? (
                     <AlertDialogPrimitive.Close
                       render={<Button type="button" variant="outline">Cancel</Button>}
                     />
                   ) : null}
+                  {branchSwitchError?.canForce ? (
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      onClick={() => {
+                        const targetBranch = branchSwitchError.to;
+                        setBranchSwitchError(null);
+                        void switchGitBranch(targetBranch, true);
+                      }}
+                    >
+                      Force switch
+                    </Button>
+                  ) : null}
                   <Button type="submit" variant={threadToDelete ? "destructive" : "default"}>
-                    {threadToDelete ? "Delete" : "Dismiss"}
+                    {threadToDelete ? "Delete" : branchSwitchError ? "Cancel" : "Dismiss"}
                   </Button>
                 </div>
               </form>
