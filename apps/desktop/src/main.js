@@ -24,8 +24,12 @@ function normalizeAppearance(appearance) {
   return appearance === "dark" || appearance === "system" ? appearance : "light";
 }
 
+function titleBarOverlayHeight(scale) {
+  return Math.max(Math.round(56 * scale) - 1, 28);
+}
+
 function updateWindowChrome(scale) {
-  const headerHeight = Math.max(Math.round(56 * scale) - 1, 28);
+  const headerHeight = titleBarOverlayHeight(scale);
   if (process.platform === "darwin") {
     mainWindow.setWindowButtonPosition({
       x: 16,
@@ -79,6 +83,7 @@ if (smokeTest) {
 
 async function createWindow() {
   const settings = readSettings(settingsPath, safeStorage);
+  const scale = normalizeScale(settings.scale);
   nativeTheme.themeSource = normalizeAppearance(settings.appearance);
   const dark = nativeTheme.shouldUseDarkColors;
   mainWindow = new BrowserWindow({
@@ -95,7 +100,7 @@ async function createWindow() {
           titleBarOverlay: {
             color: dark ? "#1b1c1a" : "#fafaf7",
             symbolColor: dark ? "#ecece7" : "#1b1b1a",
-            height: 56,
+            height: titleBarOverlayHeight(scale),
           },
         }),
     webPreferences: {
@@ -103,11 +108,12 @@ async function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      zoomFactor: scale,
     },
   });
-  const scale = normalizeScale(settings.scale);
   mainWindow.webContents.setZoomFactor(scale);
   updateWindowChrome(scale);
+  mainWindow.webContents.once("did-finish-load", () => updateWindowChrome(scale));
   nativeTheme.on("updated", () => {
     if (mainWindow && !mainWindow.isDestroyed()) updateWindowChrome(mainWindow.webContents.getZoomFactor());
   });

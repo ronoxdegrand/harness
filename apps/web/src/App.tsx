@@ -2338,8 +2338,8 @@ export default function App() {
           >
             {!sidebarPinnedOpen ? (
               <div
-                className={`absolute z-50 flex shrink-0 items-center gap-1 ${macDesktop && !sidebarOpen ? "" : "left-3"}`}
-                style={macDesktop && !sidebarOpen ? { left: `${80 / uiScale}px` } : undefined}
+                className={`absolute z-50 flex shrink-0 items-center gap-1 ${macDesktop ? "" : "left-3"}`}
+                style={macDesktop ? { left: `${80 / uiScale}px` } : undefined}
               >
                 <Button
                   aria-label="Expand sidebar"
