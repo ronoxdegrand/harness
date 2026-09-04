@@ -13,10 +13,12 @@ from .db import LATEST_SCHEMA_VERSION, database_status, initialize_database
 from .gemini_model import GeminiModelProvider
 from .git_status import (
     GitBranchSwitchError,
+    GitDiff,
     GitStatus,
     commit_git_changes,
     discard_git_changes,
     read_commit_message_diff,
+    read_git_file_diff,
     read_git_status,
     sync_git_branch,
     switch_git_branch,
@@ -45,6 +47,11 @@ class GitStatusRequest(BaseModel):
 
 class GitIndexRequest(GitStatusRequest):
     paths: list[str] = Field(default_factory=list)
+
+
+class GitDiffRequest(GitStatusRequest):
+    path: str
+    staged: bool = False
 
 
 class GitSwitchRequest(GitStatusRequest):
@@ -188,6 +195,24 @@ async def git_status(request: GitStatusRequest) -> GitStatus:
     if not workspace_path.is_dir():
         raise HTTPException(status_code=400, detail="Workspace path does not exist or is not a directory.")
     return read_git_status(workspace_path, fetch_remote=request.fetch_remote)
+
+
+@app.post("/git/diff")
+async def git_diff(request: GitDiffRequest) -> GitDiff:
+    settings = get_settings()
+    if not request.workspace_path.strip():
+        raise HTTPException(status_code=400, detail="Workspace path is required.")
+    try:
+        workspace_path = resolve_workspace_path(
+            settings.workspace_root,
+            request.workspace_path.strip(),
+            settings.allow_absolute_workspaces,
+        )
+        if not workspace_path.is_dir():
+            raise ValueError("Workspace path does not exist or is not a directory.")
+        return read_git_file_diff(workspace_path, request.path, staged=request.staged)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _update_git_index(request: GitIndexRequest, *, stage: bool) -> GitStatus:

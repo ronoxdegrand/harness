@@ -8,6 +8,7 @@ from agent_harness_api.git_status import (
     commit_git_changes,
     discard_git_changes,
     read_commit_message_diff,
+    read_git_file_diff,
     read_git_status,
     sync_git_branch,
     switch_git_branch,
@@ -45,6 +46,62 @@ def test_git_status_groups_staged_modified_and_untracked_files(tmp_path: Path) -
     assert status["staged"] == [{"path": "staged.txt", "status": "M "}]
     assert status["modified"] == [{"path": "modified.txt", "status": " M"}]
     assert status["untracked"] == [{"path": "untracked.txt", "status": "??"}]
+
+
+def test_git_file_diff_reads_staged_worktree_and_untracked_versions(tmp_path: Path) -> None:
+    _git(tmp_path, "init")
+    _git(tmp_path, "config", "user.name", "Test")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("original\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "initial")
+
+    tracked.write_text("staged version\n")
+    _git(tmp_path, "add", "tracked.txt")
+    tracked.write_text("working version\n")
+    (tmp_path / "new.txt").write_text("new content\n")
+
+    staged = read_git_file_diff(tmp_path, "tracked.txt", staged=True)
+    working = read_git_file_diff(tmp_path, "tracked.txt", staged=False)
+    untracked = read_git_file_diff(tmp_path, "new.txt", staged=False)
+
+    assert "staged version" in staged["patch"]
+    assert "working version" not in staged["patch"]
+    assert "working version" in working["patch"]
+    assert "new content" in untracked["patch"]
+    assert staged["binary"] is False
+
+
+def test_git_file_diff_rejects_files_outside_the_requested_change_group(tmp_path: Path) -> None:
+    _git(tmp_path, "init")
+    (tmp_path / "new.txt").write_text("new\n")
+
+    with pytest.raises(ValueError, match="selected Git change group"):
+        read_git_file_diff(tmp_path, "new.txt", staged=True)
+
+
+def test_git_file_diff_does_not_mistake_binary_marker_text_for_a_binary_file(tmp_path: Path) -> None:
+    _git(tmp_path, "init")
+    _git(tmp_path, "config", "user.name", "Test")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    source = tmp_path / "source.py"
+    source.write_text('value = "Binary files " in patch or "GIT binary patch" in patch\n')
+
+    diff = read_git_file_diff(tmp_path, "source.py", staged=False)
+
+    assert diff["binary"] is False
+    assert "Binary files" in diff["patch"]
+
+
+def test_git_file_diff_detects_an_actual_binary_file(tmp_path: Path) -> None:
+    _git(tmp_path, "init")
+    binary = tmp_path / "image.bin"
+    binary.write_bytes(b"\x00old content")
+
+    diff = read_git_file_diff(tmp_path, "image.bin", staged=False)
+
+    assert diff["binary"] is True
 
 
 def test_git_status_reports_a_non_repository(tmp_path: Path) -> None:

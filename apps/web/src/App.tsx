@@ -1,8 +1,8 @@
-import { type CSSProperties, FormEvent, Fragment, type PointerEvent as ReactPointerEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type CSSProperties, FormEvent, Fragment, lazy, type PointerEvent as ReactPointerEvent, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { Select as SelectPrimitive } from "@base-ui/react/select";
-import { AlertTriangle, ArrowDownUp, Check, ChevronDown, ChevronUp, Copy, FolderGit2, GitBranch, Layers3, LoaderCircle, Minus, Minimize2, PanelLeft, PanelRight, Pencil, Plus, RefreshCw, Rows2, Send, Settings2, Sparkles, Square, Trash2, Undo2 } from "lucide-react";
+import { AlertTriangle, ArrowDownUp, Check, ChevronDown, ChevronUp, Columns2, Copy, FolderGit2, GitBranch, Layers3, LoaderCircle, Minus, Minimize2, PanelLeft, PanelRight, Pencil, Plus, RefreshCw, Rows2, Send, Settings2, Sparkles, Square, Trash2, Undo2, WrapText, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -19,6 +19,9 @@ const DEFAULT_ACTIVITY_WIDTH = 420;
 const MIN_ACTIVITY_WIDTH = 400;
 const DEFAULT_CONTEXT_WIDTH = 340;
 const DEFAULT_GIT_WIDTH = 340;
+const DEFAULT_DIFF_WIDTH = 760;
+const MIN_SPLIT_DIFF_WIDTH = 720;
+const LARGE_DIFF_SIDEBAR_BREAKPOINT = 1800;
 const MIN_THREAD_WIDTH_WITH_ACTIVITY = 480;
 const ACTIVITY_LAYOUT_GAP = 16;
 const CONVERSATION_HORIZONTAL_GUTTER = 48;
@@ -26,11 +29,13 @@ const MAX_SIDEBAR_WIDTH = 600;
 const MAX_ACTIVITY_WIDTH = 720;
 const MAX_CONTEXT_WIDTH = 720;
 const MAX_GIT_WIDTH = 720;
+const MAX_DIFF_WIDTH = 1800;
 const GIT_REFRESH_INTERVAL_MS = 5000;
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform);
 const SHORTCUT_KEY = IS_MAC ? "Meta" : "Control";
 const SHORTCUT_LABEL = IS_MAC ? "Cmd" : "Ctrl";
 const ALT_LABEL = IS_MAC ? "Option" : "Alt";
+const GitDiffContents = lazy(() => import("@/components/GitDiffContents"));
 type Appearance = "light" | "dark" | "system";
 type ThreadSort = "recent-message" | "created";
 type ActivityPlacement = "side" | "inline";
@@ -153,6 +158,14 @@ type ContextState = {
 type GitFileState = {
   path: string;
   status: string;
+};
+
+type GitDiffState = {
+  path: string;
+  staged: boolean;
+  patch: string | null;
+  binary: boolean;
+  error: string | null;
 };
 
 type GitCommitState = {
@@ -335,12 +348,19 @@ export default function App() {
     !desktop && localStorage.getItem("git-open") === "true",
   );
   const [narrowView, setNarrowView] = useState(() => window.matchMedia("(max-width: 1023px)").matches);
+  const [largeDiffViewport, setLargeDiffViewport] = useState(() =>
+    window.matchMedia(`(min-width: ${LARGE_DIFF_SIDEBAR_BREAKPOINT}px)`).matches,
+  );
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [gitPreviewOpen, setGitPreviewOpen] = useState(false);
   const [gitStatus, setGitStatus] = useState<GitStatusState | null>(null);
   const [gitStatusLoading, setGitStatusLoading] = useState(false);
   const [gitFetchError, setGitFetchError] = useState<string | null>(null);
   const [gitMutation, setGitMutation] = useState<string | null>(null);
+  const [gitDiff, setGitDiff] = useState<GitDiffState | null>(null);
+  const [gitDiffWrap, setGitDiffWrap] = useState(false);
+  const [gitDiffSplit, setGitDiffSplit] = useState(false);
+  const [renderedDiffWidth, setRenderedDiffWidth] = useState(0);
   const [commitMessage, setCommitMessage] = useState("");
   const [commitMessageGenerating, setCommitMessageGenerating] = useState(false);
   const [collapsedGitGroups, setCollapsedGitGroups] = useState<Record<GitGroup, boolean>>({
@@ -382,6 +402,7 @@ export default function App() {
           MAX_GIT_WIDTH,
         ),
   );
+  const [diffWidth, setDiffWidth] = useState(DEFAULT_DIFF_WIDTH);
   const [threadSort, setThreadSort] = useState<ThreadSort>(() =>
     desktop ? "recent-message" : validThreadSort(localStorage.getItem("thread-sort")),
   );
@@ -406,6 +427,7 @@ export default function App() {
   const taskInputRef = useRef<HTMLTextAreaElement | null>(null);
   const conversationBottomRef = useRef<HTMLDivElement | null>(null);
   const conversationAreaRef = useRef<HTMLDivElement | null>(null);
+  const diffPanelRef = useRef<HTMLElement | null>(null);
   const threadScrollRef = useRef<HTMLDivElement | null>(null);
   const conversationScrollTopRef = useRef(0);
   const activityScrollRef = useRef<HTMLDivElement | null>(null);
@@ -418,7 +440,12 @@ export default function App() {
   const apiKeyPromptedRef = useRef(false);
   const continuationPendingRef = useRef(false);
   const gitStatusRequestRef = useRef<AbortController | null>(null);
-  const resizeRef = useRef<{ panel: "sidebar" | "activity" | "context" | "git"; startX: number; startWidth: number } | null>(null);
+  const gitDiffRequestRef = useRef<AbortController | null>(null);
+  const resizeRef = useRef<{
+    panel: "sidebar" | "activity" | "context" | "git" | "diff";
+    startX: number;
+    startWidth: number;
+  } | null>(null);
   const availableModels = [
     ...(apiKey.trim() ? GEMINI_MODELS : []),
     ...(sarvamApiKey.trim() ? SARVAM_MODELS : []),
@@ -628,6 +655,14 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const media = window.matchMedia(`(min-width: ${LARGE_DIFF_SIDEBAR_BREAKPOINT}px)`);
+    const update = () => setLargeDiffViewport(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
+  useEffect(() => {
     if (!settingsLoaded || apiKey.trim() || sarvamApiKey.trim() || apiKeyPromptedRef.current) return;
     apiKeyPromptedRef.current = true;
     setApiKeyDraft(apiKey);
@@ -680,6 +715,8 @@ export default function App() {
         setContextPreviewOpen(false);
         setThreadToDelete(null);
         setBranchSwitchError(null);
+        setGitDiff(null);
+        gitDiffRequestRef.current?.abort();
         setError("");
       }
       if (desktop && modifierHeld && ["-", "=", "+", "0"].includes(event.key)) {
@@ -712,7 +749,7 @@ export default function App() {
 
       event.preventDefault();
       if (event.altKey) {
-        if (narrowView) {
+        if (narrowView || gitDiff) {
           setGitPreviewOpen(false);
           setContextPreviewOpen((open) => !open);
         } else {
@@ -720,8 +757,12 @@ export default function App() {
           setContextPreviewOpen(false);
         }
       } else {
-        setSidebarCollapsed((collapsed) => !collapsed);
-        setSidebarPreviewOpen(false);
+        if (gitDiff && !largeDiffViewport) {
+          setSidebarPreviewOpen((open) => !open);
+        } else {
+          setSidebarCollapsed((collapsed) => !collapsed);
+          setSidebarPreviewOpen(false);
+        }
       }
     }
 
@@ -738,15 +779,30 @@ export default function App() {
       window.removeEventListener("keyup", handleKeyUp);
       window.removeEventListener("blur", closeShortcuts);
     };
-  }, [activeThread, lastUsedModel, narrowView, threads, workspacePath]);
+  }, [activeThread, gitDiff, largeDiffViewport, lastUsedModel, narrowView, threads, workspacePath]);
 
   useEffect(() => {
     void refreshThreads(true);
   }, []);
 
+  useLayoutEffect(() => {
+    const panel = diffPanelRef.current;
+    if (!gitDiff || !panel) {
+      setRenderedDiffWidth(0);
+      return;
+    }
+    const updateWidth = () => setRenderedDiffWidth(panel.getBoundingClientRect().width);
+    updateWidth();
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, [gitDiff]);
+
   useEffect(() => {
     setGitFetchError(null);
     setCommitMessage("");
+    gitDiffRequestRef.current?.abort();
+    setGitDiff(null);
   }, [workspacePath]);
 
   useEffect(() => {
@@ -862,6 +918,49 @@ export default function App() {
     }
   }
 
+  async function openGitDiff(file: GitFileState, staged: boolean) {
+    if (!workspacePath.trim()) return;
+    gitDiffRequestRef.current?.abort();
+    const controller = new AbortController();
+    gitDiffRequestRef.current = controller;
+    setGitDiff({ path: file.path, staged, patch: null, binary: false, error: null });
+    if (!narrowView) {
+      setGitOpen(true);
+      setGitPreviewOpen(false);
+    }
+    setSidebarPreviewOpen(false);
+    setContextPreviewOpen(false);
+    try {
+      const response = await fetch("/git/diff", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspace_path: workspacePath, path: file.path, staged }),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const payload = await readJson<{ detail?: string }>(response);
+        throw new Error(payload.detail || "Could not load the file diff.");
+      }
+      const payload = await readJson<{ path: string; staged: boolean; patch: string; binary: boolean }>(response);
+      setGitDiff({ ...payload, error: null });
+    } catch (reason) {
+      if (reason instanceof DOMException && reason.name === "AbortError") return;
+      setGitDiff((current) => current && current.path === file.path && current.staged === staged
+        ? { ...current, patch: "", error: reason instanceof Error ? reason.message : "Could not load the file diff." }
+        : current);
+    } finally {
+      if (gitDiffRequestRef.current === controller) gitDiffRequestRef.current = null;
+    }
+  }
+
+  function closeGitDiff() {
+    gitDiffRequestRef.current?.abort();
+    gitDiffRequestRef.current = null;
+    setGitDiff(null);
+    setSidebarPreviewOpen(false);
+    setContextPreviewOpen(false);
+  }
+
   async function updateGitIndex(action: "stage" | "unstage", paths: string[]) {
     if (!workspacePath.trim() || gitMutation) return;
     gitStatusRequestRef.current?.abort();
@@ -878,6 +977,7 @@ export default function App() {
         throw new Error(payload.detail || `Could not ${action} files.`);
       }
       setGitStatus(await readJson<GitStatusState>(response));
+      if (gitDiff && (!paths.length || paths.includes(gitDiff.path))) closeGitDiff();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : `Could not ${action} files.`);
     } finally {
@@ -916,6 +1016,7 @@ export default function App() {
       setGitFetchError(null);
       setCommitMessage("");
       setBranchPickerOpen(false);
+      closeGitDiff();
     } catch (reason) {
       setBranchSwitchError({
         to: branch,
@@ -943,6 +1044,7 @@ export default function App() {
         throw new Error(payload.detail || "Could not synchronize this branch.");
       }
       setGitStatus(await readJson<GitStatusState>(response));
+      closeGitDiff();
       setGitFetchError(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not synchronize this branch.");
@@ -968,6 +1070,7 @@ export default function App() {
       }
       setGitStatus(await readJson<GitStatusState>(response));
       setCommitMessage("");
+      closeGitDiff();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not create the commit.");
     } finally {
@@ -1021,6 +1124,7 @@ export default function App() {
         throw new Error(payload.detail || "Could not discard changes.");
       }
       setGitStatus(await readJson<GitStatusState>(response));
+      if (gitDiff && (!paths.length || paths.includes(gitDiff.path))) closeGitDiff();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not discard changes.");
     } finally {
@@ -1414,7 +1518,7 @@ export default function App() {
     setContinuationRequest(null);
   }
 
-  function startResize(panel: "sidebar" | "activity" | "context" | "git", event: ReactPointerEvent<HTMLDivElement>) {
+  function startResize(panel: "sidebar" | "activity" | "context" | "git" | "diff", event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     resizeRef.current = {
@@ -1422,7 +1526,9 @@ export default function App() {
       startX: event.clientX,
       startWidth: panel === "sidebar"
         ? sidebarWidth
-        : panel === "activity" ? activityWidth : panel === "context" ? contextWidth : gitWidth,
+        : panel === "activity"
+          ? activityWidth
+          : panel === "context" ? contextWidth : panel === "diff" ? diffWidth : gitWidth,
     };
   }
 
@@ -1446,19 +1552,23 @@ export default function App() {
     );
     (resize.panel === "sidebar"
       ? setSidebarWidth
-      : resize.panel === "activity" ? setActivityWidth : resize.panel === "context" ? setContextWidth : setGitWidth)(
+      : resize.panel === "activity"
+        ? setActivityWidth
+        : resize.panel === "context" ? setContextWidth : resize.panel === "diff" ? setDiffWidth : setGitWidth)(
       Math.min(
         Math.max(
           width,
           resize.panel === "sidebar"
             ? 220
-            : resize.panel === "activity" ? MIN_ACTIVITY_WIDTH : 280,
+            : resize.panel === "activity" ? MIN_ACTIVITY_WIDTH : resize.panel === "diff" ? 420 : 280,
         ),
         resize.panel === "sidebar"
           ? MAX_SIDEBAR_WIDTH
           : resize.panel === "activity"
             ? activityMaximum
-            : resize.panel === "context" ? MAX_CONTEXT_WIDTH : MAX_GIT_WIDTH,
+            : resize.panel === "context"
+              ? MAX_CONTEXT_WIDTH
+              : resize.panel === "diff" ? MAX_DIFF_WIDTH : MAX_GIT_WIDTH,
       ),
     );
   }
@@ -1505,9 +1615,12 @@ export default function App() {
   const viewingOtherThreadDuringRun = Boolean(
     runInProgress && runningThreadId && activeThread?.id !== runningThreadId,
   );
-  const sidebarPinnedOpen = !narrowView && !sidebarCollapsed;
+  const diffOpen = Boolean(gitDiff);
+  const gitDiffCanSplit = renderedDiffWidth >= MIN_SPLIT_DIFF_WIDTH;
+  const diffRestrictsSidebarPinning = diffOpen && !largeDiffViewport;
+  const sidebarPinnedOpen = !diffRestrictsSidebarPinning && !narrowView && !sidebarCollapsed;
   const sidebarOpen = sidebarPinnedOpen || sidebarPreviewOpen;
-  const contextPinnedOpen = !narrowView && contextOpen;
+  const contextPinnedOpen = !diffOpen && !narrowView && contextOpen;
   const contextVisible = contextPinnedOpen || contextPreviewOpen;
   const gitPinnedOpen = !narrowView && gitOpen;
   const gitVisible = gitPinnedOpen || gitPreviewOpen;
@@ -1599,6 +1712,7 @@ export default function App() {
   const layoutColumns = [
     sidebarPinnedOpen ? "var(--sidebar-width)" : null,
     "minmax(0,1fr)",
+    diffOpen ? "minmax(360px,var(--diff-column-width))" : null,
     gitPinnedOpen ? "var(--git-column-width)" : null,
     contextPinnedOpen ? "var(--context-column-width)" : null,
   ].filter(Boolean).join(" ");
@@ -1619,6 +1733,7 @@ export default function App() {
     if (!files.length) return null;
     const ActionIcon = action === "stage" ? Plus : Minus;
     const actionLabel = action === "stage" ? "Stage" : "Unstage";
+    const staged = action === "unstage";
     const collapsed = collapsedGitGroups[group];
     return (
       <section>
@@ -1671,12 +1786,20 @@ export default function App() {
             const { fileName, relativeDirectory } = gitPathParts(file.path);
             return (
             <div className="group relative" key={`${title}-${file.status}-${file.path}`}>
-              <div
-                className={`flex min-w-0 items-center gap-2 px-2.5 py-1.5 transition-[padding] group-hover:bg-accent/50 group-focus-within:bg-accent/50 ${
+              <button
+                aria-label={`${gitDiff?.path === file.path && gitDiff.staged === staged ? "Close" : "Open"} ${staged ? "staged" : "working tree"} diff for ${file.path}`}
+                className={`flex w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left transition-[padding] group-hover:bg-accent/50 group-focus-within:bg-accent/50 ${
+                  gitDiff?.path === file.path && gitDiff.staged === staged ? "bg-accent/70 " : ""
+                }${
                   action === "stage"
                     ? "group-hover:pr-14 group-focus-within:pr-14"
                     : "group-hover:pr-10 group-focus-within:pr-10"
                 }`}
+                type="button"
+                onClick={() => {
+                  if (gitDiff?.path === file.path && gitDiff.staged === staged) closeGitDiff();
+                  else void openGitDiff(file, staged);
+                }}
               >
                 <span className={`w-5 shrink-0 font-mono text-[10px] font-semibold ${gitStatusClass(file.status)}`}>
                   {file.status.trim() || file.status}
@@ -1689,7 +1812,7 @@ export default function App() {
                     <span className="ml-2 text-[10px] text-muted-foreground">{relativeDirectory}</span>
                   ) : null}
                 </div>
-              </div>
+              </button>
               <div className="absolute top-1/2 right-1.5 flex -translate-y-1/2 items-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
                 <Button
                   aria-label={`${actionLabel} ${file.path}`}
@@ -2017,6 +2140,7 @@ export default function App() {
           "--activity-width": `${effectiveActivityWidth}px`,
           "--context-column-width": `${contextWidth}px`,
           "--git-column-width": `${gitWidth}px`,
+          "--diff-column-width": `min(${diffWidth}px, max(420px, calc(100vw - var(--git-column-width) - ${sidebarPinnedOpen ? "var(--sidebar-width)" : "0px"} - 96px)))`,
           "--layout-columns": layoutColumns,
         } as CSSProperties}
         className="relative grid h-dvh w-full overflow-hidden lg:grid-cols-[var(--layout-columns)]"
@@ -2228,8 +2352,11 @@ export default function App() {
                   }}
                   onMouseLeave={() => closePanelPreview("sidebar", setSidebarPreviewOpen)}
                   onClick={() => {
-                    setSidebarCollapsed(false);
-                    if (!narrowView) setSidebarPreviewOpen(false);
+                    if (diffRestrictsSidebarPinning || narrowView) openPanelPreview("sidebar");
+                    else {
+                      setSidebarCollapsed(false);
+                      setSidebarPreviewOpen(false);
+                    }
                   }}
                 >
                   <PanelLeft aria-hidden="true" className="size-4" />
@@ -2612,7 +2739,7 @@ export default function App() {
                   }}
                   onMouseLeave={() => closePanelPreview("context", setContextPreviewOpen)}
                   onClick={() => {
-                    if (narrowView) openPanelPreview("context");
+                    if (diffOpen || narrowView) openPanelPreview("context");
                     else {
                       setContextOpen(true);
                       setContextPreviewOpen(false);
@@ -3125,6 +3252,101 @@ export default function App() {
 
         </section>
 
+        {gitDiff ? (
+          <aside
+            aria-label={`Diff for ${gitDiff.path}`}
+            className="fixed inset-x-0 top-14 bottom-0 z-30 flex min-h-0 flex-col border-l bg-background lg:relative lg:inset-auto lg:z-auto lg:w-[var(--diff-column-width)]"
+            ref={diffPanelRef}
+          >
+            <div
+              aria-label="Resize diff panel"
+              className="group absolute inset-y-0 -left-1 z-30 hidden w-2 cursor-col-resize touch-none lg:block"
+              role="separator"
+              onDoubleClick={() => setDiffWidth(DEFAULT_DIFF_WIDTH)}
+              onPointerCancel={() => (resizeRef.current = null)}
+              onPointerDown={(event) => startResize("diff", event)}
+              onPointerMove={resizePanel}
+              onPointerUp={() => (resizeRef.current = null)}
+            >
+              <span className="absolute inset-y-0 left-1/2 w-px bg-transparent group-hover:bg-border" />
+            </div>
+            <header className={`flex h-14 shrink-0 items-center gap-3 border-b px-3 ${desktop ? "titlebar-drag" : ""}`}>
+              <div className="min-w-0 flex-1">
+                <div className="truncate font-mono text-xs font-medium text-foreground" title={gitDiff.path}>
+                  {gitPathParts(gitDiff.path).fileName}
+                  {gitPathParts(gitDiff.path).relativeDirectory ? (
+                    <span className="ml-2 text-[10px] font-normal text-muted-foreground">
+                      {gitPathParts(gitDiff.path).relativeDirectory}
+                    </span>
+                  ) : null}
+                </div>
+                <p className="mt-0.5 text-[10px] text-muted-foreground">
+                  {gitDiff.staged ? "Staged changes" : "Working tree changes"}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center rounded-lg border bg-card p-0.5">
+                {gitDiffCanSplit ? (
+                  <Button
+                    aria-label={gitDiffSplit ? "Use unified diff" : "Use split diff"}
+                    aria-pressed={gitDiffSplit}
+                    className="size-7 rounded-md text-muted-foreground"
+                    size="icon-sm"
+                    title={gitDiffSplit ? "Use unified view" : "Use split view"}
+                    type="button"
+                    variant={gitDiffSplit ? "secondary" : "ghost"}
+                    onClick={() => setGitDiffSplit((split) => !split)}
+                  >
+                    <Columns2 aria-hidden="true" className="size-3.5" />
+                  </Button>
+                ) : null}
+                <Button
+                  aria-label={gitDiffWrap ? "Disable word wrap" : "Enable word wrap"}
+                  aria-pressed={gitDiffWrap}
+                  className="size-7 rounded-md text-muted-foreground"
+                  size="icon-sm"
+                  title={gitDiffWrap ? "Disable word wrap" : "Enable word wrap"}
+                  type="button"
+                  variant={gitDiffWrap ? "secondary" : "ghost"}
+                  onClick={() => setGitDiffWrap((wrap) => !wrap)}
+                >
+                  <WrapText aria-hidden="true" className="size-3.5" />
+                </Button>
+              </div>
+              <Button
+                aria-label="Close diff"
+                className="size-8 shrink-0 text-muted-foreground"
+                size="icon-sm"
+                title="Close diff"
+                type="button"
+                variant="ghost"
+                onClick={closeGitDiff}
+              >
+                <X aria-hidden="true" className="size-4" />
+              </Button>
+            </header>
+            <div className="min-h-0 flex-1 overflow-auto bg-card">
+              {gitDiff.patch === null ? (
+                <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
+                  <LoaderCircle aria-hidden="true" className="size-4 animate-spin" /> Loading diff...
+                </div>
+              ) : (
+                <Suspense fallback={(
+                  <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
+                    <LoaderCircle aria-hidden="true" className="size-4 animate-spin" /> Preparing diff...
+                  </div>
+                )}>
+                  <GitDiffContents
+                    appearance={appearance}
+                    diff={{ ...gitDiff, patch: gitDiff.patch }}
+                    split={gitDiffSplit && gitDiffCanSplit}
+                    wrap={gitDiffWrap}
+                  />
+                </Suspense>
+              )}
+            </div>
+          </aside>
+        ) : null}
+
         {narrowView && gitPreviewOpen ? (
           <button
             aria-label="Close Git panel"
@@ -3177,7 +3399,10 @@ export default function App() {
                   size="icon-lg"
                   type="button"
                   variant="outline"
-                  onClick={() => setGitOpen(false)}
+                  onClick={() => {
+                    setGitOpen(false);
+                    closeGitDiff();
+                  }}
                 >
                   <GitBranch aria-hidden="true" className="size-4" />
                 </Button>
@@ -3191,8 +3416,11 @@ export default function App() {
                     onMouseEnter={() => openPanelPreview("context")}
                     onMouseLeave={() => closePanelPreview("context", setContextPreviewOpen)}
                     onClick={() => {
-                      setContextOpen(true);
-                      setContextPreviewOpen(false);
+                      if (diffOpen || narrowView) openPanelPreview("context");
+                      else {
+                        setContextOpen(true);
+                        setContextPreviewOpen(false);
+                      }
                     }}
                   >
                     <Layers3 aria-hidden="true" className="size-4" />

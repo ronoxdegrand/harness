@@ -19,6 +19,13 @@ class GitCommit(TypedDict):
     authored_at: str
 
 
+class GitDiff(TypedDict):
+    path: str
+    staged: bool
+    patch: str
+    binary: bool
+
+
 class GitBranchSwitchError(ValueError):
     def __init__(self, message: str, files: list[str], *, can_force: bool) -> None:
         super().__init__(message)
@@ -383,6 +390,56 @@ def read_staged_diff(path: Path, *, max_characters: int = 16_000) -> str:
     if len(content) > max_characters:
         content = f"{content[:max_characters]}\n[staged diff truncated]"
     return content
+
+
+def read_git_file_diff(path: Path, file_path: str, *, staged: bool) -> GitDiff:
+    status = read_git_status(path)
+    if not status["is_repository"]:
+        raise ValueError(status["error"] or "This path is not inside a Git repository.")
+
+    file_path = file_path.strip()
+    available = (
+        {item["path"] for item in status["staged"]}
+        if staged
+        else {
+            item["path"]
+            for item in (*status["modified"], *status["untracked"])
+        }
+    )
+    if not file_path or file_path not in available:
+        raise ValueError("That file is not in the selected Git change group.")
+
+    root = Path(status["root"] or path)
+    arguments = ["diff"]
+    if staged:
+        arguments.append("--cached")
+    elif file_path in {item["path"] for item in status["untracked"]}:
+        arguments.append("--no-index")
+    arguments.extend(("--no-ext-diff", "--no-textconv", "--no-color", "--unified=3", "--"))
+    if not staged and file_path in {item["path"] for item in status["untracked"]}:
+        arguments.extend(("/dev/null", file_path))
+    else:
+        arguments.append(file_path)
+
+    try:
+        result = _run_git(root, *arguments)
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError("Git did not respond in time.") from exc
+    expected_return_codes = {0, 1} if "--no-index" in arguments else {0}
+    if result.returncode not in expected_return_codes:
+        raise ValueError(result.stderr.strip() or "Could not read the file diff.")
+    patch = result.stdout
+    binary = any(
+        line == "GIT binary patch"
+        or (line.startswith("Binary files ") and line.endswith(" differ"))
+        for line in patch.splitlines()
+    )
+    return {
+        "path": file_path,
+        "staged": staged,
+        "patch": patch,
+        "binary": binary,
+    }
 
 
 def read_commit_message_diff(path: Path, *, max_characters: int = 16_000) -> str:
