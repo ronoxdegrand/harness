@@ -12,6 +12,8 @@ interface DesktopSettings {
   activityPlacement: "side" | "inline";
   contextWidth: number;
   contextOpen: boolean;
+  gitWidth: number;
+  gitOpen: boolean;
   threadSort: "recent-message" | "created";
   groupThreadsByPath: boolean;
   scale: number;

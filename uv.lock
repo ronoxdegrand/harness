@@ -10,7 +10,7 @@ members = [
 
 [[package]]
 name = "agent-harness-api"
-version = "0.5.1"
+version = "0.6.0"
 source = { editable = "apps/api" }
 dependencies = [
     { name = "fastapi" },
@@ -41,7 +41,7 @@ dev = [
 
 [[package]]
 name = "ai-agent-harness"
-version = "0.5.1"
+version = "0.6.0"
 source = { virtual = "." }
 
 [[package]]

@@ -31,6 +31,8 @@ test("desktop settings persist with an encrypted API key", () => {
     activityPlacement: "inline",
     contextWidth: 350,
     contextOpen: true,
+    gitWidth: 360,
+    gitOpen: true,
     threadSort: "created",
     groupThreadsByPath: true,
     scale: 0.9,

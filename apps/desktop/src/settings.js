@@ -41,6 +41,8 @@ function writeSettings(file, settings, encryption) {
     activityPlacement: settings.activityPlacement,
     contextWidth: settings.contextWidth,
     contextOpen: settings.contextOpen,
+    gitWidth: settings.gitWidth,
+    gitOpen: settings.gitOpen,
     threadSort: settings.threadSort,
     groupThreadsByPath: settings.groupThreadsByPath,
     scale: settings.scale,

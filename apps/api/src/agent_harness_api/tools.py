@@ -7,10 +7,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from .git_status import (
+    GitBranchSwitchError,
+    commit_git_changes,
+    discard_git_changes,
+    read_git_status,
+    sync_git_branch,
+    switch_git_branch,
+    update_git_index,
+)
 
 ToolHandler = Callable[[dict[str, Any], Path], "ToolResult"]
 
 _SCHEMA_TYPE_MAP: dict[str, type[Any]] = {
+    "array": list,
     "boolean": bool,
     "integer": int,
     "string": str,
@@ -221,6 +231,85 @@ def build_default_tool_registry() -> ToolRegistry:
                 handler=_git_diff,
                 replay_policy="safe",
             ),
+            ToolDefinition(
+                name="git_refresh",
+                description=(
+                    "Fetch the configured Git remote, then return branch, push/pull, and file status. "
+                    "Local status is still returned if the remote fetch fails."
+                ),
+                input_schema=_object_schema({"path": {"type": "string"}}),
+                handler=_git_refresh,
+            ),
+            ToolDefinition(
+                name="git_switch",
+                description=(
+                    "Switch to an existing local Git branch. Set force only when the user explicitly "
+                    "accepts discarding conflicting tracked changes and blocking untracked files."
+                ),
+                input_schema=_object_schema(
+                    {
+                        "branch": {"type": "string"},
+                        "force": {"type": "boolean"},
+                        "path": {"type": "string"},
+                    },
+                    required=["branch"],
+                ),
+                handler=_git_switch,
+            ),
+            ToolDefinition(
+                name="git_sync",
+                description=(
+                    "Synchronize the current branch with its upstream by pulling remote commits, "
+                    "then pushing local commits. Stops without pushing if the pull fails."
+                ),
+                input_schema=_object_schema({"path": {"type": "string"}}),
+                handler=_git_sync,
+            ),
+            ToolDefinition(
+                name="git_commit",
+                description="Commit all staged changes with a one-line commit message.",
+                input_schema=_object_schema(
+                    {"message": {"type": "string"}, "path": {"type": "string"}},
+                    required=["message"],
+                ),
+                handler=_git_commit,
+            ),
+            ToolDefinition(
+                name="git_stage",
+                description="Stage selected paths, or all changes when paths is omitted.",
+                input_schema=_object_schema(
+                    {
+                        "paths": {"type": "array", "items": {"type": "string"}},
+                        "path": {"type": "string"},
+                    },
+                ),
+                handler=_git_stage,
+            ),
+            ToolDefinition(
+                name="git_unstage",
+                description="Unstage selected paths, or all staged changes when paths is omitted.",
+                input_schema=_object_schema(
+                    {
+                        "paths": {"type": "array", "items": {"type": "string"}},
+                        "path": {"type": "string"},
+                    },
+                ),
+                handler=_git_unstage,
+            ),
+            ToolDefinition(
+                name="git_discard",
+                description=(
+                    "Discard working-tree changes for selected paths, or all changes when paths is omitted. "
+                    "This restores tracked files and permanently removes matching untracked files."
+                ),
+                input_schema=_object_schema(
+                    {
+                        "paths": {"type": "array", "items": {"type": "string"}},
+                        "path": {"type": "string"},
+                    },
+                ),
+                handler=_git_discard,
+            ),
         ]
     )
 
@@ -253,6 +342,11 @@ def _validate_arguments(schema: dict[str, Any], arguments: dict[str, Any]) -> No
             raise ValueError(
                 f"Argument '{key}' must be of type {expected_type}, got {type(value).__name__}."
             )
+        item_type = properties.get(key, {}).get("items", {}).get("type")
+        item_python_type = _SCHEMA_TYPE_MAP.get(item_type)
+        if expected_type == "array" and item_python_type is not None:
+            if any(not isinstance(item, item_python_type) for item in value):
+                raise ValueError(f"Every item in argument '{key}' must be of type {item_type}.")
 
 
 def _resolve_path(root: Path, relative_path: str = ".") -> Path:
@@ -389,6 +483,82 @@ def _shell(arguments: dict[str, Any], root: Path) -> ToolResult:
         error=None
         if completed.returncode == 0
         else f"Command exited with {completed.returncode}",
+    )
+
+
+def _git_target(arguments: dict[str, Any], root: Path) -> Path:
+    target = arguments.get("path", ".")
+    if not target.strip():
+        target = "."
+    return _resolve_path(root, target)
+
+
+def _git_state_result(status: dict[str, Any]) -> ToolResult:
+    return ToolResult(
+        success=status.get("error") is None,
+        output=json.dumps(status, indent=2),
+        metadata={
+            "is_repository": status.get("is_repository", False),
+            "branch": status.get("branch"),
+            "fetch_error": status.get("fetch_error"),
+        },
+        error=status.get("error"),
+    )
+
+
+def _git_refresh(arguments: dict[str, Any], root: Path) -> ToolResult:
+    return _git_state_result(read_git_status(_git_target(arguments, root), fetch_remote=True))
+
+
+def _git_switch(arguments: dict[str, Any], root: Path) -> ToolResult:
+    try:
+        status = switch_git_branch(
+            _git_target(arguments, root),
+            arguments["branch"],
+            force=bool(arguments.get("force", False)),
+        )
+    except GitBranchSwitchError as exc:
+        return ToolResult(
+            success=False,
+            output=json.dumps(
+                {"message": str(exc), "files": exc.files, "can_force": exc.can_force},
+                indent=2,
+            ),
+            metadata={"files": exc.files, "can_force": exc.can_force},
+            error=str(exc),
+        )
+    return _git_state_result(status)
+
+
+def _git_sync(arguments: dict[str, Any], root: Path) -> ToolResult:
+    return _git_state_result(sync_git_branch(_git_target(arguments, root)))
+
+
+def _git_commit(arguments: dict[str, Any], root: Path) -> ToolResult:
+    return _git_state_result(
+        commit_git_changes(_git_target(arguments, root), arguments["message"])
+    )
+
+
+def _git_paths(arguments: dict[str, Any]) -> list[str]:
+    return list(arguments.get("paths", []))
+
+
+def _git_stage(arguments: dict[str, Any], root: Path) -> ToolResult:
+    return _git_state_result(
+        update_git_index(_git_target(arguments, root), _git_paths(arguments), stage=True)
+    )
+
+
+def _git_unstage(arguments: dict[str, Any], root: Path) -> ToolResult:
+    return _git_state_result(
+        update_git_index(_git_target(arguments, root), _git_paths(arguments), stage=False)
+    )
+
+
+def _git_discard(arguments: dict[str, Any], root: Path) -> ToolResult:
+    return _git_state_result(
+        discard_git_changes(_git_target(arguments, root), _git_paths(arguments))
     )
 
 
