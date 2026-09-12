@@ -7,12 +7,23 @@ const { autoUpdater } = require("electron-updater");
 
 const { startBackend, stopBackend } = require("./backend");
 const { getDatabasePath, readSettings, writeSettings } = require("./settings");
+const { createUpdateController } = require("./updates");
 
 let backend;
 let mainWindow;
 let workspaceRoot;
 let quitting = false;
 let updateVersion;
+const updates = createUpdateController(autoUpdater, {
+  enabled: app.isPackaged,
+  onChange(state) {
+    if (state.status === "ready") {
+      updateVersion = state.version;
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("desktop:update-ready", state.version);
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("desktop:update-state", state);
+  },
+});
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 2;
 
@@ -225,12 +236,7 @@ async function start() {
   }
 
   if (app.isPackaged) {
-    autoUpdater.autoDownload = true;
-    autoUpdater.on("update-downloaded", (info) => {
-      updateVersion = info.version;
-      mainWindow?.webContents.send("desktop:update-ready", info.version);
-    });
-    autoUpdater.checkForUpdates().catch((error) => console.error("Update check failed:", error));
+    void updates.check();
   }
 }
 
@@ -284,6 +290,8 @@ ipcMain.handle("desktop:restart-to-update", async () => {
 });
 
 ipcMain.handle("desktop:get-update", () => updateVersion);
+ipcMain.handle("desktop:get-update-state", () => updates.getState());
+ipcMain.handle("desktop:check-for-updates", () => updates.check());
 ipcMain.handle("desktop:get-version", () => app.getVersion());
 ipcMain.handle("desktop:get-settings", () => readSettings(settingsPath, safeStorage));
 ipcMain.handle("desktop:set-settings", (_event, settings) => {

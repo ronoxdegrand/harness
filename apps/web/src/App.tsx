@@ -323,6 +323,15 @@ export default function App() {
   const [appearanceDraft, setAppearanceDraft] = useState<Appearance>(appearance);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [updateVersion, setUpdateVersion] = useState<string>();
+  const [updateState, setUpdateState] = useState<DesktopUpdateState>({ status: "idle" });
+  const [updateCooldown, setUpdateCooldown] = useState(0);
+  useEffect(() => {
+    const refresh = () => setUpdateCooldown(Math.max(0, Math.ceil(((updateState.retryAfter ?? 0) - Date.now()) / 1000)));
+    refresh();
+    if (!updateState.retryAfter || updateState.retryAfter <= Date.now()) return;
+    const timer = window.setInterval(refresh, 1000);
+    return () => window.clearInterval(timer);
+  }, [updateState.retryAfter]);
   const [appVersion, setAppVersion] = useState(webPackage.version);
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [activeThread, setActiveThread] = useState<ThreadSummary | null>(null);
@@ -505,7 +514,10 @@ export default function App() {
     if (!desktop) return;
     void desktop.getVersion().then(setAppVersion);
     void desktop.getUpdateReady().then(setUpdateVersion);
-    return desktop.onUpdateReady(setUpdateVersion);
+    const stopReady = desktop.onUpdateReady(setUpdateVersion);
+    const stopState = desktop.onUpdateState(setUpdateState);
+    void desktop.getUpdateState().then(setUpdateState);
+    return () => { stopReady(); stopState(); };
   }, []);
 
   useEffect(() => {
@@ -2495,9 +2507,39 @@ export default function App() {
                         <div className="flex shrink-0 items-center justify-between gap-3 border-b bg-muted/30 px-5 py-4">
                           <DialogPrimitive.Title className="text-base font-semibold">Settings</DialogPrimitive.Title>
                           <DialogPrimitive.Description className="sr-only">Configure Harness settings.</DialogPrimitive.Description>
+                          <div className="flex flex-col items-end gap-1.5">
+                            <div className="flex items-center gap-2">
                           <span className="rounded-full border border-brand-border bg-brand-muted px-2 py-0.5 text-xs font-semibold text-brand">
                             v{appVersion}
                           </span>
+                              {desktop ? (
+                                <Button type="button" size="sm" variant={updateState.status === "ready" ? "affirmative" : "outline"}
+                                  title={updateState.status === "ready" ? `Restart and install v${updateState.version}` : updateState.status === "unavailable" ? "Updates are available in installed releases only." : undefined}
+                                  disabled={["checking", "downloading", "unavailable"].includes(updateState.status) || (updateState.status !== "ready" && updateCooldown > 0)}
+                                  onClick={() => {
+                                    if (updateState.status === "ready") {
+                                      void desktop.restartToUpdate().catch((reason) => setUpdateState({ status: "error", message: String(reason) }));
+                                    } else {
+                                      setUpdateState((state) => ({ ...state, status: "checking" }));
+                                      void desktop.checkForUpdates().then(setUpdateState).catch((reason) => setUpdateState({ status: "error", message: String(reason) }));
+                                    }
+                                  }}>
+                                  {["checking", "downloading"].includes(updateState.status) ? <LoaderCircle aria-hidden="true" className="size-4 animate-spin" /> : <RefreshCw aria-hidden="true" className="size-4" />}
+                                  {["ready", "downloading"].includes(updateState.status) ? "Update" : updateState.status === "checking" ? "Checking…" : updateState.status === "downloading" ? "Downloading…" : "Check for updates"}
+                                </Button>
+                          ) : null}
+                            </div>
+                            {desktop && updateCooldown > 0 && !["ready", "checking", "downloading", "unavailable"].includes(updateState.status) ? (
+                              <p className="text-xs text-muted-foreground" role="status">Check again in {Math.floor(updateCooldown / 60)}m {updateCooldown % 60}s.</p>
+                            ) : null}
+                            {desktop && ["up-to-date", "downloading", "error"].includes(updateState.status) ? (
+                              <p className="max-w-64 text-right text-xs text-muted-foreground" role="status">
+                                {updateState.status === "up-to-date" ? "You're up to date."
+                                  : updateState.status === "downloading" ? `Downloading v${updateState.version}...`
+                                  : `Update failed: ${updateState.message}`}
+                              </p>
+                            ) : null}
+                          </div>
                         </div>
                         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
                           <section className="rounded-xl border bg-muted/20 p-4">
