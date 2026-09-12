@@ -34,7 +34,7 @@ class AgentRuntime:
         tool_executor: ToolExecutor,
         store: RunStore,
         event_emitter: EventEmitter | None = None,
-        max_iterations: int = 12,
+        max_iterations: int = 50,
         timeout_seconds: int = 120,
         continuation_decider: Callable[[int], bool] | None = None,
         stop_requested: Callable[[], bool] | None = None,

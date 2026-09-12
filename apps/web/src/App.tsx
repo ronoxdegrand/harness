@@ -295,7 +295,7 @@ export default function App() {
     desktop ? "" : sessionStorage.getItem("sarvam-api-key") || "",
   );
   const [maxIterations, setMaxIterations] = useState(() =>
-    desktop ? 8 : Math.min(Math.max(Number(localStorage.getItem("max-iterations")) || 8, 1), 50),
+    desktop ? 50 : Math.min(Math.max(Number(localStorage.getItem("max-iterations")) || 50, 1), 50),
   );
   const [sendOnEnter, setSendOnEnter] = useState(
     () => Boolean(desktop) || localStorage.getItem("send-on-enter") !== "false",
@@ -530,7 +530,7 @@ export default function App() {
         );
         setMaxIterations(
           settings.maxIterations ??
-            Math.min(Math.max(Number(localStorage.getItem("max-iterations")) || 8, 1), 50),
+            Math.min(Math.max(Number(localStorage.getItem("max-iterations")) || 50, 1), 50),
         );
         setSendOnEnter(settings.sendOnEnter ?? localStorage.getItem("send-on-enter") !== "false");
         setMidRunEnterAction(validMidRunEnterAction(
@@ -2501,7 +2501,6 @@ export default function App() {
                           setAppearance(appearanceDraft);
                           void desktop?.setScale(uiScaleDraft);
                           void desktop?.setAppearance(appearanceDraft);
-                          setSettingsOpen(false);
                         }}
                       >
                         <div className="flex shrink-0 items-center justify-between gap-3 border-b bg-muted/30 px-5 py-4">
@@ -2573,16 +2572,16 @@ export default function App() {
                           </section>
 
                           <section className="rounded-xl border bg-muted/20 p-4">
-                            <div className="mb-3">
+                            <div className="flex items-center justify-between gap-4">
+                            <div>
                               <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Runs</h3>
-                              <p className="mt-1 text-xs text-muted-foreground">Choose when Harness pauses to ask whether it should continue.</p>
+                              <p className="mt-1 text-xs text-muted-foreground" id="iteration-warning-description">Choose when Harness pauses to ask whether it should continue.</p>
                             </div>
-                            <label className="flex items-center justify-between gap-4 text-xs font-medium">
-                              <span>Iteration warning</span>
                               <Input
-                                aria-describedby={maxIterationsError ? "iteration-warning-error" : undefined}
+                                aria-label="Iteration warning"
+                                aria-describedby={`iteration-warning-description${maxIterationsError ? " iteration-warning-error" : ""}`}
                                 aria-invalid={Boolean(maxIterationsError)}
-                                className="w-20"
+                                className="w-20 shrink-0"
                                 max={50}
                                 min={1}
                                 required
@@ -2593,7 +2592,7 @@ export default function App() {
                                   setMaxIterationsError("");
                                 }}
                               />
-                            </label>
+                            </div>
                             {maxIterationsError ? (
                               <p className="mt-1.5 text-right text-xs text-destructive" id="iteration-warning-error">
                                 {maxIterationsError}
@@ -2609,14 +2608,14 @@ export default function App() {
                             <div className={`grid gap-4 ${desktop ? "sm:grid-cols-[minmax(0,1fr)_11rem]" : ""}`}>
                               <div className="space-y-2 text-xs font-medium">
                                 <span>Theme</span>
-                                <div className="grid grid-cols-3 gap-2">
+                                <div className="grid grid-cols-3 gap-0.5 rounded-lg border bg-card p-1" role="group" aria-label="Theme">
                                   {(["light", "dark", "system"] as const).map((option) => (
                                     <Button
                                       aria-pressed={appearanceDraft === option}
                                       className="capitalize"
                                       key={option}
                                       type="button"
-                                      variant={appearanceDraft === option ? "default" : "outline"}
+                                      variant={appearanceDraft === option ? "default" : "ghost"}
                                       onClick={() => setAppearanceDraft(option)}
                                     >
                                       {option}
@@ -2627,19 +2626,19 @@ export default function App() {
                               {desktop ? (
                                 <div className="space-y-2 text-xs font-medium">
                                   <span>Interface scale</span>
-                                  <div className="grid grid-cols-[36px_minmax(0,1fr)_36px] gap-1.5">
+                                  <div className="grid grid-cols-[36px_minmax(0,1fr)_36px] gap-0.5 rounded-lg border bg-card p-1" role="group" aria-label="Interface scale">
                                 <Button
                                   aria-label="Zoom out"
                                       className="size-9"
                                   disabled={uiScaleDraft <= 0.5}
                                       size="icon-sm"
                                   type="button"
-                                  variant="outline"
+                                  variant="ghost"
                                   onClick={() => setUiScaleDraft((scale) => Math.max(scale - 0.1, 0.5))}
                                 >
                                   <Minus aria-hidden="true" className="size-4" />
                                 </Button>
-                                    <div className="flex h-9 items-center justify-center rounded-md border bg-card font-mono text-xs">
+                                    <div className="flex h-9 items-center justify-center font-mono text-xs">
                                   {Math.round(uiScaleDraft * 100)}%
                                 </div>
                                 <Button
@@ -2648,7 +2647,7 @@ export default function App() {
                                   disabled={uiScaleDraft >= 2}
                                       size="icon-sm"
                                   type="button"
-                                  variant="outline"
+                                  variant="ghost"
                                   onClick={() => setUiScaleDraft((scale) => Math.min(scale + 0.1, 2))}
                                 >
                                   <Plus aria-hidden="true" className="size-4" />
@@ -2667,12 +2666,12 @@ export default function App() {
                             <div className="grid gap-4 sm:grid-cols-2">
                               <div className="space-y-2 text-xs font-medium">
                                 <span>Send message</span>
-                                <div className="grid grid-cols-2 gap-2" role="group" aria-label="Message input shortcut">
+                                <div className="grid grid-cols-2 gap-0.5 rounded-lg border bg-card p-1" role="group" aria-label="Message input shortcut">
                               <Button
                                 aria-pressed={sendOnEnterDraft}
                                       className="h-auto flex-col gap-1 px-2 py-2.5"
                                 type="button"
-                                variant={sendOnEnterDraft ? "default" : "outline"}
+                                variant={sendOnEnterDraft ? "default" : "ghost"}
                                 onClick={() => setSendOnEnterDraft(true)}
                               >
                                       <span className="flex items-center gap-1">
@@ -2687,7 +2686,7 @@ export default function App() {
                                 aria-pressed={!sendOnEnterDraft}
                                       className="h-auto flex-col gap-1 px-2 py-2.5"
                                 type="button"
-                                variant={sendOnEnterDraft ? "outline" : "default"}
+                                variant={sendOnEnterDraft ? "ghost" : "default"}
                                 onClick={() => setSendOnEnterDraft(false)}
                               >
                                       <span className="flex items-center gap-1">
@@ -2699,18 +2698,17 @@ export default function App() {
                                       <span>New line</span>
                               </Button>
                                 </div>
-                                <p className="font-normal leading-5 text-muted-foreground">The other shortcut inserts a new line.</p>
                             </div>
                               <div className="space-y-2 text-xs font-medium">
                                 <span>Enter during a run</span>
-                                <div className="grid grid-cols-2 gap-2" role="group" aria-label="Mid-run Enter action">
+                                <div className="grid grid-cols-2 gap-0.5 rounded-lg border bg-card p-1" role="group" aria-label="Mid-run Enter action">
                               {(["queue", "steer"] as const).map((action) => (
                                 <Button
                                   aria-pressed={midRunEnterActionDraft === action}
                                   className="h-auto flex-col gap-1 px-2 py-2.5 capitalize"
                                   key={action}
                                   type="button"
-                                  variant={midRunEnterActionDraft === action ? "default" : "outline"}
+                                  variant={midRunEnterActionDraft === action ? "default" : "ghost"}
                                   onClick={() => setMidRunEnterActionDraft(action)}
                                 >
                                   <span className="flex items-center gap-1">
