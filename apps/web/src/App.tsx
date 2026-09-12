@@ -2,7 +2,7 @@ import { type CSSProperties, FormEvent, Fragment, lazy, type PointerEvent as Rea
 import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { Select as SelectPrimitive } from "@base-ui/react/select";
-import { AlertTriangle, ArrowDownUp, Check, ChevronDown, ChevronUp, Columns2, Copy, FolderGit2, GitBranch, Layers3, LoaderCircle, Minus, Minimize2, PanelLeft, PanelRight, Pencil, Plus, RefreshCw, Rows2, Send, Settings2, Sparkles, Square, Trash2, Undo2, WrapText, X } from "lucide-react";
+import { AlertTriangle, ArrowDownUp, Check, ChevronDown, ChevronUp, Columns2, Copy, CornerUpRight, FolderGit2, GitBranch, Layers3, ListPlus, LoaderCircle, Minus, Minimize2, PanelLeft, PanelRight, Pencil, Plus, RefreshCw, Rows2, Send, Settings2, Sparkles, Square, Trash2, Undo2, WrapText, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -372,6 +372,7 @@ export default function App() {
   const [renderedDiffWidth, setRenderedDiffWidth] = useState(0);
   const [commitMessage, setCommitMessage] = useState("");
   const [commitMessageGenerating, setCommitMessageGenerating] = useState(false);
+  const [undoCommitWarning, setUndoCommitWarning] = useState<GitCommitState | null>(null);
   const [collapsedGitGroups, setCollapsedGitGroups] = useState<Record<GitGroup, boolean>>({
     staged: false,
     changes: false,
@@ -434,6 +435,7 @@ export default function App() {
   const syntheticTurnIdRef = useRef(-1);
   const activeThreadIdRef = useRef<string | null>(null);
   const taskInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const commitGenerationRef = useRef<AbortController | null>(null);
   const conversationBottomRef = useRef<HTMLDivElement | null>(null);
   const conversationAreaRef = useRef<HTMLDivElement | null>(null);
   const diffPanelRef = useRef<HTMLElement | null>(null);
@@ -1090,14 +1092,51 @@ export default function App() {
     }
   }
 
+  async function undoLastCommit(commit: GitCommitState, allowStaged = false) {
+    if (!workspacePath.trim() || gitMutation || runInProgress) return;
+    if (gitStatus?.staged.length && !allowStaged) {
+      setUndoCommitWarning(commit);
+      return;
+    }
+    gitStatusRequestRef.current?.abort();
+    setGitMutation("undo-commit");
+    try {
+      const response = await fetch("/git/undo-commit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspace_path: workspacePath, expected_head: commit.hash, allow_staged: allowStaged }),
+      });
+      if (response.status === 409) {
+        setUndoCommitWarning(commit);
+        return;
+      }
+      if (!response.ok) {
+        const payload = await readJson<{ detail?: string }>(response);
+        throw new Error(payload.detail || "Could not undo the commit.");
+      }
+      setGitStatus(await readJson<GitStatusState>(response));
+      setCommitMessage(commit.subject);
+      setUndoCommitWarning(null);
+      closeGitDiff();
+    } catch (reason) {
+      setUndoCommitWarning(null);
+      setError(reason instanceof Error ? reason.message : "Could not undo the commit.");
+    } finally {
+      setGitMutation(null);
+    }
+  }
+
   async function generateCommitMessage() {
     const hasChanges = Boolean(
       gitStatus?.staged.length || gitStatus?.modified.length || gitStatus?.untracked.length,
     );
-    if (!workspacePath.trim() || !modelName || !hasChanges || commitMessageGenerating || gitMutation) return;
+    if (!workspacePath.trim() || !modelName || !hasChanges || commitGenerationRef.current || gitMutation) return;
+    const controller = new AbortController();
+    commitGenerationRef.current = controller;
     setCommitMessageGenerating(true);
     try {
       const response = await fetch("/git/commit-message", {
+        signal: controller.signal,
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1113,11 +1152,14 @@ export default function App() {
         throw new Error(payload.detail || "Could not generate a commit message.");
       }
       const payload = await readJson<{ message: string }>(response);
-      setCommitMessage(payload.message);
+      if (!controller.signal.aborted) setCommitMessage(payload.message);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not generate a commit message.");
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Could not generate a commit message.");
     } finally {
-      setCommitMessageGenerating(false);
+      if (commitGenerationRef.current === controller) {
+        commitGenerationRef.current = null;
+        setCommitMessageGenerating(false);
+      }
     }
   }
 
@@ -1884,6 +1926,18 @@ export default function App() {
               {commits.length}{gitStatus?.local_commits_truncated ? "+" : ""}
             </span>
           </button>
+          <Button
+            aria-label="Undo last unsynced commit"
+            className="ml-auto size-6"
+            disabled={Boolean(gitMutation) || runInProgress}
+            size="icon-sm"
+            title="Undo last unsynced commit and keep its changes staged"
+            type="button"
+            variant="ghost"
+            onClick={() => void undoLastCommit(commits[0])}
+          >
+            {gitMutation === "undo-commit" ? <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" /> : <Undo2 aria-hidden="true" className="size-3.5" />}
+          </Button>
         </div>
         {!collapsed ? (
           <div className="overflow-hidden rounded-lg border bg-card">
@@ -3009,7 +3063,7 @@ export default function App() {
           </div>
 
           <form className="relative z-30 col-start-1 row-start-3 border-t bg-background px-4 py-3 sm:px-5" onSubmit={startRun}>
-            <Card className={`mx-auto w-full max-w-3xl rounded-2xl p-2 shadow-sm transition-shadow focus-within:shadow-md ${
+            <Card className={`@container/composer mx-auto w-full max-w-3xl rounded-2xl p-2 shadow-sm transition-shadow focus-within:shadow-md ${
               status === "connecting" || status === "running" ? "composer-running" : ""
             }`}>
               <Textarea
@@ -3046,6 +3100,7 @@ export default function App() {
                 <div className={`mr-auto flex min-w-0 items-stretch overflow-hidden rounded-lg border bg-card text-xs text-muted-foreground ${
                   repositoryRequired ? "border-warning-border ring-2 ring-warning-border" : "border-border"
                 }`}>
+                  <div className={`flex min-w-0 ${workspacePath.trim() && !repositoryRequired ? "@max-[640px]/composer:hidden" : ""}`}>
                   {activeThread ? (
                     <span
                       className="flex h-8 min-w-0 max-w-52 items-center gap-2 px-2 font-mono"
@@ -3091,6 +3146,7 @@ export default function App() {
                       />
                     </label>
                   )}
+                  </div>
                   {workspacePath.trim() && gitTracked && gitStatus.branches.length ? (
                     <SelectPrimitive.Root
                       open={branchPickerOpen}
@@ -3100,7 +3156,7 @@ export default function App() {
                     >
                       <SelectPrimitive.Trigger
                         aria-label={`Switch branch, currently ${gitBranchLabel}`}
-                        className="flex h-8 max-w-40 cursor-pointer items-center gap-1.5 border-l px-2 font-mono text-[10px] font-semibold outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50"
+                        className="flex h-8 max-w-40 cursor-pointer items-center gap-1.5 border-l px-2 font-mono text-[10px] font-semibold outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50 @max-[640px]/composer:max-w-28 @max-[640px]/composer:border-l-0"
                         disabled={Boolean(gitMutation) || runInProgress}
                         title={`Branch: ${gitBranchLabel}`}
                       >
@@ -3165,14 +3221,16 @@ export default function App() {
                     onValueChange={(value) => value && setModelName(value as string)}
                   >
                     <SelectPrimitive.Trigger
-                      className={`flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-lg px-2.5 text-xs outline-none focus-visible:ring-3 focus-visible:ring-ring/50 ${
+                      aria-label={`Model: ${modelName}`}
+                      title={modelName}
+                      className={`flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-lg px-2.5 text-xs outline-none focus-visible:ring-3 focus-visible:ring-ring/50 @max-[640px]/composer:w-32 ${
                         modelRequired
                           ? "bg-warning-muted text-warning ring-2 ring-warning-border"
                           : "bg-transparent"
                       }`}
                     >
-                      <SelectPrimitive.Value />
-                      <SelectPrimitive.Icon render={<ChevronUp className="size-4 text-muted-foreground" />} />
+                      <SelectPrimitive.Value className="min-w-0 truncate" />
+                      <SelectPrimitive.Icon render={<ChevronUp className="size-4 shrink-0 text-muted-foreground" />} />
                     </SelectPrimitive.Trigger>
                     <SelectPrimitive.Portal>
                       <SelectPrimitive.Positioner alignItemWithTrigger sideOffset={4} className="z-50">
@@ -3224,7 +3282,7 @@ export default function App() {
                     </SelectPrimitive.Root>
                   ) : (
                     <Button
-                      className={`h-8 w-48 justify-between px-2.5 text-xs font-normal ${
+                      className={`h-8 w-48 justify-between px-2.5 text-xs font-normal @max-[640px]/composer:w-32 ${
                         modelRequired
                           ? "bg-warning-muted text-warning ring-2 ring-warning-border hover:bg-warning-muted/80"
                           : "text-muted-foreground"
@@ -3238,16 +3296,16 @@ export default function App() {
                     </Button>
                   )}
                 </label>
-                {status === "connecting" || status === "running" ? (
-                  <span className="text-xs font-medium text-muted-foreground">
-                    {stopping ? "Stopping" : "Working"}
-                    {queuedTasks.length ? ` · ${queuedTasks.length} queued` : ""}
+                {(status === "connecting" || status === "running") && queuedTasks.length > 0 ? (
+                  <span className="text-xs font-medium text-muted-foreground" role="status">
+                    {queuedTasks.length} queued
                   </span>
                 ) : null}
                 {status === "connecting" || status === "running" ? (
                   <>
                     <Button
-                      aria-label="Stop run"
+                      aria-label={stopping ? "Stopping run" : "Stop run"}
+                      title={stopping ? "Stopping run" : "Stop run"}
                       className="size-8"
                       disabled={stopping}
                       size="icon-sm"
@@ -3255,13 +3313,14 @@ export default function App() {
                       variant="destructive"
                       onClick={stopRun}
                     >
-                      <Square aria-hidden="true" className="size-3.5 fill-current" />
+                      {stopping ? <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" /> : <Square aria-hidden="true" className="size-3.5 fill-current" />}
                     </Button>
                     {task.trim() ? ([alternateRunEnterAction, activeRunEnterAction] as const).map((action) => {
                       const primary = action === activeRunEnterAction;
                       return (
                         <Button
-                          className="h-8 px-3 text-xs font-semibold capitalize"
+                          aria-label={action === "queue" ? "Queue message" : "Steer run"}
+                          className="h-8 px-3 text-xs font-semibold capitalize @max-[640px]/composer:w-8 @max-[640px]/composer:px-0"
                           disabled={stopping || viewingOtherThreadDuringRun || (action === "steer" && status !== "running")}
                           key={action}
                           size="sm"
@@ -3270,20 +3329,23 @@ export default function App() {
                           variant={primary ? "affirmative" : "outline"}
                           onClick={action === "queue" ? queueTask : steerRun}
                         >
-                          {action}
+                          {action === "queue" ? <ListPlus aria-hidden="true" className="size-3.5" /> : <CornerUpRight aria-hidden="true" className="size-3.5" />}
+                          <span className="@max-[640px]/composer:hidden">{action}</span>
                         </Button>
                       );
                     }) : null}
                   </>
                 ) : (
                   <Button
-                    className="h-8 px-3 text-xs font-semibold"
+                    aria-label="Send message"
+                    title="Send message"
+                    className="size-8 text-xs font-semibold"
                     disabled={!task.trim() || !modelName || (!activeThread && !workspacePath.trim())}
-                    size="sm"
+                    size="icon-sm"
                     type="submit"
                     variant="affirmative"
                   >
-                    <Send aria-hidden="true" className="size-3.5" /> Send
+                    <Send aria-hidden="true" className="size-3.5" />
                   </Button>
                 )}
               </div>
@@ -3497,16 +3559,18 @@ export default function App() {
               ) : gitStatus ? (
                 <>
                   <form
-                    className="flex min-w-0 items-center gap-2"
+                    className="flex min-w-0 items-start gap-2"
                     onSubmit={(event) => {
                       event.preventDefault();
                       void createGitCommit();
                     }}
                   >
-                    <label className="min-w-0 flex-1">
+                    <div className="relative min-w-0 flex-1">
+                    <label>
                       <span className="sr-only">Commit message</span>
-                      <Input
-                        className="h-8 bg-card px-2.5 text-xs"
+                      <Textarea
+                        className={`min-h-8 max-h-32 resize-none overflow-y-auto bg-card py-1.5 pl-2.5 text-xs leading-[18px] [field-sizing:content] ${modelName ? "pr-9" : "pr-2.5"}`}
+                        rows={1}
                         maxLength={200}
                         placeholder="Commit message"
                         value={commitMessage}
@@ -3515,22 +3579,32 @@ export default function App() {
                     </label>
                     {modelName ? (
                       <Button
-                        aria-label="Generate commit message with AI"
-                        className="size-8 text-muted-foreground"
-                        disabled={!gitHasChanges || commitMessageGenerating || Boolean(gitMutation)}
+                        aria-label={commitMessageGenerating ? "Cancel commit message generation" : "Generate commit message with AI"}
+                        className="group/commit-ai absolute top-1 right-1 size-6 rounded-md text-muted-foreground hover:bg-muted/60"
+                        disabled={!commitMessageGenerating && (!gitHasChanges || Boolean(gitMutation))}
                         size="icon-sm"
-                        title={gitHasStagedChanges ? "Generate from staged changes" : "Generate from working-tree changes"}
+                        title={commitMessageGenerating ? "Cancel generation" : gitHasStagedChanges ? "Generate from staged changes" : "Generate from working-tree changes"}
                         type="button"
-                        variant="outline"
-                        onClick={() => void generateCommitMessage()}
+                        variant="ghost"
+                        onClick={() => {
+                          if (commitGenerationRef.current) {
+                            commitGenerationRef.current.abort();
+                            commitGenerationRef.current = null;
+                            setCommitMessageGenerating(false);
+                          } else void generateCommitMessage();
+                        }}
                       >
                         {commitMessageGenerating ? (
-                          <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" />
+                          <>
+                            <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin group-hover/commit-ai:hidden group-focus-visible/commit-ai:hidden" />
+                            <X aria-hidden="true" className="hidden size-3.5 group-hover/commit-ai:block group-focus-visible/commit-ai:block" />
+                          </>
                         ) : (
                           <Sparkles aria-hidden="true" className="size-3.5" />
                         )}
                       </Button>
                     ) : null}
+                    </div>
                     <Button
                       className="h-8 px-2.5 text-xs"
                       disabled={!gitHasStagedChanges || !commitMessage.trim() || Boolean(gitMutation)}
@@ -3853,6 +3927,23 @@ export default function App() {
           </Card>
         </div>
       ) : null}
+      <AlertDialogPrimitive.Root open={Boolean(undoCommitWarning)} onOpenChange={(open) => { if (!open && !gitMutation) setUndoCommitWarning(null); }}>
+        <AlertDialogPrimitive.Portal>
+          <AlertDialogPrimitive.Backdrop className="fixed inset-0 z-50 bg-black/30" />
+          <AlertDialogPrimitive.Viewport className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <AlertDialogPrimitive.Popup className="w-full max-w-md rounded-xl border bg-card p-5 text-card-foreground shadow-xl outline-none">
+              <AlertDialogPrimitive.Title className="text-base font-semibold">Undo last unsynced commit?</AlertDialogPrimitive.Title>
+              <AlertDialogPrimitive.Description className="mt-2 text-sm leading-6 text-muted-foreground">
+                You already have staged changes. Continuing removes the last commit and keeps its changes staged alongside your current staged changes. Your working files stay unchanged.
+              </AlertDialogPrimitive.Description>
+              <div className="mt-5 flex justify-end gap-2">
+                <Button type="button" variant="ghost" disabled={Boolean(gitMutation)} onClick={() => setUndoCommitWarning(null)}>Cancel</Button>
+                <Button type="button" disabled={Boolean(gitMutation)} onClick={() => { if (undoCommitWarning) void undoLastCommit(undoCommitWarning, true); }}>Continue anyway</Button>
+              </div>
+            </AlertDialogPrimitive.Popup>
+          </AlertDialogPrimitive.Viewport>
+        </AlertDialogPrimitive.Portal>
+      </AlertDialogPrimitive.Root>
       <AlertDialogPrimitive.Root
         open={Boolean(threadToDelete || branchSwitchError || error)}
         onOpenChange={(open) => {

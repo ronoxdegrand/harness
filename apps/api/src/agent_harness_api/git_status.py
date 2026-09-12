@@ -485,6 +485,35 @@ def read_commit_message_diff(path: Path, *, max_characters: int = 16_000) -> str
     return content
 
 
+class GitStagedChangesWarning(ValueError):
+    pass
+
+
+def undo_last_git_commit(path: Path, expected_head: str, *, allow_staged: bool = False) -> GitStatus:
+    status = read_git_status(path)
+    if not status["is_repository"] or not status["branch"]:
+        raise ValueError("Select a Git branch before undoing a commit.")
+    head = _read_commit(path, "HEAD")
+    if not head or head["hash"] != expected_head:
+        raise ValueError("The latest commit changed. Refresh Git status and try again.")
+    if not any(commit["hash"] == expected_head for commit in status["local_commits"]):
+        raise ValueError("The latest commit is already shared or synced.")
+    remote_refs = _run_git(path, "for-each-ref", "--contains=HEAD", "--format=%(refname)", "refs/remotes")
+    if remote_refs.returncode != 0 or remote_refs.stdout.strip():
+        raise ValueError("The latest commit is already synced or its sync status could not be verified.")
+    parent = _run_git(path, "rev-parse", "--verify", "HEAD^1")
+    if status["staged"] and not allow_staged:
+        raise GitStagedChangesWarning("There are already staged changes. Continuing will keep them staged alongside the undone commit's changes.")
+    if parent.returncode == 0:
+        result = _run_git(path, "reset", "--soft", parent.stdout.strip())
+    else:
+        # An unsynced root commit has no parent; leave the branch unborn and retain the index.
+        result = _run_git(path, "update-ref", "-d", "HEAD", expected_head)
+    if result.returncode != 0:
+        raise ValueError(result.stderr.strip() or "Could not undo the latest commit.")
+    return read_git_status(path)
+
+
 def commit_git_changes(path: Path, message: str) -> GitStatus:
     status = read_git_status(path)
     if not status["is_repository"]:
