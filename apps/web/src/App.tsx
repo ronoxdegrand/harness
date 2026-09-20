@@ -2469,23 +2469,55 @@ export default function App() {
                   </Button>
                 </form>
               ) : (
-                <div className="flex min-w-0 items-center gap-2">
-                  <h2 className="min-w-0 truncate text-left text-sm font-semibold">
-                    {activeThread?.title || newThreadTitle || "New chat"}
-                  </h2>
-                  <Button
-                    aria-label="Rename thread"
-                    className="size-7 shrink-0 text-muted-foreground"
-                    size="icon-sm"
-                    type="button"
-                    variant="ghost"
-                    onClick={() => {
-                      setTitleDraft(activeThread?.title || newThreadTitle || "New chat");
-                      setEditingTitle(true);
-                    }}
-                  >
-                    <Pencil aria-hidden="true" className="size-3.5" />
-                  </Button>
+                <div className="min-w-0">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <h2 className="min-w-0 truncate text-left text-sm font-semibold">
+                      {activeThread?.title || newThreadTitle || "New chat"}
+                    </h2>
+                    <Button
+                      aria-label="Rename thread"
+                      className="size-6 shrink-0 text-muted-foreground"
+                      size="icon-sm"
+                      type="button"
+                      variant="ghost"
+                      onClick={() => {
+                        setTitleDraft(activeThread?.title || newThreadTitle || "New chat");
+                        setEditingTitle(true);
+                      }}
+                    >
+                      <Pencil aria-hidden="true" className="size-3.5" />
+                    </Button>
+                  </div>
+                  <div className={`mt-0.5 flex min-w-0 w-fit max-w-full items-center gap-0.5 overflow-hidden rounded px-1 font-mono text-[10px] text-muted-foreground ${
+                    repositoryRequired ? "bg-warning-muted text-warning ring-2 ring-warning-border" : ""
+                  }`}>
+                    <FolderGit2 aria-hidden="true" className="mr-1 size-3 shrink-0" />
+                    {activeThread ? (
+                      <span className="min-w-0 truncate" title={workspacePath}>{workspacePath}</span>
+                    ) : desktop ? (
+                      <button
+                        className={`min-w-0 truncate rounded px-0.5 text-left hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${repositoryRequired ? "text-warning" : ""}`}
+                        title={workspacePath || "Select a repository"}
+                        type="button"
+                        onClick={async () => {
+                          const selected = await desktop.selectRepository(workspacePath);
+                          if (selected) setWorkspacePath(selected);
+                        }}
+                      >
+                        {workspacePath || "Select a repository"}
+                      </button>
+                    ) : (
+                      <label className="min-w-0 flex-1">
+                        <span className="sr-only">Workspace path</span>
+                        <input
+                          className={`w-full bg-transparent outline-none ${repositoryRequired ? "text-warning" : ""}`}
+                          placeholder="Workspace path"
+                          value={workspacePath}
+                          onChange={(event) => setWorkspacePath(event.target.value)}
+                        />
+                      </label>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -3097,56 +3129,8 @@ export default function App() {
                 }}
               />
               <div className="flex flex-wrap items-center gap-2 px-1 pt-1">
-                <div className={`mr-auto flex min-w-0 items-stretch overflow-hidden rounded-lg border bg-card text-xs text-muted-foreground ${
-                  repositoryRequired ? "border-warning-border ring-2 ring-warning-border" : "border-border"
-                }`}>
-                  <div className={`flex min-w-0 ${workspacePath.trim() && !repositoryRequired ? "@max-[640px]/composer:hidden" : ""}`}>
-                  {activeThread ? (
-                    <span
-                      className="flex h-8 min-w-0 max-w-52 items-center gap-2 px-2 font-mono"
-                      title={activeThread.workspace_path}
-                    >
-                      <FolderGit2 aria-hidden="true" className="size-4 shrink-0" />
-                      <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-left [direction:rtl]">
-                        {activeThread.workspace_path}
-                      </span>
-                    </span>
-                  ) : desktop ? (
-                    <Button
-                      className={`h-8 max-w-52 justify-start gap-2 rounded-none px-2 font-mono text-xs font-normal ${
-                        repositoryRequired
-                          ? "bg-warning-muted text-warning hover:bg-warning-muted/80"
-                          : "text-muted-foreground"
-                      }`}
-                      title={workspacePath || "Select repository"}
-                      type="button"
-                      variant="ghost"
-                      onClick={async () => {
-                        const selected = await desktop.selectRepository(workspacePath);
-                        if (selected) setWorkspacePath(selected);
-                      }}
-                    >
-                      <FolderGit2 aria-hidden="true" className="size-4 shrink-0" />
-                      <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-left [direction:rtl]">
-                        {workspacePath || "Select repository"}
-                      </span>
-                    </Button>
-                  ) : (
-                    <label>
-                      <span className="sr-only">Workspace path</span>
-                      <Input
-                        className={`h-8 w-36 rounded-none border-0 bg-transparent px-2 font-mono text-xs shadow-none sm:w-52 ${
-                          repositoryRequired
-                            ? "bg-warning-muted text-warning"
-                            : "focus-visible:ring-0"
-                        }`}
-                        value={workspacePath}
-                        onChange={(event) => setWorkspacePath(event.target.value)}
-                        placeholder="Workspace path"
-                      />
-                    </label>
-                  )}
-                  </div>
+                {workspacePath.trim() ? (
+                <div className="mr-auto flex min-w-0 items-stretch overflow-hidden rounded-lg border bg-card text-xs text-muted-foreground">
                   {workspacePath.trim() && gitTracked && gitStatus.branches.length ? (
                     <SelectPrimitive.Root
                       open={branchPickerOpen}
@@ -3211,6 +3195,7 @@ export default function App() {
                     </Button>
                   ) : null}
                 </div>
+                ) : <span className="mr-auto" />}
                 <label className="text-xs text-muted-foreground">
                   <span className="sr-only">Model</span>
                   {availableModels.length ? (
