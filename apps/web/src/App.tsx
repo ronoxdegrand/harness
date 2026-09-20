@@ -370,8 +370,12 @@ export default function App() {
   const [gitFetchError, setGitFetchError] = useState<string | null>(null);
   const [gitMutation, setGitMutation] = useState<string | null>(null);
   const [gitDiff, setGitDiff] = useState<GitDiffState | null>(null);
-  const [gitDiffWrap, setGitDiffWrap] = useState(false);
-  const [gitDiffSplit, setGitDiffSplit] = useState(false);
+  const [gitDiffWrap, setGitDiffWrap] = useState(() =>
+    !desktop && localStorage.getItem("git-diff-wrap") === "true",
+  );
+  const [gitDiffSplit, setGitDiffSplit] = useState(() =>
+    !desktop && localStorage.getItem("git-diff-split") === "true",
+  );
   const [renderedDiffWidth, setRenderedDiffWidth] = useState(0);
   const [commitMessage, setCommitMessage] = useState("");
   const [commitMessageGenerating, setCommitMessageGenerating] = useState(false);
@@ -575,6 +579,8 @@ export default function App() {
             ),
         );
         setGitOpen(settings.gitOpen ?? localStorage.getItem("git-open") === "true");
+        setGitDiffWrap(settings.gitDiffWrap ?? localStorage.getItem("git-diff-wrap") === "true");
+        setGitDiffSplit(settings.gitDiffSplit ?? localStorage.getItem("git-diff-split") === "true");
         setThreadSort(validThreadSort(settings.threadSort));
         setGroupThreadsByPath(settings.groupThreadsByPath ?? false);
         setSettingsLoaded(true);
@@ -601,6 +607,8 @@ export default function App() {
           contextOpen,
           gitWidth,
           gitOpen,
+          gitDiffWrap,
+          gitDiffSplit,
           threadSort,
           groupThreadsByPath,
           scale: uiScale,
@@ -620,6 +628,8 @@ export default function App() {
           localStorage.removeItem("context-open");
           localStorage.removeItem("git-width");
           localStorage.removeItem("git-open");
+          localStorage.removeItem("git-diff-wrap");
+          localStorage.removeItem("git-diff-split");
           localStorage.removeItem("thread-sort");
           localStorage.removeItem("group-threads-by-path");
         })
@@ -639,10 +649,12 @@ export default function App() {
     localStorage.setItem("context-open", String(contextOpen));
     localStorage.setItem("git-width", String(gitWidth));
     localStorage.setItem("git-open", String(gitOpen));
+    localStorage.setItem("git-diff-wrap", String(gitDiffWrap));
+    localStorage.setItem("git-diff-split", String(gitDiffSplit));
     localStorage.setItem("thread-sort", threadSort);
     localStorage.setItem("group-threads-by-path", String(groupThreadsByPath));
     localStorage.setItem("appearance", appearance);
-  }, [activityWidth, apiKey, appearance, contextOpen, contextWidth, desktop, gitOpen, gitWidth, groupThreadsByPath, maxIterations, midRunEnterAction, sarvamApiKey, sendOnEnter, settingsLoaded, sidebarCollapsed, sidebarWidth, threadSort, uiScale]);
+  }, [activityWidth, apiKey, appearance, contextOpen, contextWidth, desktop, gitDiffSplit, gitDiffWrap, gitOpen, gitWidth, groupThreadsByPath, maxIterations, midRunEnterAction, sarvamApiKey, sendOnEnter, settingsLoaded, sidebarCollapsed, sidebarWidth, threadSort, uiScale]);
 
   useEffect(() => {
     const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
@@ -3521,9 +3533,20 @@ export default function App() {
                 <>
 
                   {renderGitFileGroup("changes", "Changes", [...gitStatus.modified, ...gitStatus.untracked], "stage")}
+                  {!gitHasChanges ? (
+                    <section>
+                      <div className="mb-1 flex h-5 items-center gap-1.5 px-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                        <span>Changes</span>
+                        <span className="font-normal tabular-nums">0</span>
+                      </div>
+                      <div className="rounded-lg border bg-card px-3 py-2.5 text-xs text-muted-foreground">
+                        Working tree clean.
+                      </div>
+                    </section>
+                  ) : null}
                   {(gitStatus.modified.length || gitStatus.untracked.length) && gitStatus.staged.length ? <GitFlowSeparator /> : null}
                   {renderGitFileGroup("staged", "Staged changes", gitStatus.staged, "unstage")}
-                  {gitHasChanges ? <GitFlowSeparator /> : null}
+                  <GitFlowSeparator />
                   <form
                     className="flex min-w-0 items-stretch overflow-hidden rounded-lg border bg-card focus-within:ring-2 focus-within:ring-ring/40"
                     onSubmit={(event) => {
@@ -3582,11 +3605,6 @@ export default function App() {
                     </Button>
                   </form>
                   <GitFlowSeparator />
-                  {!gitStatus.staged.length && !gitStatus.modified.length && !gitStatus.untracked.length ? (
-                    <p className="px-2 py-2 text-center text-sm leading-6 text-muted-foreground">
-                      Working tree clean.
-                    </p>
-                  ) : null}
                   <div className="space-y-3">
                   {renderGitCommits()}
                   {gitStatus.local_commits.length ? <GitFlowSeparator /> : null}
