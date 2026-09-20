@@ -35,6 +35,7 @@ test("desktop settings persist with an encrypted API key", () => {
     gitOpen: true,
     gitDiffWrap: true,
     gitDiffSplit: true,
+    gitDiffShowUnchanged: true,
     threadSort: "created",
     groupThreadsByPath: true,
     scale: 0.9,

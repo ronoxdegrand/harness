@@ -2,7 +2,7 @@ import { type CSSProperties, FormEvent, Fragment, lazy, type PointerEvent as Rea
 import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { Select as SelectPrimitive } from "@base-ui/react/select";
-import { AlertTriangle, ArrowDown, ArrowDownUp, Check, ChevronDown, ChevronUp, Columns2, Copy, CornerUpRight, FolderGit2, GitBranch, ListPlus, LoaderCircle, Minus, PanelLeft, Pencil, Plus, RefreshCw, Send, Settings2, Sparkles, Square, Trash2, Undo2, WrapText, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowDownUp, Check, ChevronDown, ChevronUp, Columns2, Copy, CornerUpRight, FolderGit2, GitBranch, ListPlus, LoaderCircle, Minus, PanelLeft, Pencil, Plus, RefreshCw, Send, Settings2, Sparkles, Square, Trash2, Undo2, UnfoldVertical, WrapText, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -377,6 +377,9 @@ export default function App() {
   const [gitDiffSplit, setGitDiffSplit] = useState(() =>
     !desktop && localStorage.getItem("git-diff-split") === "true",
   );
+  const [gitDiffShowUnchanged, setGitDiffShowUnchanged] = useState(() =>
+    !desktop && localStorage.getItem("git-diff-show-unchanged") === "true",
+  );
   const [renderedDiffWidth, setRenderedDiffWidth] = useState(0);
   const [composerHeight, setComposerHeight] = useState(0);
   const [commitMessage, setCommitMessage] = useState("");
@@ -595,6 +598,9 @@ export default function App() {
         setGitOpen(settings.gitOpen ?? localStorage.getItem("git-open") === "true");
         setGitDiffWrap(settings.gitDiffWrap ?? localStorage.getItem("git-diff-wrap") === "true");
         setGitDiffSplit(settings.gitDiffSplit ?? localStorage.getItem("git-diff-split") === "true");
+        setGitDiffShowUnchanged(
+          settings.gitDiffShowUnchanged ?? localStorage.getItem("git-diff-show-unchanged") === "true",
+        );
         setThreadSort(validThreadSort(settings.threadSort));
         setGroupThreadsByPath(settings.groupThreadsByPath ?? false);
         setSettingsLoaded(true);
@@ -623,6 +629,7 @@ export default function App() {
           gitOpen,
           gitDiffWrap,
           gitDiffSplit,
+          gitDiffShowUnchanged,
           threadSort,
           groupThreadsByPath,
           scale: uiScale,
@@ -644,6 +651,7 @@ export default function App() {
           localStorage.removeItem("git-open");
           localStorage.removeItem("git-diff-wrap");
           localStorage.removeItem("git-diff-split");
+          localStorage.removeItem("git-diff-show-unchanged");
           localStorage.removeItem("thread-sort");
           localStorage.removeItem("group-threads-by-path");
         })
@@ -665,10 +673,11 @@ export default function App() {
     localStorage.setItem("git-open", String(gitOpen));
     localStorage.setItem("git-diff-wrap", String(gitDiffWrap));
     localStorage.setItem("git-diff-split", String(gitDiffSplit));
+    localStorage.setItem("git-diff-show-unchanged", String(gitDiffShowUnchanged));
     localStorage.setItem("thread-sort", threadSort);
     localStorage.setItem("group-threads-by-path", String(groupThreadsByPath));
     localStorage.setItem("appearance", appearance);
-  }, [activityWidth, apiKey, appearance, contextOpen, contextWidth, desktop, gitDiffSplit, gitDiffWrap, gitOpen, gitWidth, groupThreadsByPath, maxIterations, midRunEnterAction, sarvamApiKey, sendOnEnter, settingsLoaded, sidebarCollapsed, sidebarWidth, threadSort, uiScale]);
+  }, [activityWidth, apiKey, appearance, contextOpen, contextWidth, desktop, gitDiffShowUnchanged, gitDiffSplit, gitDiffWrap, gitOpen, gitWidth, groupThreadsByPath, maxIterations, midRunEnterAction, sarvamApiKey, sendOnEnter, settingsLoaded, sidebarCollapsed, sidebarWidth, threadSort, uiScale]);
 
   useEffect(() => {
     const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
@@ -953,7 +962,11 @@ export default function App() {
     }
   }
 
-  async function openGitDiff(file: GitFileState, staged: boolean) {
+  async function openGitDiff(
+    file: GitFileState,
+    staged: boolean,
+    showUnchanged = gitDiffShowUnchanged,
+  ) {
     if (!workspacePath.trim()) return;
     gitDiffRequestRef.current?.abort();
     const controller = new AbortController();
@@ -969,7 +982,12 @@ export default function App() {
       const response = await fetch("/git/diff", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspace_path: workspacePath, path: file.path, staged }),
+        body: JSON.stringify({
+          workspace_path: workspacePath,
+          path: file.path,
+          staged,
+          full_context: showUnchanged,
+        }),
         signal: controller.signal,
       });
       if (!response.ok) {
@@ -3456,6 +3474,26 @@ export default function App() {
                   </Button>
                 ) : null}
                 <Button
+                  aria-label={gitDiffShowUnchanged ? "Hide unchanged regions" : "Show unchanged regions"}
+                  aria-pressed={gitDiffShowUnchanged}
+                  className="size-7 rounded-md text-muted-foreground"
+                  size="icon-sm"
+                  title={gitDiffShowUnchanged ? "Hide unchanged regions" : "Show unchanged regions"}
+                  type="button"
+                  variant={gitDiffShowUnchanged ? "secondary" : "ghost"}
+                  onClick={() => {
+                    const showUnchanged = !gitDiffShowUnchanged;
+                    setGitDiffShowUnchanged(showUnchanged);
+                    void openGitDiff(
+                      { path: gitDiff.path, status: "" },
+                      gitDiff.staged,
+                      showUnchanged,
+                    );
+                  }}
+                >
+                  <UnfoldVertical aria-hidden="true" className="size-3.5" />
+                </Button>
+                <Button
                   aria-label={gitDiffWrap ? "Disable word wrap" : "Enable word wrap"}
                   aria-pressed={gitDiffWrap}
                   className="size-7 rounded-md text-muted-foreground"
@@ -3735,7 +3773,7 @@ export default function App() {
           </aside>
         ) : null}
 
-        {narrowView && contextPreviewOpen ? (
+        {contextPreviewOpen && !contextPinnedOpen ? (
           <button
             aria-label="Close context panel"
             className="fixed inset-0 z-[35] cursor-default bg-black/10"

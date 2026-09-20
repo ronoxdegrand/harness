@@ -59,6 +59,7 @@ class GitUndoCommitRequest(GitStatusRequest):
 class GitDiffRequest(GitStatusRequest):
     path: str
     staged: bool = False
+    full_context: bool = False
 
 
 class GitSwitchRequest(GitStatusRequest):
@@ -217,7 +218,12 @@ async def git_diff(request: GitDiffRequest) -> GitDiff:
         )
         if not workspace_path.is_dir():
             raise ValueError("Workspace path does not exist or is not a directory.")
-        return read_git_file_diff(workspace_path, request.path, staged=request.staged)
+        return read_git_file_diff(
+            workspace_path,
+            request.path,
+            staged=request.staged,
+            full_context=request.full_context,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -392,7 +392,13 @@ def read_staged_diff(path: Path, *, max_characters: int = 16_000) -> str:
     return content
 
 
-def read_git_file_diff(path: Path, file_path: str, *, staged: bool) -> GitDiff:
+def read_git_file_diff(
+    path: Path,
+    file_path: str,
+    *,
+    staged: bool,
+    full_context: bool = False,
+) -> GitDiff:
     status = read_git_status(path)
     if not status["is_repository"]:
         raise ValueError(status["error"] or "This path is not inside a Git repository.")
@@ -415,7 +421,8 @@ def read_git_file_diff(path: Path, file_path: str, *, staged: bool) -> GitDiff:
         arguments.append("--cached")
     elif file_path in {item["path"] for item in status["untracked"]}:
         arguments.append("--no-index")
-    arguments.extend(("--no-ext-diff", "--no-textconv", "--no-color", "--unified=3", "--"))
+    context_lines = 999_999 if full_context else 3
+    arguments.extend(("--no-ext-diff", "--no-textconv", "--no-color", f"--unified={context_lines}", "--"))
     if not staged and file_path in {item["path"] for item in status["untracked"]}:
         arguments.extend(("/dev/null", file_path))
     else:

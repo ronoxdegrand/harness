@@ -75,6 +75,24 @@ def test_git_file_diff_reads_staged_worktree_and_untracked_versions(tmp_path: Pa
     assert staged["binary"] is False
 
 
+def test_git_file_diff_can_include_all_unchanged_lines(tmp_path: Path) -> None:
+    _git(tmp_path, "init")
+    _git(tmp_path, "config", "user.name", "Test")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    source = tmp_path / "source.txt"
+    source.write_text("".join(f"line {index}\n" for index in range(20)))
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "initial")
+    source.write_text("".join("changed\n" if index == 10 else f"line {index}\n" for index in range(20)))
+
+    collapsed = read_git_file_diff(tmp_path, "source.txt", staged=False)
+    expanded = read_git_file_diff(tmp_path, "source.txt", staged=False, full_context=True)
+
+    assert " line 0" not in collapsed["patch"]
+    assert " line 0" in expanded["patch"]
+    assert " line 19" in expanded["patch"]
+
+
 def test_git_file_diff_rejects_files_outside_the_requested_change_group(tmp_path: Path) -> None:
     _git(tmp_path, "init")
     (tmp_path / "new.txt").write_text("new\n")

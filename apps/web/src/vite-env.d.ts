@@ -16,6 +16,7 @@ interface DesktopSettings {
   gitOpen: boolean;
   gitDiffWrap: boolean;
   gitDiffSplit: boolean;
+  gitDiffShowUnchanged: boolean;
   threadSort: "recent-message" | "created";
   groupThreadsByPath: boolean;
   scale: number;
