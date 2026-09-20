@@ -2,7 +2,7 @@ import { type CSSProperties, FormEvent, Fragment, lazy, type PointerEvent as Rea
 import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { Select as SelectPrimitive } from "@base-ui/react/select";
-import { AlertTriangle, ArrowDown, ArrowDownUp, Check, ChevronDown, ChevronUp, Columns2, Copy, CornerUpRight, FolderGit2, GitBranch, Layers3, ListPlus, LoaderCircle, Minus, PanelLeft, Pencil, Plus, RefreshCw, Send, Settings2, Sparkles, Square, Trash2, Undo2, WrapText, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowDownUp, Check, ChevronDown, ChevronUp, Columns2, Copy, CornerUpRight, FolderGit2, GitBranch, ListPlus, LoaderCircle, Minus, PanelLeft, Pencil, Plus, RefreshCw, Send, Settings2, Sparkles, Square, Trash2, Undo2, WrapText, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -363,6 +363,7 @@ export default function App() {
     window.matchMedia(`(min-width: ${LARGE_DIFF_SIDEBAR_BREAKPOINT}px)`).matches,
   );
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
+  const [contextClosing, setContextClosing] = useState(false);
   const [gitPreviewOpen, setGitPreviewOpen] = useState(false);
   const [gitClosing, setGitClosing] = useState(false);
   const [gitStatus, setGitStatus] = useState<GitStatusState | null>(null);
@@ -377,6 +378,7 @@ export default function App() {
     !desktop && localStorage.getItem("git-diff-split") === "true",
   );
   const [renderedDiffWidth, setRenderedDiffWidth] = useState(0);
+  const [composerHeight, setComposerHeight] = useState(0);
   const [commitMessage, setCommitMessage] = useState("");
   const [commitMessageGenerating, setCommitMessageGenerating] = useState(false);
   const [undoCommitWarning, setUndoCommitWarning] = useState<GitCommitState | null>(null);
@@ -442,6 +444,7 @@ export default function App() {
   const syntheticTurnIdRef = useRef(-1);
   const activeThreadIdRef = useRef<string | null>(null);
   const taskInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const composerRef = useRef<HTMLFormElement | null>(null);
   const commitGenerationRef = useRef<AbortController | null>(null);
   const conversationBottomRef = useRef<HTMLDivElement | null>(null);
   const conversationAreaRef = useRef<HTMLDivElement | null>(null);
@@ -459,6 +462,7 @@ export default function App() {
   const continuationPendingRef = useRef(false);
   const gitStatusRequestRef = useRef<AbortController | null>(null);
   const gitCloseTimerRef = useRef<number | null>(null);
+  const contextCloseTimerRef = useRef<number | null>(null);
   const gitDiffRequestRef = useRef<AbortController | null>(null);
   const resizeRef = useRef<{
     panel: "sidebar" | "activity" | "context" | "git" | "diff";
@@ -500,6 +504,16 @@ export default function App() {
     input.style.height = "auto";
     input.style.height = `${input.scrollHeight}px`;
   }, [task]);
+
+  useEffect(() => {
+    const composer = composerRef.current;
+    if (!composer) return;
+    const updateHeight = () => setComposerHeight(composer.getBoundingClientRect().height);
+    updateHeight();
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(composer);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     if (!settingsOpen) taskInputRef.current?.focus();
@@ -776,13 +790,7 @@ export default function App() {
 
       event.preventDefault();
       if (event.altKey) {
-        if (narrowView || gitDiff) {
-          setGitPreviewOpen(false);
-          setContextPreviewOpen((open) => !open);
-        } else {
-          setContextOpen((open) => !open);
-          setContextPreviewOpen(false);
-        }
+        toggleContextPanel();
       } else {
         if (gitDiff && !largeDiffViewport) {
           setSidebarPreviewOpen((open) => !open);
@@ -1697,6 +1705,39 @@ export default function App() {
     }
   }
 
+  function toggleContextPanel() {
+    if (contextClosing) {
+      if (contextCloseTimerRef.current !== null) window.clearTimeout(contextCloseTimerRef.current);
+      contextCloseTimerRef.current = null;
+      setContextClosing(false);
+      return;
+    }
+    if (contextPinnedOpen) {
+      setContextPreviewOpen(false);
+      setContextClosing(true);
+      contextCloseTimerRef.current = window.setTimeout(() => {
+        contextCloseTimerRef.current = null;
+        setContextOpen(false);
+        setContextClosing(false);
+      }, 180);
+    } else if ((narrowView || diffOpen) && contextPreviewOpen) {
+      setContextClosing(true);
+      contextCloseTimerRef.current = window.setTimeout(() => {
+        contextCloseTimerRef.current = null;
+        setContextPreviewOpen(false);
+        setContextClosing(false);
+      }, 180);
+    } else if (narrowView || diffOpen) {
+      openPanelPreview("context");
+    } else {
+      if (contextCloseTimerRef.current !== null) window.clearTimeout(contextCloseTimerRef.current);
+      contextCloseTimerRef.current = null;
+      setContextClosing(false);
+      setContextOpen(true);
+      setContextPreviewOpen(false);
+    }
+  }
+
   function openSettings() {
     setApiKeyDraft(apiKey);
     setSarvamApiKeyDraft(sarvamApiKey);
@@ -1807,7 +1848,7 @@ export default function App() {
     "minmax(0,1fr)",
     diffOpen ? "minmax(360px,var(--diff-column-width))" : "0px",
     gitPinnedOpen && !gitClosing ? "var(--git-column-width)" : "0px",
-    contextPinnedOpen ? "var(--context-column-width)" : "0px",
+    contextPinnedOpen && !contextClosing ? "var(--context-column-width)" : "0px",
   ].join(" ");
 
   function gitStatusClass(status: string) {
@@ -2401,7 +2442,8 @@ export default function App() {
 
         <section className="relative grid h-dvh min-h-0 min-w-0 grid-cols-1 grid-rows-[56px_minmax(0,1fr)_auto] bg-background lg:col-start-2">
           <header
-            className={`fixed inset-x-0 top-0 z-50 col-start-1 row-start-1 flex h-14 shrink-0 items-center border-b bg-background px-4 sm:px-5 lg:relative lg:inset-auto ${desktop ? "titlebar-drag" : ""}`}
+            className={`fixed top-0 right-0 z-50 flex h-14 shrink-0 items-center border-b bg-background px-4 sm:px-5 ${desktop ? "titlebar-drag" : ""}`}
+            style={{ left: sidebarPinnedOpen && !narrowView ? "var(--sidebar-width)" : 0 }}
           >
             {!sidebarPinnedOpen ? (
               <div
@@ -2443,7 +2485,7 @@ export default function App() {
             <div className={`min-w-0 w-full text-left lg:mx-auto lg:max-w-3xl ${!sidebarPinnedOpen ? editingTitle ? "max-lg:pl-16" : "max-lg:pl-24" : ""} ${
               editingTitle
                 ? "max-lg:pr-3"
-                : !contextPinnedOpen && !gitPinnedOpen ? "pr-24" : "pr-12"
+                : "pr-12"
             }`}>
               {editingTitle ? (
                 <form className="flex min-w-0 items-center gap-2" onSubmit={renameActiveThread}>
@@ -2521,8 +2563,8 @@ export default function App() {
               )}
             </div>
             <div
-              className={`absolute z-50 flex items-center gap-1 ${editingTitle ? "max-lg:hidden" : ""} ${desktopWindowControls && !contextPinnedOpen && !gitPinnedOpen ? "" : "right-3"}`}
-              style={desktopWindowControls && !contextPinnedOpen && !gitPinnedOpen ? { right: `${144 / uiScale}px` } : undefined}
+              className={`absolute z-50 flex items-center gap-1 ${editingTitle ? "max-lg:hidden" : ""} ${desktopWindowControls ? "" : "right-3"}`}
+              style={desktopWindowControls ? { right: `${144 / uiScale}px` } : undefined}
             >
               {updateVersion ? (
                 <Button
@@ -2828,28 +2870,6 @@ export default function App() {
                   </DialogPrimitive.Viewport>
                 </DialogPrimitive.Portal>
               </DialogPrimitive.Root>
-              {!contextPinnedOpen && !gitPinnedOpen ? (
-                <Button
-                  aria-label="Open context"
-                  className="size-10 bg-card"
-                  size="icon-lg"
-                  type="button"
-                  variant="outline"
-                  onMouseEnter={() => {
-                    openPanelPreview("context");
-                  }}
-                  onMouseLeave={() => closePanelPreview("context", setContextPreviewOpen)}
-                  onClick={() => {
-                    if (diffOpen || narrowView) openPanelPreview("context");
-                    else {
-                      setContextOpen(true);
-                      setContextPreviewOpen(false);
-                    }
-                  }}
-                >
-                  <Layers3 aria-hidden="true" className="size-4" />
-                </Button>
-              ) : null}
             </div>
           </header>
 
@@ -3074,7 +3094,7 @@ export default function App() {
             </div>
           </div>
 
-          <form className="relative z-30 col-start-1 row-start-3 border-t bg-background px-4 py-3 sm:px-5" onSubmit={startRun}>
+          <form ref={composerRef} className="relative z-30 col-start-1 row-start-3 border-t bg-background px-4 py-3 sm:px-5" onSubmit={startRun}>
             <Card className={`@container/composer mx-auto w-full max-w-3xl rounded-2xl p-2 shadow-sm transition-shadow focus-within:shadow-md ${
               status === "connecting" || status === "running" ? "composer-running" : ""
             }`}>
@@ -3140,6 +3160,24 @@ export default function App() {
                     </Button>
                 </div>
                 ) : <span className="mr-auto" />}
+                <Button
+                  aria-label={`${contextVisible ? "Close" : "Open"} context, ${Math.round(contextUsage)}% of budget used`}
+                  aria-pressed={contextVisible}
+                  className="size-8 shrink-0 text-muted-foreground"
+                  size="icon-sm"
+                  title={`Context: ${Math.round(contextUsage)}% used`}
+                  type="button"
+                  variant={contextVisible ? "secondary" : "ghost"}
+                  onClick={toggleContextPanel}
+                >
+                  <span
+                    aria-hidden="true"
+                    className="flex size-6 items-center justify-center rounded-full p-0.5"
+                    style={{ background: `conic-gradient(var(--foreground) ${contextUsage}%, var(--border) 0)` }}
+                  >
+                    <span className="size-full rounded-full bg-background" />
+                  </span>
+                </Button>
                 <label className="text-xs text-muted-foreground">
                   <span className="sr-only">Model</span>
                   {availableModels.length ? (
@@ -3286,8 +3324,9 @@ export default function App() {
         {gitDiff ? (
           <aside
             aria-label={`Diff for ${gitDiff.path}`}
-            className="fixed inset-x-0 top-14 bottom-0 z-30 flex min-h-0 flex-col border-l bg-background lg:relative lg:inset-auto lg:col-start-3 lg:z-auto lg:w-[var(--diff-column-width)]"
+            className="fixed inset-x-0 top-14 bottom-0 z-30 flex min-h-0 flex-col border-l bg-background lg:relative lg:inset-auto lg:col-start-3 lg:z-auto lg:w-[var(--diff-column-width)] lg:pt-14"
             ref={diffPanelRef}
+            style={narrowView ? { bottom: composerHeight } : undefined}
           >
             <div
               aria-label="Resize diff panel"
@@ -3301,7 +3340,7 @@ export default function App() {
             >
               <span className="absolute inset-y-0 left-1/2 w-px bg-transparent group-hover:bg-border" />
             </div>
-            <header className={`flex h-14 shrink-0 items-center gap-3 border-b px-3 ${desktop ? "titlebar-drag" : ""}`}>
+            <header className="flex h-14 shrink-0 items-center gap-3 border-b px-3">
               <div className="min-w-0 flex-1">
                 <div className="truncate font-mono text-xs font-medium text-foreground" title={gitDiff.path}>
                   {gitPathParts(gitDiff.path).fileName}
@@ -3392,7 +3431,7 @@ export default function App() {
             aria-label="Git"
             className={`drawer-right fixed top-14 bottom-0 z-40 flex w-[var(--git-column-width)] max-w-[calc(100vw-3rem)] min-h-0 flex-col border-l bg-sidebar shadow-[-12px_0_30px_rgba(31,31,30,0.12)] lg:col-start-4 lg:max-w-none ${gitClosing ? "drawer-right-closing" : ""} ${
               gitPinnedOpen
-                ? "lg:relative lg:inset-y-auto lg:z-auto lg:shadow-none"
+                ? "lg:relative lg:inset-y-auto lg:z-auto lg:pt-14 lg:shadow-none"
                 : "lg:absolute lg:top-14 lg:right-0 lg:bottom-0 lg:z-40"
             }`}
             style={narrowView && contextVisible
@@ -3418,33 +3457,6 @@ export default function App() {
               >
                 <span className="absolute inset-y-0 left-1/2 w-px bg-transparent group-hover:bg-border" />
               </div>
-            ) : null}
-            {gitPinnedOpen ? (
-              <header
-                className={`flex h-14 shrink-0 items-center justify-start gap-1 border-b px-3 ${desktop ? "titlebar-drag" : ""}`}
-                style={desktopWindowControls && !contextPinnedOpen ? { paddingRight: `${144 / uiScale}px` } : undefined}
-              >
-                {!contextPinnedOpen ? (
-                  <Button
-                    aria-label="Open context"
-                    className="size-10 bg-card"
-                    size="icon-lg"
-                    type="button"
-                    variant="outline"
-                    onMouseEnter={() => openPanelPreview("context")}
-                    onMouseLeave={() => closePanelPreview("context", setContextPreviewOpen)}
-                    onClick={() => {
-                      if (diffOpen || narrowView) openPanelPreview("context");
-                      else {
-                        setContextOpen(true);
-                        setContextPreviewOpen(false);
-                      }
-                    }}
-                  >
-                    <Layers3 aria-hidden="true" className="size-4" />
-                  </Button>
-                ) : null}
-              </header>
             ) : null}
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
               {gitTracked && gitStatus.branches.length ? (
@@ -3637,18 +3649,23 @@ export default function App() {
           </aside>
         ) : null}
 
+        {narrowView && contextPreviewOpen ? (
+          <button
+            aria-label="Close context panel"
+            className="fixed inset-0 z-[35] cursor-default bg-black/10"
+            type="button"
+            onClick={toggleContextPanel}
+          />
+        ) : null}
+
         {contextVisible ? (
           <aside
-            className={`drawer-right fixed top-14 right-0 bottom-0 z-40 flex w-[var(--context-column-width)] max-w-[calc(100vw-3rem)] min-h-0 flex-col border-l bg-sidebar shadow-[-12px_0_30px_rgba(31,31,30,0.12)] lg:col-start-5 lg:max-w-none ${
+            className={`drawer-right fixed top-14 right-0 bottom-0 z-40 flex w-[var(--context-column-width)] max-w-[calc(100vw-3rem)] min-h-0 flex-col border-l bg-sidebar shadow-[-12px_0_30px_rgba(31,31,30,0.12)] lg:col-start-5 lg:max-w-none ${contextClosing ? "drawer-right-closing" : ""} ${
               contextPinnedOpen
-                ? "lg:relative lg:inset-y-auto lg:z-auto lg:shadow-none"
+                ? "lg:relative lg:inset-y-auto lg:z-auto lg:pt-14 lg:shadow-none"
                 : "lg:absolute lg:top-14 lg:right-0 lg:bottom-0 lg:z-40"
             }`}
             style={narrowView && gitVisible ? { width: "calc((100vw - 3rem) / 2)" } : undefined}
-            onMouseEnter={() => holdPanelPreview("context")}
-            onMouseLeave={() => {
-              if (!contextPinnedOpen) closePanelPreview("context", setContextPreviewOpen);
-            }}
           >
             {contextPinnedOpen ? (
               <div
@@ -3663,23 +3680,6 @@ export default function App() {
               >
                 <span className="absolute inset-y-0 left-1/2 w-px bg-transparent group-hover:bg-border" />
               </div>
-            ) : null}
-            {contextPinnedOpen ? (
-              <header
-                className={`flex h-14 shrink-0 items-center justify-start border-b px-3 ${desktop ? "titlebar-drag" : ""}`}
-                style={desktopWindowControls ? { paddingRight: `${144 / uiScale}px` } : undefined}
-              >
-                <Button
-                  aria-label="Collapse context"
-                  className="size-10 bg-card"
-                  size="icon-lg"
-                  type="button"
-                  variant="outline"
-                  onClick={() => setContextOpen(false)}
-                >
-                  <Layers3 aria-hidden="true" className="size-4" />
-                </Button>
-              </header>
             ) : null}
             <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
               {threadContext ? (
