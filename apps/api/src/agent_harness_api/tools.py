@@ -232,6 +232,22 @@ def build_default_tool_registry() -> ToolRegistry:
                 replay_policy="safe",
             ),
             ToolDefinition(
+                name="git_log",
+                description=(
+                    "Return recent commit history for the current repository, including hashes, authors, "
+                    "dates, subjects, and commit bodies. Optionally limit history to a repository-relative path."
+                ),
+                input_schema=_object_schema(
+                    {
+                        "limit": {"type": "integer"},
+                        "path": {"type": "string"},
+                        "timeout_seconds": {"type": "integer"},
+                    },
+                ),
+                handler=_git_log,
+                replay_policy="safe",
+            ),
+            ToolDefinition(
                 name="git_refresh",
                 description=(
                     "Fetch the configured Git remote, then return branch, push/pull, and file status. "
@@ -579,6 +595,56 @@ def _git_status(arguments: dict[str, Any], root: Path) -> ToolResult:
         error=None
         if completed.returncode == 0
         else f"git status exited with {completed.returncode}",
+    )
+
+
+def _git_log(arguments: dict[str, Any], root: Path) -> ToolResult:
+    limit = max(1, min(int(arguments.get("limit", 20)), 100))
+    command = [
+        "git",
+        "log",
+        f"--max-count={limit}",
+        "--date=iso-strict",
+        "--pretty=format:%H%x1f%h%x1f%an%x1f%ae%x1f%ad%x1f%s%x1f%b%x1e",
+    ]
+    path = str(arguments.get("path", "")).strip()
+    if path:
+        resolved = _resolve_path(root, path)
+        relative_path = resolved.relative_to(root).as_posix()
+        command.extend(["--", relative_path])
+    completed = _run_command(
+        command,
+        cwd=root,
+        timeout_seconds=int(arguments.get("timeout_seconds", 30)),
+    )
+    if completed.returncode != 0:
+        return ToolResult(
+            success=False,
+            output=_output_from_completed(completed),
+            metadata={"returncode": completed.returncode, "count": 0},
+            error=f"git log exited with {completed.returncode}",
+        )
+    commits = []
+    for record in completed.stdout.split("\x1e"):
+        fields = record.strip("\r\n").split("\x1f", 6)
+        if len(fields) != 7:
+            continue
+        commit_hash, short_hash, author, email, date, subject, body = fields
+        commits.append(
+            {
+                "hash": commit_hash,
+                "short_hash": short_hash,
+                "author": author,
+                "email": email,
+                "date": date,
+                "subject": subject,
+                "body": body.strip(),
+            }
+        )
+    return ToolResult(
+        success=True,
+        output=json.dumps(commits, indent=2),
+        metadata={"returncode": 0, "count": len(commits), "path": path or None},
     )
 
 

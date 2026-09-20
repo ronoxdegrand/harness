@@ -2,7 +2,7 @@ import { type CSSProperties, FormEvent, Fragment, lazy, type PointerEvent as Rea
 import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { Select as SelectPrimitive } from "@base-ui/react/select";
-import { AlertTriangle, ArrowDownUp, Check, ChevronDown, ChevronUp, Columns2, Copy, FolderGit2, GitBranch, Layers3, LoaderCircle, Minus, Minimize2, PanelLeft, PanelRight, Pencil, Plus, RefreshCw, Rows2, Send, Settings2, Sparkles, Square, Trash2, Undo2, WrapText, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowDownUp, Check, ChevronDown, ChevronUp, Columns2, Copy, CornerUpRight, FolderGit2, GitBranch, ListPlus, LoaderCircle, Minus, PanelLeft, Pencil, Plus, RefreshCw, Send, Settings2, Sparkles, Square, Trash2, Undo2, UnfoldVertical, WrapText, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -38,10 +38,19 @@ const ALT_LABEL = IS_MAC ? "Option" : "Alt";
 const GitDiffContents = lazy(() => import("@/components/GitDiffContents"));
 type Appearance = "light" | "dark" | "system";
 type ThreadSort = "recent-message" | "created";
-type ActivityPlacement = "side" | "inline";
 type MidRunEnterAction = "queue" | "steer";
 type PreviewPanel = "sidebar" | "git" | "context";
 type GitGroup = "staged" | "changes" | "commits";
+
+function GitFlowSeparator() {
+  return (
+    <div aria-hidden="true" className="flex items-center gap-2 py-0.5 text-muted-foreground/60">
+      <Separator className="flex-1" />
+      <ArrowDown className="size-3" />
+      <Separator className="flex-1" />
+    </div>
+  );
+}
 
 type BranchSwitchError = {
   to: string;
@@ -65,10 +74,6 @@ function validAppearance(value: unknown): Appearance {
 
 function validThreadSort(value: unknown): ThreadSort {
   return value === "created" ? value : "recent-message";
-}
-
-function validActivityPlacement(value: unknown): ActivityPlacement {
-  return value === "inline" ? value : "side";
 }
 
 function validMidRunEnterAction(value: unknown): MidRunEnterAction {
@@ -295,7 +300,7 @@ export default function App() {
     desktop ? "" : sessionStorage.getItem("sarvam-api-key") || "",
   );
   const [maxIterations, setMaxIterations] = useState(() =>
-    desktop ? 8 : Math.min(Math.max(Number(localStorage.getItem("max-iterations")) || 8, 1), 50),
+    desktop ? 50 : Math.min(Math.max(Number(localStorage.getItem("max-iterations")) || 50, 1), 50),
   );
   const [sendOnEnter, setSendOnEnter] = useState(
     () => Boolean(desktop) || localStorage.getItem("send-on-enter") !== "false",
@@ -323,6 +328,15 @@ export default function App() {
   const [appearanceDraft, setAppearanceDraft] = useState<Appearance>(appearance);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [updateVersion, setUpdateVersion] = useState<string>();
+  const [updateState, setUpdateState] = useState<DesktopUpdateState>({ status: "idle" });
+  const [updateCooldown, setUpdateCooldown] = useState(0);
+  useEffect(() => {
+    const refresh = () => setUpdateCooldown(Math.max(0, Math.ceil(((updateState.retryAfter ?? 0) - Date.now()) / 1000)));
+    refresh();
+    if (!updateState.retryAfter || updateState.retryAfter <= Date.now()) return;
+    const timer = window.setInterval(refresh, 1000);
+    return () => window.clearInterval(timer);
+  }, [updateState.retryAfter]);
   const [appVersion, setAppVersion] = useState(webPackage.version);
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [activeThread, setActiveThread] = useState<ThreadSummary | null>(null);
@@ -337,9 +351,6 @@ export default function App() {
   const [queuedTasks, setQueuedTasks] = useState<QueuedTask[]>([]);
   const [stopping, setStopping] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
-  const [activityPlacement, setActivityPlacement] = useState<ActivityPlacement>(() =>
-    desktop ? "side" : validActivityPlacement(localStorage.getItem("activity-placement")),
-  );
   const [conversationAreaWidth, setConversationAreaWidth] = useState(0);
   const [contextOpen, setContextOpen] = useState(() =>
     !desktop && localStorage.getItem("context-open") === "true",
@@ -352,17 +363,28 @@ export default function App() {
     window.matchMedia(`(min-width: ${LARGE_DIFF_SIDEBAR_BREAKPOINT}px)`).matches,
   );
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
+  const [contextClosing, setContextClosing] = useState(false);
   const [gitPreviewOpen, setGitPreviewOpen] = useState(false);
+  const [gitClosing, setGitClosing] = useState(false);
   const [gitStatus, setGitStatus] = useState<GitStatusState | null>(null);
   const [gitStatusLoading, setGitStatusLoading] = useState(false);
   const [gitFetchError, setGitFetchError] = useState<string | null>(null);
   const [gitMutation, setGitMutation] = useState<string | null>(null);
   const [gitDiff, setGitDiff] = useState<GitDiffState | null>(null);
-  const [gitDiffWrap, setGitDiffWrap] = useState(false);
-  const [gitDiffSplit, setGitDiffSplit] = useState(false);
+  const [gitDiffWrap, setGitDiffWrap] = useState(() =>
+    !desktop && localStorage.getItem("git-diff-wrap") === "true",
+  );
+  const [gitDiffSplit, setGitDiffSplit] = useState(() =>
+    !desktop && localStorage.getItem("git-diff-split") === "true",
+  );
+  const [gitDiffShowUnchanged, setGitDiffShowUnchanged] = useState(() =>
+    !desktop && localStorage.getItem("git-diff-show-unchanged") === "true",
+  );
   const [renderedDiffWidth, setRenderedDiffWidth] = useState(0);
+  const [composerHeight, setComposerHeight] = useState(0);
   const [commitMessage, setCommitMessage] = useState("");
   const [commitMessageGenerating, setCommitMessageGenerating] = useState(false);
+  const [undoCommitWarning, setUndoCommitWarning] = useState<GitCommitState | null>(null);
   const [collapsedGitGroups, setCollapsedGitGroups] = useState<Record<GitGroup, boolean>>({
     staged: false,
     changes: false,
@@ -425,6 +447,8 @@ export default function App() {
   const syntheticTurnIdRef = useRef(-1);
   const activeThreadIdRef = useRef<string | null>(null);
   const taskInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const composerRef = useRef<HTMLFormElement | null>(null);
+  const commitGenerationRef = useRef<AbortController | null>(null);
   const conversationBottomRef = useRef<HTMLDivElement | null>(null);
   const conversationAreaRef = useRef<HTMLDivElement | null>(null);
   const diffPanelRef = useRef<HTMLElement | null>(null);
@@ -440,6 +464,8 @@ export default function App() {
   const apiKeyPromptedRef = useRef(false);
   const continuationPendingRef = useRef(false);
   const gitStatusRequestRef = useRef<AbortController | null>(null);
+  const gitCloseTimerRef = useRef<number | null>(null);
+  const contextCloseTimerRef = useRef<number | null>(null);
   const gitDiffRequestRef = useRef<AbortController | null>(null);
   const resizeRef = useRef<{
     panel: "sidebar" | "activity" | "context" | "git" | "diff";
@@ -483,6 +509,16 @@ export default function App() {
   }, [task]);
 
   useEffect(() => {
+    const composer = composerRef.current;
+    if (!composer) return;
+    const updateHeight = () => setComposerHeight(composer.getBoundingClientRect().height);
+    updateHeight();
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(composer);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
     if (!settingsOpen) taskInputRef.current?.focus();
   }, [activeThread, settingsOpen]);
 
@@ -505,7 +541,10 @@ export default function App() {
     if (!desktop) return;
     void desktop.getVersion().then(setAppVersion);
     void desktop.getUpdateReady().then(setUpdateVersion);
-    return desktop.onUpdateReady(setUpdateVersion);
+    const stopReady = desktop.onUpdateReady(setUpdateVersion);
+    const stopState = desktop.onUpdateState(setUpdateState);
+    void desktop.getUpdateState().then(setUpdateState);
+    return () => { stopReady(); stopState(); };
   }, []);
 
   useEffect(() => {
@@ -518,7 +557,7 @@ export default function App() {
         );
         setMaxIterations(
           settings.maxIterations ??
-            Math.min(Math.max(Number(localStorage.getItem("max-iterations")) || 8, 1), 50),
+            Math.min(Math.max(Number(localStorage.getItem("max-iterations")) || 50, 1), 50),
         );
         setSendOnEnter(settings.sendOnEnter ?? localStorage.getItem("send-on-enter") !== "false");
         setMidRunEnterAction(validMidRunEnterAction(
@@ -539,9 +578,6 @@ export default function App() {
         setActivityWidth(clampActivityWidth(
           settings.activityWidth ?? Number(localStorage.getItem("activity-width")),
         ));
-        setActivityPlacement(validActivityPlacement(
-          settings.activityPlacement ?? localStorage.getItem("activity-placement"),
-        ));
         setContextWidth(
           settings.contextWidth ??
             Math.min(
@@ -560,6 +596,11 @@ export default function App() {
             ),
         );
         setGitOpen(settings.gitOpen ?? localStorage.getItem("git-open") === "true");
+        setGitDiffWrap(settings.gitDiffWrap ?? localStorage.getItem("git-diff-wrap") === "true");
+        setGitDiffSplit(settings.gitDiffSplit ?? localStorage.getItem("git-diff-split") === "true");
+        setGitDiffShowUnchanged(
+          settings.gitDiffShowUnchanged ?? localStorage.getItem("git-diff-show-unchanged") === "true",
+        );
         setThreadSort(validThreadSort(settings.threadSort));
         setGroupThreadsByPath(settings.groupThreadsByPath ?? false);
         setSettingsLoaded(true);
@@ -581,11 +622,14 @@ export default function App() {
           sidebarCollapsed,
           sidebarWidth,
           activityWidth,
-          activityPlacement,
+          activityPlacement: "inline",
           contextWidth,
           contextOpen,
           gitWidth,
           gitOpen,
+          gitDiffWrap,
+          gitDiffSplit,
+          gitDiffShowUnchanged,
           threadSort,
           groupThreadsByPath,
           scale: uiScale,
@@ -605,6 +649,9 @@ export default function App() {
           localStorage.removeItem("context-open");
           localStorage.removeItem("git-width");
           localStorage.removeItem("git-open");
+          localStorage.removeItem("git-diff-wrap");
+          localStorage.removeItem("git-diff-split");
+          localStorage.removeItem("git-diff-show-unchanged");
           localStorage.removeItem("thread-sort");
           localStorage.removeItem("group-threads-by-path");
         })
@@ -619,15 +666,18 @@ export default function App() {
     localStorage.setItem("sidebar-collapsed", String(sidebarCollapsed));
     localStorage.setItem("sidebar-width", String(sidebarWidth));
     localStorage.setItem("activity-width", String(activityWidth));
-    localStorage.setItem("activity-placement", activityPlacement);
+    localStorage.setItem("activity-placement", "inline");
     localStorage.setItem("context-width", String(contextWidth));
     localStorage.setItem("context-open", String(contextOpen));
     localStorage.setItem("git-width", String(gitWidth));
     localStorage.setItem("git-open", String(gitOpen));
+    localStorage.setItem("git-diff-wrap", String(gitDiffWrap));
+    localStorage.setItem("git-diff-split", String(gitDiffSplit));
+    localStorage.setItem("git-diff-show-unchanged", String(gitDiffShowUnchanged));
     localStorage.setItem("thread-sort", threadSort);
     localStorage.setItem("group-threads-by-path", String(groupThreadsByPath));
     localStorage.setItem("appearance", appearance);
-  }, [activityPlacement, activityWidth, apiKey, appearance, contextOpen, contextWidth, desktop, gitOpen, gitWidth, groupThreadsByPath, maxIterations, midRunEnterAction, sarvamApiKey, sendOnEnter, settingsLoaded, sidebarCollapsed, sidebarWidth, threadSort, uiScale]);
+  }, [activityWidth, apiKey, appearance, contextOpen, contextWidth, desktop, gitDiffShowUnchanged, gitDiffSplit, gitDiffWrap, gitOpen, gitWidth, groupThreadsByPath, maxIterations, midRunEnterAction, sarvamApiKey, sendOnEnter, settingsLoaded, sidebarCollapsed, sidebarWidth, threadSort, uiScale]);
 
   useEffect(() => {
     const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
@@ -749,13 +799,7 @@ export default function App() {
 
       event.preventDefault();
       if (event.altKey) {
-        if (narrowView || gitDiff) {
-          setGitPreviewOpen(false);
-          setContextPreviewOpen((open) => !open);
-        } else {
-          setContextOpen((open) => !open);
-          setContextPreviewOpen(false);
-        }
+        toggleContextPanel();
       } else {
         if (gitDiff && !largeDiffViewport) {
           setSidebarPreviewOpen((open) => !open);
@@ -918,7 +962,11 @@ export default function App() {
     }
   }
 
-  async function openGitDiff(file: GitFileState, staged: boolean) {
+  async function openGitDiff(
+    file: GitFileState,
+    staged: boolean,
+    showUnchanged = gitDiffShowUnchanged,
+  ) {
     if (!workspacePath.trim()) return;
     gitDiffRequestRef.current?.abort();
     const controller = new AbortController();
@@ -934,7 +982,12 @@ export default function App() {
       const response = await fetch("/git/diff", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspace_path: workspacePath, path: file.path, staged }),
+        body: JSON.stringify({
+          workspace_path: workspacePath,
+          path: file.path,
+          staged,
+          full_context: showUnchanged,
+        }),
         signal: controller.signal,
       });
       if (!response.ok) {
@@ -1078,14 +1131,51 @@ export default function App() {
     }
   }
 
+  async function undoLastCommit(commit: GitCommitState, allowStaged = false) {
+    if (!workspacePath.trim() || gitMutation || runInProgress) return;
+    if (gitStatus?.staged.length && !allowStaged) {
+      setUndoCommitWarning(commit);
+      return;
+    }
+    gitStatusRequestRef.current?.abort();
+    setGitMutation("undo-commit");
+    try {
+      const response = await fetch("/git/undo-commit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspace_path: workspacePath, expected_head: commit.hash, allow_staged: allowStaged }),
+      });
+      if (response.status === 409) {
+        setUndoCommitWarning(commit);
+        return;
+      }
+      if (!response.ok) {
+        const payload = await readJson<{ detail?: string }>(response);
+        throw new Error(payload.detail || "Could not undo the commit.");
+      }
+      setGitStatus(await readJson<GitStatusState>(response));
+      setCommitMessage(commit.subject);
+      setUndoCommitWarning(null);
+      closeGitDiff();
+    } catch (reason) {
+      setUndoCommitWarning(null);
+      setError(reason instanceof Error ? reason.message : "Could not undo the commit.");
+    } finally {
+      setGitMutation(null);
+    }
+  }
+
   async function generateCommitMessage() {
     const hasChanges = Boolean(
       gitStatus?.staged.length || gitStatus?.modified.length || gitStatus?.untracked.length,
     );
-    if (!workspacePath.trim() || !modelName || !hasChanges || commitMessageGenerating || gitMutation) return;
+    if (!workspacePath.trim() || !modelName || !hasChanges || commitGenerationRef.current || gitMutation) return;
+    const controller = new AbortController();
+    commitGenerationRef.current = controller;
     setCommitMessageGenerating(true);
     try {
       const response = await fetch("/git/commit-message", {
+        signal: controller.signal,
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1101,11 +1191,14 @@ export default function App() {
         throw new Error(payload.detail || "Could not generate a commit message.");
       }
       const payload = await readJson<{ message: string }>(response);
-      setCommitMessage(payload.message);
+      if (!controller.signal.aborted) setCommitMessage(payload.message);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not generate a commit message.");
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Could not generate a commit message.");
     } finally {
-      setCommitMessageGenerating(false);
+      if (commitGenerationRef.current === controller) {
+        commitGenerationRef.current = null;
+        setCommitMessageGenerating(false);
+      }
     }
   }
 
@@ -1187,6 +1280,11 @@ export default function App() {
     setNewThreadTitle(null);
     setModelName(selectableModel(lastUsedModel, availableModels));
     setWorkspacePath(nextWorkspacePath);
+    setContextPreviewOpen(false);
+    if (!nextWorkspacePath.trim()) {
+      setGitPreviewOpen(false);
+      closeGitDiff();
+    }
   }
 
   async function renameActiveThread(event: FormEvent<HTMLFormElement>) {
@@ -1594,6 +1692,77 @@ export default function App() {
     }, 100);
   }
 
+  function toggleGitPanel() {
+    if (!activeThread && !workspacePath.trim()) return;
+    void loadGitStatus();
+    if (gitClosing) {
+      if (gitCloseTimerRef.current !== null) window.clearTimeout(gitCloseTimerRef.current);
+      gitCloseTimerRef.current = null;
+      setGitClosing(false);
+      return;
+    }
+    if (gitPinnedOpen) {
+      setGitPreviewOpen(false);
+      setGitClosing(true);
+      closeGitDiff();
+      gitCloseTimerRef.current = window.setTimeout(() => {
+        gitCloseTimerRef.current = null;
+        setGitOpen(false);
+        setGitClosing(false);
+      }, 180);
+    } else if (narrowView && gitPreviewOpen) {
+      setGitClosing(true);
+      closeGitDiff();
+      gitCloseTimerRef.current = window.setTimeout(() => {
+        gitCloseTimerRef.current = null;
+        setGitPreviewOpen(false);
+        setGitClosing(false);
+      }, 180);
+    } else if (narrowView) {
+      openPanelPreview("git");
+    } else {
+      if (gitCloseTimerRef.current !== null) window.clearTimeout(gitCloseTimerRef.current);
+      gitCloseTimerRef.current = null;
+      setGitClosing(false);
+      setGitOpen(true);
+      setGitPreviewOpen(false);
+    }
+  }
+
+  function toggleContextPanel() {
+    if (!activeThread) return;
+    if (contextClosing) {
+      if (contextCloseTimerRef.current !== null) window.clearTimeout(contextCloseTimerRef.current);
+      contextCloseTimerRef.current = null;
+      setContextClosing(false);
+      return;
+    }
+    if (contextPinnedOpen) {
+      setContextPreviewOpen(false);
+      setContextClosing(true);
+      contextCloseTimerRef.current = window.setTimeout(() => {
+        contextCloseTimerRef.current = null;
+        setContextOpen(false);
+        setContextClosing(false);
+      }, 180);
+    } else if ((narrowView || diffOpen) && contextPreviewOpen) {
+      setContextClosing(true);
+      contextCloseTimerRef.current = window.setTimeout(() => {
+        contextCloseTimerRef.current = null;
+        setContextPreviewOpen(false);
+        setContextClosing(false);
+      }, 180);
+    } else if (narrowView || diffOpen) {
+      openPanelPreview("context");
+    } else {
+      if (contextCloseTimerRef.current !== null) window.clearTimeout(contextCloseTimerRef.current);
+      contextCloseTimerRef.current = null;
+      setContextClosing(false);
+      setContextOpen(true);
+      setContextPreviewOpen(false);
+    }
+  }
+
   function openSettings() {
     setApiKeyDraft(apiKey);
     setSarvamApiKeyDraft(sarvamApiKey);
@@ -1616,14 +1785,16 @@ export default function App() {
     runInProgress && runningThreadId && activeThread?.id !== runningThreadId,
   );
   const diffOpen = Boolean(gitDiff);
+  const gitAvailable = Boolean(activeThread || workspacePath.trim());
+  const contextAvailable = Boolean(activeThread);
   const gitDiffCanSplit = renderedDiffWidth >= MIN_SPLIT_DIFF_WIDTH;
   const diffRestrictsSidebarPinning = diffOpen && !largeDiffViewport;
   const sidebarPinnedOpen = !diffRestrictsSidebarPinning && !narrowView && !sidebarCollapsed;
   const sidebarOpen = sidebarPinnedOpen || sidebarPreviewOpen;
-  const contextPinnedOpen = !diffOpen && !narrowView && contextOpen;
-  const contextVisible = contextPinnedOpen || contextPreviewOpen;
-  const gitPinnedOpen = !narrowView && gitOpen;
-  const gitVisible = gitPinnedOpen || gitPreviewOpen;
+  const contextPinnedOpen = contextAvailable && !diffOpen && !narrowView && contextOpen;
+  const contextVisible = contextAvailable && (contextPinnedOpen || contextPreviewOpen);
+  const gitPinnedOpen = gitAvailable && !narrowView && gitOpen;
+  const gitVisible = gitAvailable && (gitPinnedOpen || gitPreviewOpen);
   const gitTracked = gitStatus?.is_repository === true;
   const gitBranchLabel = gitTracked
     ? gitStatus.branch || "Detached HEAD"
@@ -1632,6 +1803,11 @@ export default function App() {
   const gitHasChanges = Boolean(
     gitStatus?.staged.length || gitStatus?.modified.length || gitStatus?.untracked.length,
   );
+  const gitChangedFileCount = new Set([
+    ...(gitStatus?.staged ?? []),
+    ...(gitStatus?.modified ?? []),
+    ...(gitStatus?.untracked ?? []),
+  ].map((file) => file.path)).size;
   const eventGroups: Array<{
     iteration: number | null;
     createdAt?: string;
@@ -1651,24 +1827,9 @@ export default function App() {
       });
     }
   }
-  const iterationCount = countIterations(visibleEvents);
   const effectiveActivityWidth = clampActivityWidth(activityWidth);
-  const activitySideAvailable = conversationAreaWidth > 0
-    && conversationAreaWidth >= (
-      effectiveActivityWidth
-      + MIN_THREAD_WIDTH_WITH_ACTIVITY
-      + ACTIVITY_LAYOUT_GAP
-      + CONVERSATION_HORIZONTAL_GUTTER
-    );
-  const latestUserRunId = [...threadTurns].reverse().find((turn) => turn.role === "user")?.run_id ?? null;
-  const activityForcedInline = activityOpen
-    && status === "running"
-    && activeThread?.id === runningThreadId
-    && activityRunId === latestUserRunId;
-  const activityStacked = activityForcedInline
-    || activityPlacement === "inline"
-    || !activitySideAvailable;
-  const activityBesideThread = activityOpen && !activityStacked;
+  const activityStacked = true;
+  const activityBesideThread = false;
   const activeRunEnterAction: MidRunEnterAction = status === "running"
     ? midRunEnterAction
     : "queue";
@@ -1710,12 +1871,12 @@ export default function App() {
       )
     : [[null, sortedThreads] as const];
   const layoutColumns = [
-    sidebarPinnedOpen ? "var(--sidebar-width)" : null,
+    sidebarPinnedOpen ? "var(--sidebar-width)" : "0px",
     "minmax(0,1fr)",
-    diffOpen ? "minmax(360px,var(--diff-column-width))" : null,
-    gitPinnedOpen ? "var(--git-column-width)" : null,
-    contextPinnedOpen ? "var(--context-column-width)" : null,
-  ].filter(Boolean).join(" ");
+    diffOpen ? "minmax(360px,var(--diff-column-width))" : "0px",
+    gitPinnedOpen && !gitClosing ? "var(--git-column-width)" : "0px",
+    contextPinnedOpen && !contextClosing ? "var(--context-column-width)" : "0px",
+  ].join(" ");
 
   function gitStatusClass(status: string) {
     if (status.includes("D")) return "text-destructive";
@@ -1872,6 +2033,18 @@ export default function App() {
               {commits.length}{gitStatus?.local_commits_truncated ? "+" : ""}
             </span>
           </button>
+          <Button
+            aria-label="Undo last unsynced commit"
+            className="ml-auto size-6"
+            disabled={Boolean(gitMutation) || runInProgress}
+            size="icon-sm"
+            title="Undo last unsynced commit and keep its changes staged"
+            type="button"
+            variant="ghost"
+            onClick={() => void undoLastCommit(commits[0])}
+          >
+            {gitMutation === "undo-commit" ? <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" /> : <Undo2 aria-hidden="true" className="size-3.5" />}
+          </Button>
         </div>
         {!collapsed ? (
           <div className="overflow-hidden rounded-lg border bg-card">
@@ -1941,50 +2114,8 @@ export default function App() {
             <span className="absolute inset-y-0 left-1/2 w-px bg-transparent group-hover:bg-border" />
           </div>
         ) : null}
-        <header className="flex h-12 shrink-0 items-center justify-between rounded-t-xl border-b px-3">
-          <div className="flex items-center gap-2">
-            <Button
-              aria-label="Close activity"
-              className="size-8 bg-card"
-              size="icon-sm"
-              type="button"
-              variant="outline"
-              onClick={() => setActivityOpen(false)}
-            >
-              <Minimize2 aria-hidden="true" className="size-3.5" />
-            </Button>
-            <p className="text-sm font-semibold">Activity</p>
-            <span className="text-xs text-muted-foreground">
-              {iterationCount} {iterationCount === 1 ? "iteration" : "iterations"}
-            </span>
-          </div>
-          <div className="flex items-center gap-1">
-            <CopyButton
-              className=""
-              content={JSON.stringify(visibleEvents, null, 2)}
-              label="Copy activity"
-            />
-            {activitySideAvailable && !activityForcedInline ? (
-              <Button
-                aria-label={`Move activity ${activityPlacement === "side" ? "inline" : "beside the thread"}`}
-                className="size-7 bg-card text-muted-foreground"
-                size="icon-sm"
-                title={`Move activity ${activityPlacement === "side" ? "inline" : "beside the thread"}`}
-                type="button"
-                variant="outline"
-                onClick={() => setActivityPlacement((current) => current === "side" ? "inline" : "side")}
-              >
-                {activityPlacement === "side" ? (
-                  <PanelRight aria-hidden="true" className="size-3.5" />
-                ) : (
-                  <Rows2 aria-hidden="true" className="size-3.5" />
-                )}
-              </Button>
-            ) : null}
-          </div>
-        </header>
         <div
-          className={`space-y-4 rounded-b-xl p-3 ${
+          className={`space-y-4 rounded-xl p-3 ${
             resizable ? "min-h-0 flex-1 overflow-y-auto" : "overflow-visible"
           }`}
           ref={activityScrollRef}
@@ -2084,7 +2215,8 @@ export default function App() {
                               : "bg-card"
                         }`}
                       >
-                        <p className={`text-[10px] font-semibold uppercase tracking-[0.12em] ${
+                        <details>
+                        <summary className={`cursor-pointer text-[10px] font-semibold uppercase tracking-[0.12em] ${
                           isFailedEvent
                             ? "text-destructive"
                             : runtimeEvent.type === "tool.completed"
@@ -2092,11 +2224,13 @@ export default function App() {
                               : "text-muted-foreground"
                         }`}>
                           {runtimeEvent.type.replaceAll(".", " ")}
-                        </p>
+                          {isToolEvent && toolCall?.name ? (
+                            <span className="ml-1.5 font-mono normal-case tracking-normal text-foreground">· {toolCall.name}</span>
+                          ) : null}
+                        </summary>
 
                         {isToolEvent ? (
                           <div className="mt-2 space-y-2">
-                            <p className="font-medium">{toolCall?.name || "tool"}</p>
                             <pre className="overflow-x-auto whitespace-pre-wrap text-xs text-muted-foreground">
                               {JSON.stringify(toolCall?.arguments ?? {}, null, 2)}
                             </pre>
@@ -2114,6 +2248,7 @@ export default function App() {
                             {JSON.stringify(eventPayload, null, 2)}
                           </pre>
                         )}
+                        </details>
                       </Card>
                     );
                   })}
@@ -2143,11 +2278,11 @@ export default function App() {
           "--diff-column-width": `min(${diffWidth}px, max(420px, calc(100vw - var(--git-column-width) - ${sidebarPinnedOpen ? "var(--sidebar-width)" : "0px"} - 96px)))`,
           "--layout-columns": layoutColumns,
         } as CSSProperties}
-        className="relative grid h-dvh w-full overflow-hidden lg:grid-cols-[var(--layout-columns)]"
+        className="layout-grid relative grid h-dvh w-full overflow-hidden lg:grid-cols-[var(--layout-columns)]"
       >
         {sidebarOpen ? (
           <aside
-            className={`drawer-left fixed top-14 bottom-0 left-0 z-40 flex w-[var(--sidebar-width)] max-w-[calc(100vw-3rem)] min-h-0 flex-col border-r bg-sidebar shadow-[12px_0_30px_rgba(31,31,30,0.12)] lg:max-w-none ${
+            className={`drawer-left fixed top-14 bottom-0 left-0 z-40 flex w-[var(--sidebar-width)] max-w-[calc(100vw-3rem)] min-h-0 flex-col border-r bg-sidebar shadow-[12px_0_30px_rgba(31,31,30,0.12)] lg:col-start-1 lg:max-w-none ${
               sidebarPinnedOpen
                 ? "lg:relative lg:inset-y-auto lg:z-auto lg:shadow-none"
                 : "sidebar-preview lg:absolute lg:top-14 lg:bottom-0 lg:left-0 lg:z-40"
@@ -2332,14 +2467,19 @@ export default function App() {
           </aside>
         ) : null}
 
-        <section className="relative grid h-dvh min-h-0 min-w-0 grid-cols-1 grid-rows-[56px_minmax(0,1fr)_auto] bg-background">
+        <section className={`relative grid h-dvh min-h-0 min-w-0 grid-cols-1 bg-background lg:col-start-2 ${
+          activeThread
+            ? "grid-rows-[56px_minmax(0,1fr)_auto]"
+            : "grid-rows-[56px_minmax(0,1fr)_auto_minmax(0,1fr)]"
+        }`}>
           <header
-            className={`fixed inset-x-0 top-0 z-50 col-start-1 row-start-1 flex h-14 shrink-0 items-center border-b bg-background px-4 sm:px-5 lg:relative lg:inset-auto ${desktop ? "titlebar-drag" : ""}`}
+            className={`fixed top-0 right-0 z-50 flex h-14 shrink-0 items-center border-b bg-background px-4 sm:px-5 ${desktop ? "titlebar-drag" : ""}`}
+            style={{ left: sidebarPinnedOpen && !narrowView ? "var(--sidebar-width)" : 0 }}
           >
             {!sidebarPinnedOpen ? (
               <div
-                className={`absolute z-50 flex shrink-0 items-center gap-1 ${macDesktop && !sidebarOpen ? "" : "left-3"}`}
-                style={macDesktop && !sidebarOpen ? { left: `${80 / uiScale}px` } : undefined}
+                className={`absolute z-50 flex shrink-0 items-center gap-1 ${macDesktop ? "" : "left-3"}`}
+                style={macDesktop ? { left: `${80 / uiScale}px` } : undefined}
               >
                 <Button
                   aria-label="Expand sidebar"
@@ -2373,12 +2513,11 @@ export default function App() {
                 </Button>
               </div>
             ) : null}
+            {activeThread ? (
             <div className={`min-w-0 w-full text-left lg:mx-auto lg:max-w-3xl ${!sidebarPinnedOpen ? editingTitle ? "max-lg:pl-16" : "max-lg:pl-24" : ""} ${
               editingTitle
                 ? "max-lg:pr-3"
-                : !gitPinnedOpen && !contextPinnedOpen
-                  ? "pr-36"
-                  : !gitPinnedOpen ? "pr-24" : "pr-12"
+                : "pr-12"
             }`}>
               {editingTitle ? (
                 <form className="flex min-w-0 items-center gap-2" onSubmit={renameActiveThread}>
@@ -2403,29 +2542,62 @@ export default function App() {
                   </Button>
                 </form>
               ) : (
-                <div className="flex min-w-0 items-center gap-2">
-                  <h2 className="min-w-0 truncate text-left text-sm font-semibold">
-                    {activeThread?.title || newThreadTitle || "New chat"}
-                  </h2>
-                  <Button
-                    aria-label="Rename thread"
-                    className="size-7 shrink-0 text-muted-foreground"
-                    size="icon-sm"
-                    type="button"
-                    variant="ghost"
-                    onClick={() => {
-                      setTitleDraft(activeThread?.title || newThreadTitle || "New chat");
-                      setEditingTitle(true);
-                    }}
-                  >
-                    <Pencil aria-hidden="true" className="size-3.5" />
-                  </Button>
+                <div className="min-w-0">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <h2 className="min-w-0 truncate text-left text-sm font-semibold">
+                      {activeThread?.title || newThreadTitle || "New chat"}
+                    </h2>
+                    <Button
+                      aria-label="Rename thread"
+                      className="size-6 shrink-0 text-muted-foreground"
+                      size="icon-sm"
+                      type="button"
+                      variant="ghost"
+                      onClick={() => {
+                        setTitleDraft(activeThread?.title || newThreadTitle || "New chat");
+                        setEditingTitle(true);
+                      }}
+                    >
+                      <Pencil aria-hidden="true" className="size-3.5" />
+                    </Button>
+                  </div>
+                  <div className={`mt-0.5 flex min-w-0 w-fit max-w-full items-center gap-0.5 overflow-hidden rounded px-1 font-mono text-[10px] text-muted-foreground ${
+                    repositoryRequired ? "bg-warning-muted text-warning ring-2 ring-warning-border" : ""
+                  }`}>
+                    <FolderGit2 aria-hidden="true" className="mr-1 size-3 shrink-0" />
+                    {activeThread ? (
+                      <span className="min-w-0 truncate" title={workspacePath}>{workspacePath}</span>
+                    ) : desktop ? (
+                      <button
+                        className={`min-w-0 truncate rounded px-0.5 text-left hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${repositoryRequired ? "text-warning" : ""}`}
+                        title={workspacePath || "Select a repository"}
+                        type="button"
+                        onClick={async () => {
+                          const selected = await desktop.selectRepository(workspacePath);
+                          if (selected) setWorkspacePath(selected);
+                        }}
+                      >
+                        {workspacePath || "Select a repository"}
+                      </button>
+                    ) : (
+                      <label className="min-w-0 flex-1">
+                        <span className="sr-only">Workspace path</span>
+                        <input
+                          className={`w-full bg-transparent outline-none ${repositoryRequired ? "text-warning" : ""}`}
+                          placeholder="Workspace path"
+                          value={workspacePath}
+                          onChange={(event) => setWorkspacePath(event.target.value)}
+                        />
+                      </label>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
+            ) : null}
             <div
-              className={`absolute z-50 flex items-center gap-1 ${editingTitle ? "max-lg:hidden" : ""} ${desktopWindowControls && !contextPinnedOpen && !gitPinnedOpen ? "" : "right-3"}`}
-              style={desktopWindowControls && !contextPinnedOpen && !gitPinnedOpen ? { right: `${144 / uiScale}px` } : undefined}
+              className={`absolute z-50 flex items-center gap-1 ${editingTitle ? "max-lg:hidden" : ""} ${desktopWindowControls ? "" : "right-3"}`}
+              style={desktopWindowControls ? { right: `${144 / uiScale}px` } : undefined}
             >
               {updateVersion ? (
                 <Button
@@ -2489,15 +2661,44 @@ export default function App() {
                           setAppearance(appearanceDraft);
                           void desktop?.setScale(uiScaleDraft);
                           void desktop?.setAppearance(appearanceDraft);
-                          setSettingsOpen(false);
                         }}
                       >
                         <div className="flex shrink-0 items-center justify-between gap-3 border-b bg-muted/30 px-5 py-4">
                           <DialogPrimitive.Title className="text-base font-semibold">Settings</DialogPrimitive.Title>
                           <DialogPrimitive.Description className="sr-only">Configure Harness settings.</DialogPrimitive.Description>
+                          <div className="flex flex-col items-end gap-1.5">
+                            <div className="flex items-center gap-2">
                           <span className="rounded-full border border-brand-border bg-brand-muted px-2 py-0.5 text-xs font-semibold text-brand">
                             v{appVersion}
                           </span>
+                              {desktop ? (
+                                <Button type="button" size="sm" variant={updateState.status === "ready" ? "affirmative" : "outline"}
+                                  title={updateState.status === "ready" ? `Restart and install v${updateState.version}` : updateState.status === "unavailable" ? "Updates are available in installed releases only." : undefined}
+                                  disabled={["checking", "downloading", "unavailable"].includes(updateState.status) || (updateState.status !== "ready" && updateCooldown > 0)}
+                                  onClick={() => {
+                                    if (updateState.status === "ready") {
+                                      void desktop.restartToUpdate().catch((reason) => setUpdateState({ status: "error", message: String(reason) }));
+                                    } else {
+                                      setUpdateState((state) => ({ ...state, status: "checking" }));
+                                      void desktop.checkForUpdates().then(setUpdateState).catch((reason) => setUpdateState({ status: "error", message: String(reason) }));
+                                    }
+                                  }}>
+                                  {["checking", "downloading"].includes(updateState.status) ? <LoaderCircle aria-hidden="true" className="size-4 animate-spin" /> : <RefreshCw aria-hidden="true" className="size-4" />}
+                                  {["ready", "downloading"].includes(updateState.status) ? "Update" : updateState.status === "checking" ? "Checking…" : updateState.status === "downloading" ? "Downloading…" : "Check for updates"}
+                                </Button>
+                          ) : null}
+                            </div>
+                            {desktop && updateCooldown > 0 && !["ready", "checking", "downloading", "unavailable"].includes(updateState.status) ? (
+                              <p className="text-xs text-muted-foreground" role="status">Check again in {Math.floor(updateCooldown / 60)}m {updateCooldown % 60}s.</p>
+                            ) : null}
+                            {desktop && ["up-to-date", "downloading", "error"].includes(updateState.status) ? (
+                              <p className="max-w-64 text-right text-xs text-muted-foreground" role="status">
+                                {updateState.status === "up-to-date" ? "You're up to date."
+                                  : updateState.status === "downloading" ? `Downloading v${updateState.version}...`
+                                  : `Update failed: ${updateState.message}`}
+                              </p>
+                            ) : null}
+                          </div>
                         </div>
                         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
                           <section className="rounded-xl border bg-muted/20 p-4">
@@ -2531,16 +2732,16 @@ export default function App() {
                           </section>
 
                           <section className="rounded-xl border bg-muted/20 p-4">
-                            <div className="mb-3">
+                            <div className="flex items-center justify-between gap-4">
+                            <div>
                               <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Runs</h3>
-                              <p className="mt-1 text-xs text-muted-foreground">Choose when Harness pauses to ask whether it should continue.</p>
+                              <p className="mt-1 text-xs text-muted-foreground" id="iteration-warning-description">Choose when Harness pauses to ask whether it should continue.</p>
                             </div>
-                            <label className="flex items-center justify-between gap-4 text-xs font-medium">
-                              <span>Iteration warning</span>
                               <Input
-                                aria-describedby={maxIterationsError ? "iteration-warning-error" : undefined}
+                                aria-label="Iteration warning"
+                                aria-describedby={`iteration-warning-description${maxIterationsError ? " iteration-warning-error" : ""}`}
                                 aria-invalid={Boolean(maxIterationsError)}
-                                className="w-20"
+                                className="w-20 shrink-0"
                                 max={50}
                                 min={1}
                                 required
@@ -2551,7 +2752,7 @@ export default function App() {
                                   setMaxIterationsError("");
                                 }}
                               />
-                            </label>
+                            </div>
                             {maxIterationsError ? (
                               <p className="mt-1.5 text-right text-xs text-destructive" id="iteration-warning-error">
                                 {maxIterationsError}
@@ -2567,14 +2768,14 @@ export default function App() {
                             <div className={`grid gap-4 ${desktop ? "sm:grid-cols-[minmax(0,1fr)_11rem]" : ""}`}>
                               <div className="space-y-2 text-xs font-medium">
                                 <span>Theme</span>
-                                <div className="grid grid-cols-3 gap-2">
+                                <div className="grid grid-cols-3 gap-0.5 rounded-lg border bg-card p-1" role="group" aria-label="Theme">
                                   {(["light", "dark", "system"] as const).map((option) => (
                                     <Button
                                       aria-pressed={appearanceDraft === option}
                                       className="capitalize"
                                       key={option}
                                       type="button"
-                                      variant={appearanceDraft === option ? "default" : "outline"}
+                                      variant={appearanceDraft === option ? "default" : "ghost"}
                                       onClick={() => setAppearanceDraft(option)}
                                     >
                                       {option}
@@ -2585,19 +2786,19 @@ export default function App() {
                               {desktop ? (
                                 <div className="space-y-2 text-xs font-medium">
                                   <span>Interface scale</span>
-                                  <div className="grid grid-cols-[36px_minmax(0,1fr)_36px] gap-1.5">
+                                  <div className="grid grid-cols-[36px_minmax(0,1fr)_36px] gap-0.5 rounded-lg border bg-card p-1" role="group" aria-label="Interface scale">
                                 <Button
                                   aria-label="Zoom out"
                                       className="size-9"
                                   disabled={uiScaleDraft <= 0.5}
                                       size="icon-sm"
                                   type="button"
-                                  variant="outline"
+                                  variant="ghost"
                                   onClick={() => setUiScaleDraft((scale) => Math.max(scale - 0.1, 0.5))}
                                 >
                                   <Minus aria-hidden="true" className="size-4" />
                                 </Button>
-                                    <div className="flex h-9 items-center justify-center rounded-md border bg-card font-mono text-xs">
+                                    <div className="flex h-9 items-center justify-center font-mono text-xs">
                                   {Math.round(uiScaleDraft * 100)}%
                                 </div>
                                 <Button
@@ -2606,7 +2807,7 @@ export default function App() {
                                   disabled={uiScaleDraft >= 2}
                                       size="icon-sm"
                                   type="button"
-                                  variant="outline"
+                                  variant="ghost"
                                   onClick={() => setUiScaleDraft((scale) => Math.min(scale + 0.1, 2))}
                                 >
                                   <Plus aria-hidden="true" className="size-4" />
@@ -2625,12 +2826,12 @@ export default function App() {
                             <div className="grid gap-4 sm:grid-cols-2">
                               <div className="space-y-2 text-xs font-medium">
                                 <span>Send message</span>
-                                <div className="grid grid-cols-2 gap-2" role="group" aria-label="Message input shortcut">
+                                <div className="grid grid-cols-2 gap-0.5 rounded-lg border bg-card p-1" role="group" aria-label="Message input shortcut">
                               <Button
                                 aria-pressed={sendOnEnterDraft}
                                       className="h-auto flex-col gap-1 px-2 py-2.5"
                                 type="button"
-                                variant={sendOnEnterDraft ? "default" : "outline"}
+                                variant={sendOnEnterDraft ? "default" : "ghost"}
                                 onClick={() => setSendOnEnterDraft(true)}
                               >
                                       <span className="flex items-center gap-1">
@@ -2645,7 +2846,7 @@ export default function App() {
                                 aria-pressed={!sendOnEnterDraft}
                                       className="h-auto flex-col gap-1 px-2 py-2.5"
                                 type="button"
-                                variant={sendOnEnterDraft ? "outline" : "default"}
+                                variant={sendOnEnterDraft ? "ghost" : "default"}
                                 onClick={() => setSendOnEnterDraft(false)}
                               >
                                       <span className="flex items-center gap-1">
@@ -2657,18 +2858,17 @@ export default function App() {
                                       <span>New line</span>
                               </Button>
                                 </div>
-                                <p className="font-normal leading-5 text-muted-foreground">The other shortcut inserts a new line.</p>
                             </div>
                               <div className="space-y-2 text-xs font-medium">
                                 <span>Enter during a run</span>
-                                <div className="grid grid-cols-2 gap-2" role="group" aria-label="Mid-run Enter action">
+                                <div className="grid grid-cols-2 gap-0.5 rounded-lg border bg-card p-1" role="group" aria-label="Mid-run Enter action">
                               {(["queue", "steer"] as const).map((action) => (
                                 <Button
                                   aria-pressed={midRunEnterActionDraft === action}
                                   className="h-auto flex-col gap-1 px-2 py-2.5 capitalize"
                                   key={action}
                                   type="button"
-                                  variant={midRunEnterActionDraft === action ? "default" : "outline"}
+                                  variant={midRunEnterActionDraft === action ? "default" : "ghost"}
                                   onClick={() => setMidRunEnterActionDraft(action)}
                                 >
                                   <span className="flex items-center gap-1">
@@ -2703,57 +2903,80 @@ export default function App() {
                   </DialogPrimitive.Viewport>
                 </DialogPrimitive.Portal>
               </DialogPrimitive.Root>
-              {!gitPinnedOpen ? (
-                <Button
-                  aria-label="Open Git"
-                  className="size-10 bg-card"
-                  size="icon-lg"
-                  type="button"
-                  variant="outline"
-                  onMouseEnter={() => {
-                    openPanelPreview("git");
-                    void loadGitStatus();
-                  }}
-                  onMouseLeave={() => closePanelPreview("git", setGitPreviewOpen)}
-                  onClick={() => {
-                    void loadGitStatus();
-                    if (narrowView) openPanelPreview("git");
-                    else {
-                      setGitOpen(true);
-                      setGitPreviewOpen(false);
-                    }
-                  }}
-                >
-                  <GitBranch aria-hidden="true" className="size-4" />
-                </Button>
-              ) : null}
-              {!contextPinnedOpen && !gitPinnedOpen ? (
-                <Button
-                  aria-label="Open context"
-                  className="size-10 bg-card"
-                  size="icon-lg"
-                  type="button"
-                  variant="outline"
-                  onMouseEnter={() => {
-                    openPanelPreview("context");
-                  }}
-                  onMouseLeave={() => closePanelPreview("context", setContextPreviewOpen)}
-                  onClick={() => {
-                    if (diffOpen || narrowView) openPanelPreview("context");
-                    else {
-                      setContextOpen(true);
-                      setContextPreviewOpen(false);
-                    }
-                  }}
-                >
-                  <Layers3 aria-hidden="true" className="size-4" />
-                </Button>
-              ) : null}
             </div>
           </header>
 
+          {!activeThread ? (
+            <div className="relative z-30 col-start-1 row-start-2 self-end px-4 pb-2 sm:px-5">
+              <div className="mx-auto w-full max-w-3xl px-3">
+                {editingTitle ? (
+                  <form className="flex min-w-0 items-center gap-2" onSubmit={renameActiveThread}>
+                    <Input
+                      autoFocus
+                      className="h-8 min-w-0 flex-1 bg-card text-sm font-semibold"
+                      maxLength={80}
+                      value={titleDraft}
+                      onChange={(event) => setTitleDraft(event.target.value)}
+                    />
+                    <Button className="h-7 px-2" size="sm" type="submit" variant="affirmative">Save</Button>
+                    <Button className="h-7 px-2 text-muted-foreground" size="sm" type="button" variant="ghost" onClick={() => setEditingTitle(false)}>
+                      Cancel
+                    </Button>
+                  </form>
+                ) : (
+                  <div className="min-w-0">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <h2 className="min-w-0 truncate text-sm font-semibold">{newThreadTitle || "New chat"}</h2>
+                      <Button
+                        aria-label="Rename thread"
+                        className="size-6 shrink-0 text-muted-foreground"
+                        size="icon-sm"
+                        type="button"
+                        variant="ghost"
+                        onClick={() => {
+                          setTitleDraft(newThreadTitle || "New chat");
+                          setEditingTitle(true);
+                        }}
+                      >
+                        <Pencil aria-hidden="true" className="size-3.5" />
+                      </Button>
+                    </div>
+                    <div className={`mt-0.5 flex min-w-0 w-fit max-w-full items-center gap-0.5 overflow-hidden rounded px-1 font-mono text-[10px] text-muted-foreground ${
+                      repositoryRequired ? "bg-warning-muted text-warning ring-2 ring-warning-border" : ""
+                    }`}>
+                      <FolderGit2 aria-hidden="true" className="mr-1 size-3 shrink-0" />
+                      {desktop ? (
+                        <button
+                          className={`min-w-0 truncate rounded px-0.5 text-left hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${repositoryRequired ? "text-warning" : ""}`}
+                          title={workspacePath || "Select a repository"}
+                          type="button"
+                          onClick={async () => {
+                            const selected = await desktop.selectRepository(workspacePath);
+                            if (selected) setWorkspacePath(selected);
+                          }}
+                        >
+                          {workspacePath || "Select a repository"}
+                        </button>
+                      ) : (
+                        <label className="min-w-0 flex-1">
+                          <span className="sr-only">Workspace path</span>
+                          <input
+                            className={`w-full bg-transparent outline-none ${repositoryRequired ? "text-warning" : ""}`}
+                            placeholder="Workspace path"
+                            value={workspacePath}
+                            onChange={(event) => setWorkspacePath(event.target.value)}
+                          />
+                        </label>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
+
           <div
-            className={`col-start-1 row-start-2 min-h-0 px-4 py-4 sm:px-5 ${
+            className={`col-start-1 row-start-2 min-h-0 px-4 py-4 sm:px-5 ${!activeThread ? "hidden" : ""} ${
               activityBesideThread ? "" : "overflow-y-auto"
             }`}
             ref={conversationAreaRef}
@@ -2870,6 +3093,11 @@ export default function App() {
                                 {activityIterationCount === 1 ? "iteration" : "iterations"}
                               </span>
                             </Button>
+                            <CopyButton
+                              className="!size-6"
+                              content={JSON.stringify(runEvents, null, 2)}
+                              label="Copy activity"
+                            />
                             {turn.finalized_by_iteration_limit || (finalizedByIterationLimit && isLatestPrompt) ? (
                               <Badge className="bg-warning-muted text-warning">
                                 Limit reached
@@ -2968,8 +3196,8 @@ export default function App() {
             </div>
           </div>
 
-          <form className="relative z-30 col-start-1 row-start-3 border-t bg-background px-4 py-3 sm:px-5" onSubmit={startRun}>
-            <Card className={`mx-auto w-full max-w-3xl rounded-2xl p-2 shadow-sm transition-shadow focus-within:shadow-md ${
+          <form ref={composerRef} className={`relative z-30 col-start-1 row-start-3 bg-background px-4 py-3 sm:px-5 ${activeThread ? "border-t" : ""}`} onSubmit={startRun}>
+            <Card className={`@container/composer mx-auto w-full max-w-3xl rounded-2xl p-2 shadow-sm transition-shadow focus-within:shadow-md ${
               status === "connecting" || status === "running" ? "composer-running" : ""
             }`}>
               <Textarea
@@ -3003,118 +3231,57 @@ export default function App() {
                 }}
               />
               <div className="flex flex-wrap items-center gap-2 px-1 pt-1">
-                <div className={`mr-auto flex min-w-0 items-stretch overflow-hidden rounded-lg border bg-card text-xs text-muted-foreground ${
-                  repositoryRequired ? "border-warning-border ring-2 ring-warning-border" : "border-border"
-                }`}>
-                  {activeThread ? (
-                    <span
-                      className="flex h-8 min-w-0 max-w-52 items-center gap-2 px-2 font-mono"
-                      title={activeThread.workspace_path}
-                    >
-                      <FolderGit2 aria-hidden="true" className="size-4 shrink-0" />
-                      <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-left [direction:rtl]">
-                        {activeThread.workspace_path}
-                      </span>
-                    </span>
-                  ) : desktop ? (
+                {workspacePath.trim() ? (
+                <div className="mr-auto flex min-w-0 items-stretch overflow-hidden rounded-lg border bg-card text-xs text-muted-foreground">
                     <Button
-                      className={`h-8 max-w-52 justify-start gap-2 rounded-none px-2 font-mono text-xs font-normal ${
-                        repositoryRequired
-                          ? "bg-warning-muted text-warning hover:bg-warning-muted/80"
-                          : "text-muted-foreground"
-                      }`}
-                      title={workspacePath || "Select repository"}
-                      type="button"
-                      variant="ghost"
-                      onClick={async () => {
-                        const selected = await desktop.selectRepository(workspacePath);
-                        if (selected) setWorkspacePath(selected);
-                      }}
-                    >
-                      <FolderGit2 aria-hidden="true" className="size-4 shrink-0" />
-                      <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-left [direction:rtl]">
-                        {workspacePath || "Select repository"}
-                      </span>
-                    </Button>
-                  ) : (
-                    <label>
-                      <span className="sr-only">Workspace path</span>
-                      <Input
-                        className={`h-8 w-36 rounded-none border-0 bg-transparent px-2 font-mono text-xs shadow-none sm:w-52 ${
-                          repositoryRequired
-                            ? "bg-warning-muted text-warning"
-                            : "focus-visible:ring-0"
-                        }`}
-                        value={workspacePath}
-                        onChange={(event) => setWorkspacePath(event.target.value)}
-                        placeholder="Workspace path"
-                      />
-                    </label>
-                  )}
-                  {workspacePath.trim() && gitTracked && gitStatus.branches.length ? (
-                    <SelectPrimitive.Root
-                      open={branchPickerOpen}
-                      value={gitStatus.branch ?? undefined}
-                      onOpenChange={setBranchPickerOpen}
-                      onValueChange={(value) => value && void switchGitBranch(value as string)}
-                    >
-                      <SelectPrimitive.Trigger
-                        aria-label={`Switch branch, currently ${gitBranchLabel}`}
-                        className="flex h-8 max-w-40 cursor-pointer items-center gap-1.5 border-l px-2 font-mono text-[10px] font-semibold outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50"
-                        disabled={Boolean(gitMutation) || runInProgress}
-                        title={`Branch: ${gitBranchLabel}`}
-                      >
-                        <GitBranch aria-hidden="true" className="size-3.5 shrink-0" />
-                        <span className="truncate">{gitBranchLabel}</span>
-                        <SelectPrimitive.Icon render={<ChevronUp className="size-3.5 shrink-0" />} />
-                      </SelectPrimitive.Trigger>
-                      <SelectPrimitive.Portal>
-                        <SelectPrimitive.Positioner alignItemWithTrigger sideOffset={4} className="z-50">
-                          <SelectPrimitive.Popup className="min-w-44 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md">
-                            <SelectPrimitive.List>
-                              {gitStatus.branches.map((branch) => (
-                                <SelectPrimitive.Item
-                                  className="relative flex cursor-default items-center rounded-md py-1.5 pr-8 pl-2 font-mono text-xs outline-none focus:bg-accent focus:text-accent-foreground"
-                                  key={branch}
-                                  value={branch}
-                                >
-                                  <SelectPrimitive.ItemText>{branch}</SelectPrimitive.ItemText>
-                                  <SelectPrimitive.ItemIndicator
-                                    className="absolute right-2"
-                                    render={<Check className="size-3.5" />}
-                                  />
-                                </SelectPrimitive.Item>
-                              ))}
-                            </SelectPrimitive.List>
-                          </SelectPrimitive.Popup>
-                        </SelectPrimitive.Positioner>
-                      </SelectPrimitive.Portal>
-                    </SelectPrimitive.Root>
-                  ) : workspacePath.trim() ? (
-                    <Button
-                      aria-label="Open Git panel"
-                      className={`h-8 max-w-36 shrink-0 gap-1.5 rounded-none border-l px-2 font-mono text-[10px] font-semibold ${
+                      aria-label={`${gitVisible ? "Close" : "Open"} Git panel, branch ${gitBranchLabel}, ${gitChangedFileCount} changed files, ${gitStatus?.ahead ?? 0} ahead and ${gitStatus?.behind ?? 0} behind`}
+                      aria-pressed={gitVisible}
+                      className={`h-8 max-w-56 shrink-0 gap-1.5 rounded-none px-2 font-mono text-[10px] font-semibold @max-[640px]/composer:max-w-40 ${
                         !gitStatusLoading && !gitTracked
                           ? "bg-warning-muted text-warning hover:bg-warning-muted/80"
                           : "text-muted-foreground"
                       }`}
-                      title={gitTracked ? gitBranchLabel : "This path is not tracked by Git"}
+                      title={gitTracked ? `Branch: ${gitBranchLabel} · ${gitChangedFileCount} changed · ${gitStatus?.ahead ?? 0} ahead · ${gitStatus?.behind ?? 0} behind` : "This path is not tracked by Git"}
                       type="button"
                       variant="ghost"
-                      onClick={() => {
-                        void loadGitStatus();
-                        if (narrowView) openPanelPreview("git");
-                        else {
-                          setGitOpen(true);
-                          setGitPreviewOpen(false);
-                        }
-                      }}
+                      onClick={toggleGitPanel}
                     >
                       <GitBranch aria-hidden="true" className="size-3.5 shrink-0" />
                       <span className="truncate">{gitBranchLabel}</span>
+                      {gitChangedFileCount ? (
+                        <span className="flex items-center gap-1 text-warning">
+                          <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />{gitChangedFileCount}
+                        </span>
+                      ) : null}
+                      {gitStatus?.ahead ? <span>
+                        <ChevronUp aria-hidden="true" className="inline size-3" />{gitStatus?.ahead ?? 0}
+                      </span> : null}
+                      {gitStatus?.behind ? <span>
+                        <ChevronDown aria-hidden="true" className="inline size-3" />{gitStatus?.behind ?? 0}
+                      </span> : null}
                     </Button>
-                  ) : null}
                 </div>
+                ) : <span className="mr-auto" />}
+                {contextAvailable ? (
+                  <Button
+                    aria-label={`${contextVisible ? "Close" : "Open"} context, ${Math.round(contextUsage)}% of budget used`}
+                    aria-pressed={contextVisible}
+                    className="size-8 shrink-0 text-muted-foreground"
+                    size="icon-sm"
+                    title={`Context: ${Math.round(contextUsage)}% used`}
+                    type="button"
+                    variant={contextVisible ? "secondary" : "ghost"}
+                    onClick={toggleContextPanel}
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="flex size-6 items-center justify-center rounded-full p-0.5"
+                      style={{ background: `conic-gradient(var(--foreground) ${contextUsage}%, var(--border) 0)` }}
+                    >
+                      <span className="size-full rounded-full bg-background" />
+                    </span>
+                  </Button>
+                ) : null}
                 <label className="text-xs text-muted-foreground">
                   <span className="sr-only">Model</span>
                   {availableModels.length ? (
@@ -3125,14 +3292,16 @@ export default function App() {
                     onValueChange={(value) => value && setModelName(value as string)}
                   >
                     <SelectPrimitive.Trigger
-                      className={`flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-lg px-2.5 text-xs outline-none focus-visible:ring-3 focus-visible:ring-ring/50 ${
+                      aria-label={`Model: ${modelName}`}
+                      title={modelName}
+                      className={`flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-lg px-2.5 text-xs outline-none focus-visible:ring-3 focus-visible:ring-ring/50 @max-[640px]/composer:w-32 ${
                         modelRequired
                           ? "bg-warning-muted text-warning ring-2 ring-warning-border"
                           : "bg-transparent"
                       }`}
                     >
-                      <SelectPrimitive.Value />
-                      <SelectPrimitive.Icon render={<ChevronUp className="size-4 text-muted-foreground" />} />
+                      <SelectPrimitive.Value className="min-w-0 truncate" />
+                      <SelectPrimitive.Icon render={<ChevronUp className="size-4 shrink-0 text-muted-foreground" />} />
                     </SelectPrimitive.Trigger>
                     <SelectPrimitive.Portal>
                       <SelectPrimitive.Positioner alignItemWithTrigger sideOffset={4} className="z-50">
@@ -3184,7 +3353,7 @@ export default function App() {
                     </SelectPrimitive.Root>
                   ) : (
                     <Button
-                      className={`h-8 w-48 justify-between px-2.5 text-xs font-normal ${
+                      className={`h-8 w-48 justify-between px-2.5 text-xs font-normal @max-[640px]/composer:w-32 ${
                         modelRequired
                           ? "bg-warning-muted text-warning ring-2 ring-warning-border hover:bg-warning-muted/80"
                           : "text-muted-foreground"
@@ -3198,16 +3367,16 @@ export default function App() {
                     </Button>
                   )}
                 </label>
-                {status === "connecting" || status === "running" ? (
-                  <span className="text-xs font-medium text-muted-foreground">
-                    {stopping ? "Stopping" : "Working"}
-                    {queuedTasks.length ? ` · ${queuedTasks.length} queued` : ""}
+                {(status === "connecting" || status === "running") && queuedTasks.length > 0 ? (
+                  <span className="text-xs font-medium text-muted-foreground" role="status">
+                    {queuedTasks.length} queued
                   </span>
                 ) : null}
                 {status === "connecting" || status === "running" ? (
                   <>
                     <Button
-                      aria-label="Stop run"
+                      aria-label={stopping ? "Stopping run" : "Stop run"}
+                      title={stopping ? "Stopping run" : "Stop run"}
                       className="size-8"
                       disabled={stopping}
                       size="icon-sm"
@@ -3215,13 +3384,14 @@ export default function App() {
                       variant="destructive"
                       onClick={stopRun}
                     >
-                      <Square aria-hidden="true" className="size-3.5 fill-current" />
+                      {stopping ? <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" /> : <Square aria-hidden="true" className="size-3.5 fill-current" />}
                     </Button>
                     {task.trim() ? ([alternateRunEnterAction, activeRunEnterAction] as const).map((action) => {
                       const primary = action === activeRunEnterAction;
                       return (
                         <Button
-                          className="h-8 px-3 text-xs font-semibold capitalize"
+                          aria-label={action === "queue" ? "Queue message" : "Steer run"}
+                          className="h-8 px-3 text-xs font-semibold capitalize @max-[640px]/composer:w-8 @max-[640px]/composer:px-0"
                           disabled={stopping || viewingOtherThreadDuringRun || (action === "steer" && status !== "running")}
                           key={action}
                           size="sm"
@@ -3230,20 +3400,23 @@ export default function App() {
                           variant={primary ? "affirmative" : "outline"}
                           onClick={action === "queue" ? queueTask : steerRun}
                         >
-                          {action}
+                          {action === "queue" ? <ListPlus aria-hidden="true" className="size-3.5" /> : <CornerUpRight aria-hidden="true" className="size-3.5" />}
+                          <span className="@max-[640px]/composer:hidden">{action}</span>
                         </Button>
                       );
                     }) : null}
                   </>
                 ) : (
                   <Button
-                    className="h-8 px-3 text-xs font-semibold"
+                    aria-label="Send message"
+                    title="Send message"
+                    className="size-8 text-xs font-semibold"
                     disabled={!task.trim() || !modelName || (!activeThread && !workspacePath.trim())}
-                    size="sm"
+                    size="icon-sm"
                     type="submit"
                     variant="affirmative"
                   >
-                    <Send aria-hidden="true" className="size-3.5" /> Send
+                    <Send aria-hidden="true" className="size-3.5" />
                   </Button>
                 )}
               </div>
@@ -3255,8 +3428,9 @@ export default function App() {
         {gitDiff ? (
           <aside
             aria-label={`Diff for ${gitDiff.path}`}
-            className="fixed inset-x-0 top-14 bottom-0 z-30 flex min-h-0 flex-col border-l bg-background lg:relative lg:inset-auto lg:z-auto lg:w-[var(--diff-column-width)]"
+            className="fixed inset-x-0 top-14 bottom-0 z-30 flex min-h-0 flex-col border-l bg-background lg:relative lg:inset-auto lg:col-start-3 lg:z-auto lg:w-[var(--diff-column-width)] lg:pt-14"
             ref={diffPanelRef}
+            style={narrowView ? { bottom: composerHeight } : undefined}
           >
             <div
               aria-label="Resize diff panel"
@@ -3270,7 +3444,7 @@ export default function App() {
             >
               <span className="absolute inset-y-0 left-1/2 w-px bg-transparent group-hover:bg-border" />
             </div>
-            <header className={`flex h-14 shrink-0 items-center gap-3 border-b px-3 ${desktop ? "titlebar-drag" : ""}`}>
+            <header className="flex h-14 shrink-0 items-center gap-3 border-b px-3">
               <div className="min-w-0 flex-1">
                 <div className="truncate font-mono text-xs font-medium text-foreground" title={gitDiff.path}>
                   {gitPathParts(gitDiff.path).fileName}
@@ -3299,6 +3473,26 @@ export default function App() {
                     <Columns2 aria-hidden="true" className="size-3.5" />
                   </Button>
                 ) : null}
+                <Button
+                  aria-label={gitDiffShowUnchanged ? "Hide unchanged regions" : "Show unchanged regions"}
+                  aria-pressed={gitDiffShowUnchanged}
+                  className="size-7 rounded-md text-muted-foreground"
+                  size="icon-sm"
+                  title={gitDiffShowUnchanged ? "Hide unchanged regions" : "Show unchanged regions"}
+                  type="button"
+                  variant={gitDiffShowUnchanged ? "secondary" : "ghost"}
+                  onClick={() => {
+                    const showUnchanged = !gitDiffShowUnchanged;
+                    setGitDiffShowUnchanged(showUnchanged);
+                    void openGitDiff(
+                      { path: gitDiff.path, status: "" },
+                      gitDiff.staged,
+                      showUnchanged,
+                    );
+                  }}
+                >
+                  <UnfoldVertical aria-hidden="true" className="size-3.5" />
+                </Button>
                 <Button
                   aria-label={gitDiffWrap ? "Disable word wrap" : "Enable word wrap"}
                   aria-pressed={gitDiffWrap}
@@ -3359,9 +3553,9 @@ export default function App() {
         {gitVisible ? (
           <aside
             aria-label="Git"
-            className={`drawer-right fixed top-14 bottom-0 z-40 flex w-[var(--git-column-width)] max-w-[calc(100vw-3rem)] min-h-0 flex-col border-l bg-sidebar shadow-[-12px_0_30px_rgba(31,31,30,0.12)] lg:max-w-none ${
+            className={`drawer-right fixed top-14 bottom-0 z-40 flex w-[var(--git-column-width)] max-w-[calc(100vw-3rem)] min-h-0 flex-col border-l bg-sidebar shadow-[-12px_0_30px_rgba(31,31,30,0.12)] lg:col-start-4 lg:max-w-none ${gitClosing ? "drawer-right-closing" : ""} ${
               gitPinnedOpen
-                ? "lg:relative lg:inset-y-auto lg:z-auto lg:shadow-none"
+                ? "lg:relative lg:inset-y-auto lg:z-auto lg:pt-14 lg:shadow-none"
                 : "lg:absolute lg:top-14 lg:right-0 lg:bottom-0 lg:z-40"
             }`}
             style={narrowView && contextVisible
@@ -3388,47 +3582,64 @@ export default function App() {
                 <span className="absolute inset-y-0 left-1/2 w-px bg-transparent group-hover:bg-border" />
               </div>
             ) : null}
-            {gitPinnedOpen ? (
-              <header
-                className={`flex h-14 shrink-0 items-center justify-start gap-1 border-b px-3 ${desktop ? "titlebar-drag" : ""}`}
-                style={desktopWindowControls && !contextPinnedOpen ? { paddingRight: `${144 / uiScale}px` } : undefined}
-              >
-                <Button
-                  aria-label="Collapse Git"
-                  className="size-10 bg-card"
-                  size="icon-lg"
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    setGitOpen(false);
-                    closeGitDiff();
-                  }}
-                >
-                  <GitBranch aria-hidden="true" className="size-4" />
-                </Button>
-                {!contextPinnedOpen ? (
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+              {gitTracked && gitStatus.branches.length ? (
+                <>
+                <div className="flex items-center gap-2">
+                  <div className="min-w-0 flex-1">
+                  <SelectPrimitive.Root
+                    open={branchPickerOpen}
+                    value={gitStatus.branch ?? undefined}
+                    onOpenChange={setBranchPickerOpen}
+                    onValueChange={(value) => value && void switchGitBranch(value as string)}
+                  >
+                    <SelectPrimitive.Trigger
+                      aria-label={`Switch branch, currently ${gitBranchLabel}`}
+                      className="flex h-9 w-full cursor-pointer items-center justify-between gap-2 rounded-lg border bg-card px-2.5 font-mono text-xs outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring/50"
+                      disabled={Boolean(gitMutation) || runInProgress}
+                    >
+                      <span className="flex min-w-0 items-center gap-2">
+                        <GitBranch aria-hidden="true" className="size-3.5 shrink-0" />
+                        <SelectPrimitive.Value className="truncate" />
+                      </span>
+                      <SelectPrimitive.Icon render={<ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />} />
+                    </SelectPrimitive.Trigger>
+                    <SelectPrimitive.Portal>
+                      <SelectPrimitive.Positioner alignItemWithTrigger sideOffset={4} className="z-50">
+                        <SelectPrimitive.Popup className="min-w-[var(--anchor-width)] rounded-lg border bg-popover p-1 text-popover-foreground shadow-md">
+                          <SelectPrimitive.List>
+                            {gitStatus.branches.map((branch) => (
+                              <SelectPrimitive.Item
+                                className="relative flex cursor-default items-center rounded-md py-1.5 pr-8 pl-2 font-mono text-xs outline-none focus:bg-accent focus:text-accent-foreground"
+                                key={branch}
+                                value={branch}
+                              >
+                                <SelectPrimitive.ItemText>{branch}</SelectPrimitive.ItemText>
+                                <SelectPrimitive.ItemIndicator className="absolute right-2" render={<Check className="size-3.5" />} />
+                              </SelectPrimitive.Item>
+                            ))}
+                          </SelectPrimitive.List>
+                        </SelectPrimitive.Popup>
+                      </SelectPrimitive.Positioner>
+                    </SelectPrimitive.Portal>
+                  </SelectPrimitive.Root>
+                  </div>
                   <Button
-                    aria-label="Open context"
-                    className="size-10 bg-card"
-                    size="icon-lg"
+                    aria-label={gitFetchError ? "Retry remote Git refresh" : "Refresh Git status and fetch remote"}
+                    className={`size-9 shrink-0 ${gitFetchError ? "text-warning" : "text-muted-foreground"}`}
+                    disabled={gitStatusLoading || Boolean(gitMutation)}
+                    size="icon-sm"
+                    title={gitFetchError ? `Remote refresh failed: ${gitFetchError}. Local status is still current.` : "Fetch remote and refresh local status"}
                     type="button"
                     variant="outline"
-                    onMouseEnter={() => openPanelPreview("context")}
-                    onMouseLeave={() => closePanelPreview("context", setContextPreviewOpen)}
-                    onClick={() => {
-                      if (diffOpen || narrowView) openPanelPreview("context");
-                      else {
-                        setContextOpen(true);
-                        setContextPreviewOpen(false);
-                      }
-                    }}
+                    onClick={() => void loadGitStatus(false, true)}
                   >
-                    <Layers3 aria-hidden="true" className="size-4" />
+                    <RefreshCw aria-hidden="true" className={`size-3.5 ${gitStatusLoading ? "animate-spin" : ""}`} />
                   </Button>
-                ) : null}
-              </header>
-            ) : null}
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+                </div>
+                <Separator />
+                </>
+              ) : null}
               {gitStatusLoading && !gitStatus ? (
                 <div className="flex items-center justify-center gap-2 px-2 py-8 text-sm text-muted-foreground">
                   <LoaderCircle aria-hidden="true" className="size-4 animate-spin" /> Reading Git status...
@@ -3456,17 +3667,35 @@ export default function App() {
                 </div>
               ) : gitStatus ? (
                 <>
+
+                  {renderGitFileGroup("changes", "Changes", [...gitStatus.modified, ...gitStatus.untracked], "stage")}
+                  {!gitHasChanges ? (
+                    <section>
+                      <div className="mb-1 flex h-5 items-center gap-1.5 px-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                        <span>Changes</span>
+                        <span className="font-normal tabular-nums">0</span>
+                      </div>
+                      <div className="rounded-lg border bg-card px-3 py-2.5 text-xs text-muted-foreground">
+                        Working tree clean.
+                      </div>
+                    </section>
+                  ) : null}
+                  {(gitStatus.modified.length || gitStatus.untracked.length) && gitStatus.staged.length ? <GitFlowSeparator /> : null}
+                  {renderGitFileGroup("staged", "Staged changes", gitStatus.staged, "unstage")}
+                  <GitFlowSeparator />
                   <form
-                    className="flex min-w-0 items-center gap-2"
+                    className="flex min-w-0 items-stretch overflow-hidden rounded-lg border bg-card focus-within:ring-2 focus-within:ring-ring/40"
                     onSubmit={(event) => {
                       event.preventDefault();
                       void createGitCommit();
                     }}
                   >
-                    <label className="min-w-0 flex-1">
+                    <div className="relative min-w-0 flex-1">
+                    <label>
                       <span className="sr-only">Commit message</span>
-                      <Input
-                        className="h-8 bg-card px-2.5 text-xs"
+                      <textarea
+                        className={`block min-h-8 max-h-32 w-full resize-none overflow-y-auto border-0 bg-transparent py-[7px] pl-2.5 text-xs leading-[18px] outline-none [field-sizing:content] placeholder:text-muted-foreground ${modelName ? "pr-9" : "pr-2.5"}`}
+                        rows={1}
                         maxLength={200}
                         placeholder="Commit message"
                         value={commitMessage}
@@ -3475,24 +3704,34 @@ export default function App() {
                     </label>
                     {modelName ? (
                       <Button
-                        aria-label="Generate commit message with AI"
-                        className="size-8 text-muted-foreground"
-                        disabled={!gitHasChanges || commitMessageGenerating || Boolean(gitMutation)}
+                        aria-label={commitMessageGenerating ? "Cancel commit message generation" : "Generate commit message with AI"}
+                        className="group/commit-ai absolute top-1 right-1 size-6 rounded-md text-muted-foreground hover:bg-muted/60"
+                        disabled={!commitMessageGenerating && (!gitHasChanges || Boolean(gitMutation))}
                         size="icon-sm"
-                        title={gitHasStagedChanges ? "Generate from staged changes" : "Generate from working-tree changes"}
+                        title={commitMessageGenerating ? "Cancel generation" : gitHasStagedChanges ? "Generate from staged changes" : "Generate from working-tree changes"}
                         type="button"
-                        variant="outline"
-                        onClick={() => void generateCommitMessage()}
+                        variant="ghost"
+                        onClick={() => {
+                          if (commitGenerationRef.current) {
+                            commitGenerationRef.current.abort();
+                            commitGenerationRef.current = null;
+                            setCommitMessageGenerating(false);
+                          } else void generateCommitMessage();
+                        }}
                       >
                         {commitMessageGenerating ? (
-                          <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" />
+                          <>
+                            <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin group-hover/commit-ai:hidden group-focus-visible/commit-ai:hidden" />
+                            <X aria-hidden="true" className="hidden size-3.5 group-hover/commit-ai:block group-focus-visible/commit-ai:block" />
+                          </>
                         ) : (
                           <Sparkles aria-hidden="true" className="size-3.5" />
                         )}
                       </Button>
                     ) : null}
+                    </div>
                     <Button
-                      className="h-8 px-2.5 text-xs"
+                      className="h-auto min-h-8 rounded-none border-l px-3 text-xs"
                       disabled={!gitHasStagedChanges || !commitMessage.trim() || Boolean(gitMutation)}
                       size="sm"
                       type="submit"
@@ -3501,18 +3740,13 @@ export default function App() {
                       Commit
                     </Button>
                   </form>
-                  {renderGitFileGroup("staged", "Staged changes", gitStatus.staged, "unstage")}
-                  {renderGitFileGroup("changes", "Changes", [...gitStatus.modified, ...gitStatus.untracked], "stage")}
-                  {!gitStatus.staged.length && !gitStatus.modified.length && !gitStatus.untracked.length ? (
-                    <p className="px-2 py-2 text-center text-sm leading-6 text-muted-foreground">
-                      Working tree clean.
-                    </p>
-                  ) : null}
-                  <div className="space-y-3 border-t pt-3">
-                  <div className="flex items-center gap-2">
+                  <GitFlowSeparator />
+                  <div className="space-y-3">
+                  {renderGitCommits()}
+                  {gitStatus.local_commits.length ? <GitFlowSeparator /> : null}
                     <Button
                       aria-label={`Synchronize ${gitBranchLabel}: ${gitStatus.ahead} to push, ${gitStatus.behind} to pull`}
-                      className="h-8 min-w-0 flex-1 justify-start gap-2 px-2.5 text-xs"
+                      className="h-8 w-full min-w-0 justify-start gap-2 px-2.5 text-xs"
                       disabled={!gitStatus.upstream || (!gitStatus.ahead && !gitStatus.behind) || Boolean(gitMutation)}
                       title={gitStatus.upstream ? `Synchronize with ${gitStatus.upstream}` : "This branch has no upstream"}
                       type="button"
@@ -3521,9 +3755,6 @@ export default function App() {
                     >
                       <ArrowDownUp aria-hidden="true" className="size-3.5 shrink-0" />
                       <span className="shrink-0">{gitStatus.upstream ? "Sync" : "No upstream"}</span>
-                      <span className="min-w-0 truncate font-mono text-[10px] font-normal text-muted-foreground">
-                        {gitBranchLabel}
-                      </span>
                       {gitStatus.upstream ? (
                         <span className="ml-auto flex shrink-0 items-center gap-2 font-normal text-muted-foreground">
                           <span className={gitStatus.ahead ? "text-foreground" : ""}>
@@ -3535,21 +3766,6 @@ export default function App() {
                         </span>
                       ) : null}
                     </Button>
-                    <Button
-                      aria-label={gitFetchError ? "Retry remote Git refresh" : "Refresh Git status and fetch remote"}
-                      className={`h-8 gap-1 px-2 text-[11px] ${gitFetchError ? "text-warning" : "text-muted-foreground"}`}
-                      disabled={gitStatusLoading || Boolean(gitMutation)}
-                      size="xs"
-                      title={gitFetchError ? `Remote refresh failed: ${gitFetchError}. Local status is still current.` : "Fetch remote and refresh local status"}
-                      type="button"
-                      variant="ghost"
-                      onClick={() => void loadGitStatus(false, true)}
-                    >
-                      <RefreshCw aria-hidden="true" className={`size-3 ${gitStatusLoading ? "animate-spin" : ""}`} />
-                      Refresh
-                    </Button>
-                  </div>
-                  {renderGitCommits()}
                   </div>
                 </>
               ) : null}
@@ -3557,18 +3773,23 @@ export default function App() {
           </aside>
         ) : null}
 
+        {contextPreviewOpen && !contextPinnedOpen ? (
+          <button
+            aria-label="Close context panel"
+            className="fixed inset-0 z-[35] cursor-default bg-black/10"
+            type="button"
+            onClick={toggleContextPanel}
+          />
+        ) : null}
+
         {contextVisible ? (
           <aside
-            className={`drawer-right fixed top-14 right-0 bottom-0 z-40 flex w-[var(--context-column-width)] max-w-[calc(100vw-3rem)] min-h-0 flex-col border-l bg-sidebar shadow-[-12px_0_30px_rgba(31,31,30,0.12)] lg:max-w-none ${
+            className={`drawer-right fixed top-14 right-0 bottom-0 z-40 flex w-[var(--context-column-width)] max-w-[calc(100vw-3rem)] min-h-0 flex-col border-l bg-sidebar shadow-[-12px_0_30px_rgba(31,31,30,0.12)] lg:col-start-5 lg:max-w-none ${contextClosing ? "drawer-right-closing" : ""} ${
               contextPinnedOpen
-                ? "lg:relative lg:inset-y-auto lg:z-auto lg:shadow-none"
+                ? "lg:relative lg:inset-y-auto lg:z-auto lg:pt-14 lg:shadow-none"
                 : "lg:absolute lg:top-14 lg:right-0 lg:bottom-0 lg:z-40"
             }`}
             style={narrowView && gitVisible ? { width: "calc((100vw - 3rem) / 2)" } : undefined}
-            onMouseEnter={() => holdPanelPreview("context")}
-            onMouseLeave={() => {
-              if (!contextPinnedOpen) closePanelPreview("context", setContextPreviewOpen);
-            }}
           >
             {contextPinnedOpen ? (
               <div
@@ -3583,23 +3804,6 @@ export default function App() {
               >
                 <span className="absolute inset-y-0 left-1/2 w-px bg-transparent group-hover:bg-border" />
               </div>
-            ) : null}
-            {contextPinnedOpen ? (
-              <header
-                className={`flex h-14 shrink-0 items-center justify-start border-b px-3 ${desktop ? "titlebar-drag" : ""}`}
-                style={desktopWindowControls ? { paddingRight: `${144 / uiScale}px` } : undefined}
-              >
-                <Button
-                  aria-label="Collapse context"
-                  className="size-10 bg-card"
-                  size="icon-lg"
-                  type="button"
-                  variant="outline"
-                  onClick={() => setContextOpen(false)}
-                >
-                  <Layers3 aria-hidden="true" className="size-4" />
-                </Button>
-              </header>
             ) : null}
             <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
               {threadContext ? (
@@ -3813,6 +4017,23 @@ export default function App() {
           </Card>
         </div>
       ) : null}
+      <AlertDialogPrimitive.Root open={Boolean(undoCommitWarning)} onOpenChange={(open) => { if (!open && !gitMutation) setUndoCommitWarning(null); }}>
+        <AlertDialogPrimitive.Portal>
+          <AlertDialogPrimitive.Backdrop className="fixed inset-0 z-50 bg-black/30" />
+          <AlertDialogPrimitive.Viewport className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <AlertDialogPrimitive.Popup className="w-full max-w-md rounded-xl border bg-card p-5 text-card-foreground shadow-xl outline-none">
+              <AlertDialogPrimitive.Title className="text-base font-semibold">Undo last unsynced commit?</AlertDialogPrimitive.Title>
+              <AlertDialogPrimitive.Description className="mt-2 text-sm leading-6 text-muted-foreground">
+                You already have staged changes. Continuing removes the last commit and keeps its changes staged alongside your current staged changes. Your working files stay unchanged.
+              </AlertDialogPrimitive.Description>
+              <div className="mt-5 flex justify-end gap-2">
+                <Button type="button" variant="ghost" disabled={Boolean(gitMutation)} onClick={() => setUndoCommitWarning(null)}>Cancel</Button>
+                <Button type="button" disabled={Boolean(gitMutation)} onClick={() => { if (undoCommitWarning) void undoLastCommit(undoCommitWarning, true); }}>Continue anyway</Button>
+              </div>
+            </AlertDialogPrimitive.Popup>
+          </AlertDialogPrimitive.Viewport>
+        </AlertDialogPrimitive.Portal>
+      </AlertDialogPrimitive.Root>
       <AlertDialogPrimitive.Root
         open={Boolean(threadToDelete || branchSwitchError || error)}
         onOpenChange={(open) => {

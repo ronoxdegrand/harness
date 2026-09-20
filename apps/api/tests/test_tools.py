@@ -37,6 +37,7 @@ def test_tool_registry_exposes_metadata_and_schemas() -> None:
     assert "read_file" in tool_names
     assert "write_file" in tool_names
     assert "git_status" in tool_names
+    assert "git_log" in tool_names
     assert {"git_refresh", "git_switch", "git_sync", "git_commit", "git_stage", "git_unstage", "git_discard"} <= set(tool_names)
     assert any(tool["name"] == "shell" for tool in definitions)
     assert registry.get("write_file").input_schema["required"] == ["path", "content"]
@@ -187,6 +188,10 @@ def test_git_tools_and_repo_workflow(tmp_path: Path) -> None:
         ToolCall(id="status", name="git_status", arguments={}),
         target_path=workspace,
     )
+    log_result = executor.execute(
+        ToolCall(id="log", name="git_log", arguments={"limit": 10}),
+        target_path=workspace,
+    )
     diff_result = executor.execute(
         ToolCall(id="diff", name="git_diff", arguments={"path": "src/math_utils.py"}),
         target_path=workspace,
@@ -221,6 +226,10 @@ def test_git_tools_and_repo_workflow(tmp_path: Path) -> None:
     assert passing_test.success is True
     assert "1 passed" in passing_test.output
     assert "M src/math_utils.py" in status_result.output
+    history = json.loads(log_result.output)
+    assert log_result.success is True
+    assert history[0]["subject"] == "init"
+    assert history[0]["short_hash"]
     assert "-    return a + b" in diff_result.output
     assert "+    return a - b" in diff_result.output
     assert blank_path_diff.success is True

@@ -5,6 +5,8 @@ import pytest
 
 from agent_harness_api.git_status import (
     GitBranchSwitchError,
+    GitStagedChangesWarning,
+    undo_last_git_commit,
     commit_git_changes,
     discard_git_changes,
     read_commit_message_diff,
@@ -71,6 +73,24 @@ def test_git_file_diff_reads_staged_worktree_and_untracked_versions(tmp_path: Pa
     assert "working version" in working["patch"]
     assert "new content" in untracked["patch"]
     assert staged["binary"] is False
+
+
+def test_git_file_diff_can_include_all_unchanged_lines(tmp_path: Path) -> None:
+    _git(tmp_path, "init")
+    _git(tmp_path, "config", "user.name", "Test")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    source = tmp_path / "source.txt"
+    source.write_text("".join(f"line {index}\n" for index in range(20)))
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "initial")
+    source.write_text("".join("changed\n" if index == 10 else f"line {index}\n" for index in range(20)))
+
+    collapsed = read_git_file_diff(tmp_path, "source.txt", staged=False)
+    expanded = read_git_file_diff(tmp_path, "source.txt", staged=False, full_context=True)
+
+    assert " line 0" not in collapsed["patch"]
+    assert " line 0" in expanded["patch"]
+    assert " line 19" in expanded["patch"]
 
 
 def test_git_file_diff_rejects_files_outside_the_requested_change_group(tmp_path: Path) -> None:
@@ -342,3 +362,68 @@ def test_discard_restores_tracked_deletions_and_removes_untracked_files(tmp_path
     assert not untracked.exists()
     assert status["modified"] == []
     assert status["untracked"] == []
+
+
+@pytest.fixture
+def undo_repo(tmp_path: Path) -> Path:
+    _git(tmp_path, "init")
+    _git(tmp_path, "config", "user.name", "Test")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    (tmp_path / "tracked.txt").write_text("initial\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "initial")
+    _git(tmp_path, "branch", "shared")
+    (tmp_path / "tracked.txt").write_text("committed\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "local change")
+    return tmp_path
+
+
+def test_undo_last_commit_preserves_staged_and_unstaged_changes(undo_repo: Path) -> None:
+    path = undo_repo
+    head = read_git_status(path)["local_commits"][0]["hash"]
+    (path / "tracked.txt").write_text("unstaged edit\n")
+    (path / "extra.txt").write_text("already staged\n")
+    _git(path, "add", "extra.txt")
+    before = read_git_status(path)
+    with pytest.raises(GitStagedChangesWarning):
+        undo_last_git_commit(path, head)
+    assert read_git_status(path) == before
+    status = undo_last_git_commit(path, head, allow_staged=True)
+    assert {file["path"] for file in status["staged"]} == {"tracked.txt", "extra.txt"}
+    assert {file["path"] for file in status["modified"]} == {"tracked.txt"}
+    assert status["local_commits"] == []
+    assert (path / "tracked.txt").read_text() == "unstaged edit\n"
+    staged = subprocess.run(["git", "show", ":tracked.txt"], cwd=path, capture_output=True, text=True, check=True)
+    assert staged.stdout == "committed\n"
+
+
+def test_undo_last_commit_without_existing_staged_changes(undo_repo: Path) -> None:
+    head = read_git_status(undo_repo)["local_commits"][0]["hash"]
+    status = undo_last_git_commit(undo_repo, head)
+    assert [file["path"] for file in status["staged"]] == ["tracked.txt"]
+    assert status["modified"] == []
+
+
+def test_undo_rejects_changed_head_and_synced_commits(undo_repo: Path) -> None:
+    head = read_git_status(undo_repo)["local_commits"][0]["hash"]
+    with pytest.raises(ValueError, match="latest commit changed"):
+        undo_last_git_commit(undo_repo, "stale")
+    _git(undo_repo, "update-ref", "refs/remotes/origin/main", head)
+    with pytest.raises(ValueError, match="shared or synced|already synced"):
+        undo_last_git_commit(undo_repo, head)
+    assert read_git_status(undo_repo)["staged"] == []
+
+
+def test_undo_unsynced_first_commit_keeps_changes_staged(tmp_path: Path) -> None:
+    _git(tmp_path, "init")
+    _git(tmp_path, "config", "user.name", "Test")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    (tmp_path / "first.txt").write_text("first\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "initial")
+    head = read_git_status(tmp_path)["local_commits"][0]["hash"]
+    status = undo_last_git_commit(tmp_path, head)
+    assert [file["path"] for file in status["staged"]] == ["first.txt"]
+    assert status["local_commits"] == []
+    assert (tmp_path / "first.txt").read_text() == "first\n"

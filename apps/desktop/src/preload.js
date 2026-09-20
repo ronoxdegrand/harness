@@ -9,6 +9,13 @@ contextBridge.exposeInMainWorld("harnessDesktop", {
     return () => ipcRenderer.removeListener("desktop:update-ready", listener);
   },
   getUpdateReady: () => ipcRenderer.invoke("desktop:get-update"),
+  getUpdateState: () => ipcRenderer.invoke("desktop:get-update-state"),
+  checkForUpdates: () => ipcRenderer.invoke("desktop:check-for-updates"),
+  onUpdateState(callback) {
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on("desktop:update-state", listener);
+    return () => ipcRenderer.removeListener("desktop:update-state", listener);
+  },
   restartToUpdate: () => ipcRenderer.invoke("desktop:restart-to-update"),
   getSettings: () => ipcRenderer.invoke("desktop:get-settings"),
   setSettings: (settings) => ipcRenderer.invoke("desktop:set-settings", settings),

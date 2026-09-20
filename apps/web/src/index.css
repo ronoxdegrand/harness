@@ -231,6 +231,16 @@ pre {
   animation: drawer-right 180ms ease-out both;
 }
 
+.drawer-right-closing {
+  animation: drawer-right 180ms ease-in reverse both;
+}
+
+@media (min-width: 1024px) {
+  .layout-grid {
+    transition: grid-template-columns 180ms ease-out;
+  }
+}
+
 @property --composer-border-angle {
   syntax: "<angle>";
   initial-value: 0deg;
@@ -281,6 +291,8 @@ pre {
   .sidebar-preview,
   .drawer-left,
   .drawer-right,
+  .drawer-right-closing,
+  .layout-grid,
   .composer-running::before {
     animation: none;
   }

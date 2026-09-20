@@ -225,7 +225,7 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
                 "payload": {
                     "iteration": completed_iterations,
                     "completed_iterations": completed_iterations,
-                    "additional_iterations": requested_max_iterations or 8,
+                    "additional_iterations": requested_max_iterations or 50,
                 },
             },
         )
@@ -253,7 +253,7 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
                 else settings.sarvam_api_key
             ),
             model_name=model_name,
-            max_iterations=requested_max_iterations or 8,
+            max_iterations=requested_max_iterations or 50,
             continuation_decider=decide_continuation,
             stop_requested=stop_event.is_set,
             steering_provider=take_steering,

@@ -13,6 +13,7 @@ from .db import LATEST_SCHEMA_VERSION, database_status, initialize_database
 from .gemini_model import GeminiModelProvider
 from .git_status import (
     GitBranchSwitchError,
+    GitStagedChangesWarning,
     GitDiff,
     GitStatus,
     commit_git_changes,
@@ -23,6 +24,7 @@ from .git_status import (
     sync_git_branch,
     switch_git_branch,
     update_git_index,
+    undo_last_git_commit,
 )
 from .sarvam_model import SarvamModelProvider
 from .store import RunStore, Thread, thread_title_from_prompt
@@ -49,9 +51,15 @@ class GitIndexRequest(GitStatusRequest):
     paths: list[str] = Field(default_factory=list)
 
 
+class GitUndoCommitRequest(GitStatusRequest):
+    expected_head: str
+    allow_staged: bool = False
+
+
 class GitDiffRequest(GitStatusRequest):
     path: str
     staged: bool = False
+    full_context: bool = False
 
 
 class GitSwitchRequest(GitStatusRequest):
@@ -210,7 +218,12 @@ async def git_diff(request: GitDiffRequest) -> GitDiff:
         )
         if not workspace_path.is_dir():
             raise ValueError("Workspace path does not exist or is not a directory.")
-        return read_git_file_diff(workspace_path, request.path, staged=request.staged)
+        return read_git_file_diff(
+            workspace_path,
+            request.path,
+            staged=request.staged,
+            full_context=request.full_context,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -256,6 +269,22 @@ async def git_commit(request: GitCommitRequest) -> GitStatus:
         if not workspace_path.is_dir():
             raise ValueError("Workspace path does not exist or is not a directory.")
         return commit_git_changes(workspace_path, request.message)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/git/undo-commit")
+async def git_undo_commit(request: GitUndoCommitRequest) -> GitStatus:
+    settings = get_settings()
+    try:
+        if not request.workspace_path.strip():
+            raise ValueError("Workspace path is required.")
+        workspace_path = resolve_workspace_path(settings.workspace_root, request.workspace_path.strip(), settings.allow_absolute_workspaces)
+        if not workspace_path.is_dir():
+            raise ValueError("Workspace path does not exist or is not a directory.")
+        return undo_last_git_commit(workspace_path, request.expected_head, allow_staged=request.allow_staged)
+    except GitStagedChangesWarning as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

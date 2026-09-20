@@ -14,10 +14,20 @@ interface DesktopSettings {
   contextOpen: boolean;
   gitWidth: number;
   gitOpen: boolean;
+  gitDiffWrap: boolean;
+  gitDiffSplit: boolean;
+  gitDiffShowUnchanged: boolean;
   threadSort: "recent-message" | "created";
   groupThreadsByPath: boolean;
   scale: number;
   appearance: "light" | "dark" | "system";
+}
+
+interface DesktopUpdateState {
+  retryAfter?: number;
+  status: "idle" | "unavailable" | "checking" | "up-to-date" | "downloading" | "ready" | "error";
+  version?: string;
+  message?: string;
 }
 
 interface Window {
@@ -25,6 +35,9 @@ interface Window {
     platform: string;
     getVersion(): Promise<string>;
     getUpdateReady(): Promise<string | undefined>;
+    getUpdateState(): Promise<DesktopUpdateState>;
+    checkForUpdates(): Promise<DesktopUpdateState>;
+    onUpdateState(callback: (state: DesktopUpdateState) => void): () => void;
     onUpdateReady(callback: (version: string) => void): () => void;
     restartToUpdate(): Promise<void>;
     getSettings(): Promise<Partial<DesktopSettings>>;

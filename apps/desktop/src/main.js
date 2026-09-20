@@ -7,12 +7,23 @@ const { autoUpdater } = require("electron-updater");
 
 const { startBackend, stopBackend } = require("./backend");
 const { getDatabasePath, readSettings, writeSettings } = require("./settings");
+const { createUpdateController } = require("./updates");
 
 let backend;
 let mainWindow;
 let workspaceRoot;
 let quitting = false;
 let updateVersion;
+const updates = createUpdateController(autoUpdater, {
+  enabled: app.isPackaged,
+  onChange(state) {
+    if (state.status === "ready") {
+      updateVersion = state.version;
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("desktop:update-ready", state.version);
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("desktop:update-state", state);
+  },
+});
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 2;
 
@@ -24,8 +35,12 @@ function normalizeAppearance(appearance) {
   return appearance === "dark" || appearance === "system" ? appearance : "light";
 }
 
+function titleBarOverlayHeight(scale) {
+  return Math.max(Math.round(56 * scale) - 1, 28);
+}
+
 function updateWindowChrome(scale) {
-  const headerHeight = Math.max(Math.round(56 * scale) - 1, 28);
+  const headerHeight = titleBarOverlayHeight(scale);
   if (process.platform === "darwin") {
     mainWindow.setWindowButtonPosition({
       x: 16,
@@ -79,6 +94,7 @@ if (smokeTest) {
 
 async function createWindow() {
   const settings = readSettings(settingsPath, safeStorage);
+  const scale = normalizeScale(settings.scale);
   nativeTheme.themeSource = normalizeAppearance(settings.appearance);
   const dark = nativeTheme.shouldUseDarkColors;
   mainWindow = new BrowserWindow({
@@ -95,7 +111,7 @@ async function createWindow() {
           titleBarOverlay: {
             color: dark ? "#1b1c1a" : "#fafaf7",
             symbolColor: dark ? "#ecece7" : "#1b1b1a",
-            height: 56,
+            height: titleBarOverlayHeight(scale),
           },
         }),
     webPreferences: {
@@ -103,11 +119,12 @@ async function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      zoomFactor: scale,
     },
   });
-  const scale = normalizeScale(settings.scale);
   mainWindow.webContents.setZoomFactor(scale);
   updateWindowChrome(scale);
+  mainWindow.webContents.once("did-finish-load", () => updateWindowChrome(scale));
   nativeTheme.on("updated", () => {
     if (mainWindow && !mainWindow.isDestroyed()) updateWindowChrome(mainWindow.webContents.getZoomFactor());
   });
@@ -219,12 +236,7 @@ async function start() {
   }
 
   if (app.isPackaged) {
-    autoUpdater.autoDownload = true;
-    autoUpdater.on("update-downloaded", (info) => {
-      updateVersion = info.version;
-      mainWindow?.webContents.send("desktop:update-ready", info.version);
-    });
-    autoUpdater.checkForUpdates().catch((error) => console.error("Update check failed:", error));
+    void updates.check();
   }
 }
 
@@ -278,6 +290,8 @@ ipcMain.handle("desktop:restart-to-update", async () => {
 });
 
 ipcMain.handle("desktop:get-update", () => updateVersion);
+ipcMain.handle("desktop:get-update-state", () => updates.getState());
+ipcMain.handle("desktop:check-for-updates", () => updates.check());
 ipcMain.handle("desktop:get-version", () => app.getVersion());
 ipcMain.handle("desktop:get-settings", () => readSettings(settingsPath, safeStorage));
 ipcMain.handle("desktop:set-settings", (_event, settings) => {
