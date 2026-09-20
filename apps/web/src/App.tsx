@@ -2,7 +2,7 @@ import { type CSSProperties, FormEvent, Fragment, lazy, type PointerEvent as Rea
 import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { Select as SelectPrimitive } from "@base-ui/react/select";
-import { AlertTriangle, ArrowDownUp, Check, ChevronDown, ChevronUp, Columns2, Copy, CornerUpRight, FolderGit2, GitBranch, Layers3, ListPlus, LoaderCircle, Minus, PanelLeft, Pencil, Plus, RefreshCw, Send, Settings2, Sparkles, Square, Trash2, Undo2, WrapText, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowDownUp, Check, ChevronDown, ChevronUp, Columns2, Copy, CornerUpRight, FolderGit2, GitBranch, Layers3, ListPlus, LoaderCircle, Minus, PanelLeft, Pencil, Plus, RefreshCw, Send, Settings2, Sparkles, Square, Trash2, Undo2, WrapText, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -41,6 +41,16 @@ type ThreadSort = "recent-message" | "created";
 type MidRunEnterAction = "queue" | "steer";
 type PreviewPanel = "sidebar" | "git" | "context";
 type GitGroup = "staged" | "changes" | "commits";
+
+function GitFlowSeparator() {
+  return (
+    <div aria-hidden="true" className="flex items-center gap-2 py-0.5 text-muted-foreground/60">
+      <Separator className="flex-1" />
+      <ArrowDown className="size-3" />
+      <Separator className="flex-1" />
+    </div>
+  );
+}
 
 type BranchSwitchError = {
   to: string;
@@ -354,6 +364,7 @@ export default function App() {
   );
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [gitPreviewOpen, setGitPreviewOpen] = useState(false);
+  const [gitClosing, setGitClosing] = useState(false);
   const [gitStatus, setGitStatus] = useState<GitStatusState | null>(null);
   const [gitStatusLoading, setGitStatusLoading] = useState(false);
   const [gitFetchError, setGitFetchError] = useState<string | null>(null);
@@ -443,6 +454,7 @@ export default function App() {
   const apiKeyPromptedRef = useRef(false);
   const continuationPendingRef = useRef(false);
   const gitStatusRequestRef = useRef<AbortController | null>(null);
+  const gitCloseTimerRef = useRef<number | null>(null);
   const gitDiffRequestRef = useRef<AbortController | null>(null);
   const resizeRef = useRef<{
     panel: "sidebar" | "activity" | "context" | "git" | "diff";
@@ -1637,6 +1649,42 @@ export default function App() {
     }, 100);
   }
 
+  function toggleGitPanel() {
+    void loadGitStatus();
+    if (gitClosing) {
+      if (gitCloseTimerRef.current !== null) window.clearTimeout(gitCloseTimerRef.current);
+      gitCloseTimerRef.current = null;
+      setGitClosing(false);
+      return;
+    }
+    if (gitPinnedOpen) {
+      setGitPreviewOpen(false);
+      setGitClosing(true);
+      closeGitDiff();
+      gitCloseTimerRef.current = window.setTimeout(() => {
+        gitCloseTimerRef.current = null;
+        setGitOpen(false);
+        setGitClosing(false);
+      }, 180);
+    } else if (narrowView && gitPreviewOpen) {
+      setGitClosing(true);
+      closeGitDiff();
+      gitCloseTimerRef.current = window.setTimeout(() => {
+        gitCloseTimerRef.current = null;
+        setGitPreviewOpen(false);
+        setGitClosing(false);
+      }, 180);
+    } else if (narrowView) {
+      openPanelPreview("git");
+    } else {
+      if (gitCloseTimerRef.current !== null) window.clearTimeout(gitCloseTimerRef.current);
+      gitCloseTimerRef.current = null;
+      setGitClosing(false);
+      setGitOpen(true);
+      setGitPreviewOpen(false);
+    }
+  }
+
   function openSettings() {
     setApiKeyDraft(apiKey);
     setSarvamApiKeyDraft(sarvamApiKey);
@@ -1675,6 +1723,11 @@ export default function App() {
   const gitHasChanges = Boolean(
     gitStatus?.staged.length || gitStatus?.modified.length || gitStatus?.untracked.length,
   );
+  const gitChangedFileCount = new Set([
+    ...(gitStatus?.staged ?? []),
+    ...(gitStatus?.modified ?? []),
+    ...(gitStatus?.untracked ?? []),
+  ].map((file) => file.path)).size;
   const eventGroups: Array<{
     iteration: number | null;
     createdAt?: string;
@@ -1738,12 +1791,12 @@ export default function App() {
       )
     : [[null, sortedThreads] as const];
   const layoutColumns = [
-    sidebarPinnedOpen ? "var(--sidebar-width)" : null,
+    sidebarPinnedOpen ? "var(--sidebar-width)" : "0px",
     "minmax(0,1fr)",
-    diffOpen ? "minmax(360px,var(--diff-column-width))" : null,
-    gitPinnedOpen ? "var(--git-column-width)" : null,
-    contextPinnedOpen ? "var(--context-column-width)" : null,
-  ].filter(Boolean).join(" ");
+    diffOpen ? "minmax(360px,var(--diff-column-width))" : "0px",
+    gitPinnedOpen && !gitClosing ? "var(--git-column-width)" : "0px",
+    contextPinnedOpen ? "var(--context-column-width)" : "0px",
+  ].join(" ");
 
   function gitStatusClass(status: string) {
     if (status.includes("D")) return "text-destructive";
@@ -2145,11 +2198,11 @@ export default function App() {
           "--diff-column-width": `min(${diffWidth}px, max(420px, calc(100vw - var(--git-column-width) - ${sidebarPinnedOpen ? "var(--sidebar-width)" : "0px"} - 96px)))`,
           "--layout-columns": layoutColumns,
         } as CSSProperties}
-        className="relative grid h-dvh w-full overflow-hidden lg:grid-cols-[var(--layout-columns)]"
+        className="layout-grid relative grid h-dvh w-full overflow-hidden lg:grid-cols-[var(--layout-columns)]"
       >
         {sidebarOpen ? (
           <aside
-            className={`drawer-left fixed top-14 bottom-0 left-0 z-40 flex w-[var(--sidebar-width)] max-w-[calc(100vw-3rem)] min-h-0 flex-col border-r bg-sidebar shadow-[12px_0_30px_rgba(31,31,30,0.12)] lg:max-w-none ${
+            className={`drawer-left fixed top-14 bottom-0 left-0 z-40 flex w-[var(--sidebar-width)] max-w-[calc(100vw-3rem)] min-h-0 flex-col border-r bg-sidebar shadow-[12px_0_30px_rgba(31,31,30,0.12)] lg:col-start-1 lg:max-w-none ${
               sidebarPinnedOpen
                 ? "lg:relative lg:inset-y-auto lg:z-auto lg:shadow-none"
                 : "sidebar-preview lg:absolute lg:top-14 lg:bottom-0 lg:left-0 lg:z-40"
@@ -2334,7 +2387,7 @@ export default function App() {
           </aside>
         ) : null}
 
-        <section className="relative grid h-dvh min-h-0 min-w-0 grid-cols-1 grid-rows-[56px_minmax(0,1fr)_auto] bg-background">
+        <section className="relative grid h-dvh min-h-0 min-w-0 grid-cols-1 grid-rows-[56px_minmax(0,1fr)_auto] bg-background lg:col-start-2">
           <header
             className={`fixed inset-x-0 top-0 z-50 col-start-1 row-start-1 flex h-14 shrink-0 items-center border-b bg-background px-4 sm:px-5 lg:relative lg:inset-auto ${desktop ? "titlebar-drag" : ""}`}
           >
@@ -2378,9 +2431,7 @@ export default function App() {
             <div className={`min-w-0 w-full text-left lg:mx-auto lg:max-w-3xl ${!sidebarPinnedOpen ? editingTitle ? "max-lg:pl-16" : "max-lg:pl-24" : ""} ${
               editingTitle
                 ? "max-lg:pr-3"
-                : !gitPinnedOpen && !contextPinnedOpen
-                  ? "pr-36"
-                  : !gitPinnedOpen ? "pr-24" : "pr-12"
+                : !contextPinnedOpen && !gitPinnedOpen ? "pr-24" : "pr-12"
             }`}>
               {editingTitle ? (
                 <form className="flex min-w-0 items-center gap-2" onSubmit={renameActiveThread}>
@@ -2765,30 +2816,6 @@ export default function App() {
                   </DialogPrimitive.Viewport>
                 </DialogPrimitive.Portal>
               </DialogPrimitive.Root>
-              {!gitPinnedOpen ? (
-                <Button
-                  aria-label="Open Git"
-                  className="size-10 bg-card"
-                  size="icon-lg"
-                  type="button"
-                  variant="outline"
-                  onMouseEnter={() => {
-                    openPanelPreview("git");
-                    void loadGitStatus();
-                  }}
-                  onMouseLeave={() => closePanelPreview("git", setGitPreviewOpen)}
-                  onClick={() => {
-                    void loadGitStatus();
-                    if (narrowView) openPanelPreview("git");
-                    else {
-                      setGitOpen(true);
-                      setGitPreviewOpen(false);
-                    }
-                  }}
-                >
-                  <GitBranch aria-hidden="true" className="size-4" />
-                </Button>
-              ) : null}
               {!contextPinnedOpen && !gitPinnedOpen ? (
                 <Button
                   aria-label="Open context"
@@ -3072,69 +3099,33 @@ export default function App() {
               <div className="flex flex-wrap items-center gap-2 px-1 pt-1">
                 {workspacePath.trim() ? (
                 <div className="mr-auto flex min-w-0 items-stretch overflow-hidden rounded-lg border bg-card text-xs text-muted-foreground">
-                  {workspacePath.trim() && gitTracked && gitStatus.branches.length ? (
-                    <SelectPrimitive.Root
-                      open={branchPickerOpen}
-                      value={gitStatus.branch ?? undefined}
-                      onOpenChange={setBranchPickerOpen}
-                      onValueChange={(value) => value && void switchGitBranch(value as string)}
-                    >
-                      <SelectPrimitive.Trigger
-                        aria-label={`Switch branch, currently ${gitBranchLabel}`}
-                        className="flex h-8 max-w-40 cursor-pointer items-center gap-1.5 border-l px-2 font-mono text-[10px] font-semibold outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50 @max-[640px]/composer:max-w-28 @max-[640px]/composer:border-l-0"
-                        disabled={Boolean(gitMutation) || runInProgress}
-                        title={`Branch: ${gitBranchLabel}`}
-                      >
-                        <GitBranch aria-hidden="true" className="size-3.5 shrink-0" />
-                        <span className="truncate">{gitBranchLabel}</span>
-                        <SelectPrimitive.Icon render={<ChevronUp className="size-3.5 shrink-0" />} />
-                      </SelectPrimitive.Trigger>
-                      <SelectPrimitive.Portal>
-                        <SelectPrimitive.Positioner alignItemWithTrigger sideOffset={4} className="z-50">
-                          <SelectPrimitive.Popup className="min-w-44 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md">
-                            <SelectPrimitive.List>
-                              {gitStatus.branches.map((branch) => (
-                                <SelectPrimitive.Item
-                                  className="relative flex cursor-default items-center rounded-md py-1.5 pr-8 pl-2 font-mono text-xs outline-none focus:bg-accent focus:text-accent-foreground"
-                                  key={branch}
-                                  value={branch}
-                                >
-                                  <SelectPrimitive.ItemText>{branch}</SelectPrimitive.ItemText>
-                                  <SelectPrimitive.ItemIndicator
-                                    className="absolute right-2"
-                                    render={<Check className="size-3.5" />}
-                                  />
-                                </SelectPrimitive.Item>
-                              ))}
-                            </SelectPrimitive.List>
-                          </SelectPrimitive.Popup>
-                        </SelectPrimitive.Positioner>
-                      </SelectPrimitive.Portal>
-                    </SelectPrimitive.Root>
-                  ) : workspacePath.trim() ? (
                     <Button
-                      aria-label="Open Git panel"
-                      className={`h-8 max-w-36 shrink-0 gap-1.5 rounded-none border-l px-2 font-mono text-[10px] font-semibold ${
+                      aria-label={`${gitVisible ? "Close" : "Open"} Git panel, branch ${gitBranchLabel}, ${gitChangedFileCount} changed files, ${gitStatus?.ahead ?? 0} ahead and ${gitStatus?.behind ?? 0} behind`}
+                      aria-pressed={gitVisible}
+                      className={`h-8 max-w-56 shrink-0 gap-1.5 rounded-none px-2 font-mono text-[10px] font-semibold @max-[640px]/composer:max-w-40 ${
                         !gitStatusLoading && !gitTracked
                           ? "bg-warning-muted text-warning hover:bg-warning-muted/80"
                           : "text-muted-foreground"
                       }`}
-                      title={gitTracked ? gitBranchLabel : "This path is not tracked by Git"}
+                      title={gitTracked ? `Branch: ${gitBranchLabel} · ${gitChangedFileCount} changed · ${gitStatus?.ahead ?? 0} ahead · ${gitStatus?.behind ?? 0} behind` : "This path is not tracked by Git"}
                       type="button"
                       variant="ghost"
-                      onClick={() => {
-                        void loadGitStatus();
-                        if (narrowView) openPanelPreview("git");
-                        else {
-                          setGitOpen(true);
-                          setGitPreviewOpen(false);
-                        }
-                      }}
+                      onClick={toggleGitPanel}
                     >
                       <GitBranch aria-hidden="true" className="size-3.5 shrink-0" />
                       <span className="truncate">{gitBranchLabel}</span>
+                      {gitChangedFileCount ? (
+                        <span className="flex items-center gap-1 text-warning">
+                          <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />{gitChangedFileCount}
+                        </span>
+                      ) : null}
+                      {gitStatus?.ahead ? <span>
+                        <ChevronUp aria-hidden="true" className="inline size-3" />{gitStatus?.ahead ?? 0}
+                      </span> : null}
+                      {gitStatus?.behind ? <span>
+                        <ChevronDown aria-hidden="true" className="inline size-3" />{gitStatus?.behind ?? 0}
+                      </span> : null}
                     </Button>
-                  ) : null}
                 </div>
                 ) : <span className="mr-auto" />}
                 <label className="text-xs text-muted-foreground">
@@ -3283,7 +3274,7 @@ export default function App() {
         {gitDiff ? (
           <aside
             aria-label={`Diff for ${gitDiff.path}`}
-            className="fixed inset-x-0 top-14 bottom-0 z-30 flex min-h-0 flex-col border-l bg-background lg:relative lg:inset-auto lg:z-auto lg:w-[var(--diff-column-width)]"
+            className="fixed inset-x-0 top-14 bottom-0 z-30 flex min-h-0 flex-col border-l bg-background lg:relative lg:inset-auto lg:col-start-3 lg:z-auto lg:w-[var(--diff-column-width)]"
             ref={diffPanelRef}
           >
             <div
@@ -3387,7 +3378,7 @@ export default function App() {
         {gitVisible ? (
           <aside
             aria-label="Git"
-            className={`drawer-right fixed top-14 bottom-0 z-40 flex w-[var(--git-column-width)] max-w-[calc(100vw-3rem)] min-h-0 flex-col border-l bg-sidebar shadow-[-12px_0_30px_rgba(31,31,30,0.12)] lg:max-w-none ${
+            className={`drawer-right fixed top-14 bottom-0 z-40 flex w-[var(--git-column-width)] max-w-[calc(100vw-3rem)] min-h-0 flex-col border-l bg-sidebar shadow-[-12px_0_30px_rgba(31,31,30,0.12)] lg:col-start-4 lg:max-w-none ${gitClosing ? "drawer-right-closing" : ""} ${
               gitPinnedOpen
                 ? "lg:relative lg:inset-y-auto lg:z-auto lg:shadow-none"
                 : "lg:absolute lg:top-14 lg:right-0 lg:bottom-0 lg:z-40"
@@ -3421,19 +3412,6 @@ export default function App() {
                 className={`flex h-14 shrink-0 items-center justify-start gap-1 border-b px-3 ${desktop ? "titlebar-drag" : ""}`}
                 style={desktopWindowControls && !contextPinnedOpen ? { paddingRight: `${144 / uiScale}px` } : undefined}
               >
-                <Button
-                  aria-label="Collapse Git"
-                  className="size-10 bg-card"
-                  size="icon-lg"
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    setGitOpen(false);
-                    closeGitDiff();
-                  }}
-                >
-                  <GitBranch aria-hidden="true" className="size-4" />
-                </Button>
                 {!contextPinnedOpen ? (
                   <Button
                     aria-label="Open context"
@@ -3457,6 +3435,63 @@ export default function App() {
               </header>
             ) : null}
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+              {gitTracked && gitStatus.branches.length ? (
+                <>
+                <div className="flex items-center gap-2">
+                  <div className="min-w-0 flex-1">
+                  <SelectPrimitive.Root
+                    open={branchPickerOpen}
+                    value={gitStatus.branch ?? undefined}
+                    onOpenChange={setBranchPickerOpen}
+                    onValueChange={(value) => value && void switchGitBranch(value as string)}
+                  >
+                    <SelectPrimitive.Trigger
+                      aria-label={`Switch branch, currently ${gitBranchLabel}`}
+                      className="flex h-9 w-full cursor-pointer items-center justify-between gap-2 rounded-lg border bg-card px-2.5 font-mono text-xs outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring/50"
+                      disabled={Boolean(gitMutation) || runInProgress}
+                    >
+                      <span className="flex min-w-0 items-center gap-2">
+                        <GitBranch aria-hidden="true" className="size-3.5 shrink-0" />
+                        <SelectPrimitive.Value className="truncate" />
+                      </span>
+                      <SelectPrimitive.Icon render={<ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />} />
+                    </SelectPrimitive.Trigger>
+                    <SelectPrimitive.Portal>
+                      <SelectPrimitive.Positioner alignItemWithTrigger sideOffset={4} className="z-50">
+                        <SelectPrimitive.Popup className="min-w-[var(--anchor-width)] rounded-lg border bg-popover p-1 text-popover-foreground shadow-md">
+                          <SelectPrimitive.List>
+                            {gitStatus.branches.map((branch) => (
+                              <SelectPrimitive.Item
+                                className="relative flex cursor-default items-center rounded-md py-1.5 pr-8 pl-2 font-mono text-xs outline-none focus:bg-accent focus:text-accent-foreground"
+                                key={branch}
+                                value={branch}
+                              >
+                                <SelectPrimitive.ItemText>{branch}</SelectPrimitive.ItemText>
+                                <SelectPrimitive.ItemIndicator className="absolute right-2" render={<Check className="size-3.5" />} />
+                              </SelectPrimitive.Item>
+                            ))}
+                          </SelectPrimitive.List>
+                        </SelectPrimitive.Popup>
+                      </SelectPrimitive.Positioner>
+                    </SelectPrimitive.Portal>
+                  </SelectPrimitive.Root>
+                  </div>
+                  <Button
+                    aria-label={gitFetchError ? "Retry remote Git refresh" : "Refresh Git status and fetch remote"}
+                    className={`size-9 shrink-0 ${gitFetchError ? "text-warning" : "text-muted-foreground"}`}
+                    disabled={gitStatusLoading || Boolean(gitMutation)}
+                    size="icon-sm"
+                    title={gitFetchError ? `Remote refresh failed: ${gitFetchError}. Local status is still current.` : "Fetch remote and refresh local status"}
+                    type="button"
+                    variant="outline"
+                    onClick={() => void loadGitStatus(false, true)}
+                  >
+                    <RefreshCw aria-hidden="true" className={`size-3.5 ${gitStatusLoading ? "animate-spin" : ""}`} />
+                  </Button>
+                </div>
+                <Separator />
+                </>
+              ) : null}
               {gitStatusLoading && !gitStatus ? (
                 <div className="flex items-center justify-center gap-2 px-2 py-8 text-sm text-muted-foreground">
                   <LoaderCircle aria-hidden="true" className="size-4 animate-spin" /> Reading Git status...
@@ -3484,8 +3519,13 @@ export default function App() {
                 </div>
               ) : gitStatus ? (
                 <>
+
+                  {renderGitFileGroup("changes", "Changes", [...gitStatus.modified, ...gitStatus.untracked], "stage")}
+                  {(gitStatus.modified.length || gitStatus.untracked.length) && gitStatus.staged.length ? <GitFlowSeparator /> : null}
+                  {renderGitFileGroup("staged", "Staged changes", gitStatus.staged, "unstage")}
+                  {gitHasChanges ? <GitFlowSeparator /> : null}
                   <form
-                    className="flex min-w-0 items-start gap-2"
+                    className="flex min-w-0 items-stretch overflow-hidden rounded-lg border bg-card focus-within:ring-2 focus-within:ring-ring/40"
                     onSubmit={(event) => {
                       event.preventDefault();
                       void createGitCommit();
@@ -3494,8 +3534,8 @@ export default function App() {
                     <div className="relative min-w-0 flex-1">
                     <label>
                       <span className="sr-only">Commit message</span>
-                      <Textarea
-                        className={`min-h-8 max-h-32 resize-none overflow-y-auto bg-card py-1.5 pl-2.5 text-xs leading-[18px] [field-sizing:content] ${modelName ? "pr-9" : "pr-2.5"}`}
+                      <textarea
+                        className={`block min-h-8 max-h-32 w-full resize-none overflow-y-auto border-0 bg-transparent py-[7px] pl-2.5 text-xs leading-[18px] outline-none [field-sizing:content] placeholder:text-muted-foreground ${modelName ? "pr-9" : "pr-2.5"}`}
                         rows={1}
                         maxLength={200}
                         placeholder="Commit message"
@@ -3532,7 +3572,7 @@ export default function App() {
                     ) : null}
                     </div>
                     <Button
-                      className="h-8 px-2.5 text-xs"
+                      className="h-auto min-h-8 rounded-none border-l px-3 text-xs"
                       disabled={!gitHasStagedChanges || !commitMessage.trim() || Boolean(gitMutation)}
                       size="sm"
                       type="submit"
@@ -3541,18 +3581,18 @@ export default function App() {
                       Commit
                     </Button>
                   </form>
-                  {renderGitFileGroup("staged", "Staged changes", gitStatus.staged, "unstage")}
-                  {renderGitFileGroup("changes", "Changes", [...gitStatus.modified, ...gitStatus.untracked], "stage")}
+                  <GitFlowSeparator />
                   {!gitStatus.staged.length && !gitStatus.modified.length && !gitStatus.untracked.length ? (
                     <p className="px-2 py-2 text-center text-sm leading-6 text-muted-foreground">
                       Working tree clean.
                     </p>
                   ) : null}
-                  <div className="space-y-3 border-t pt-3">
-                  <div className="flex items-center gap-2">
+                  <div className="space-y-3">
+                  {renderGitCommits()}
+                  {gitStatus.local_commits.length ? <GitFlowSeparator /> : null}
                     <Button
                       aria-label={`Synchronize ${gitBranchLabel}: ${gitStatus.ahead} to push, ${gitStatus.behind} to pull`}
-                      className="h-8 min-w-0 flex-1 justify-start gap-2 px-2.5 text-xs"
+                      className="h-8 w-full min-w-0 justify-start gap-2 px-2.5 text-xs"
                       disabled={!gitStatus.upstream || (!gitStatus.ahead && !gitStatus.behind) || Boolean(gitMutation)}
                       title={gitStatus.upstream ? `Synchronize with ${gitStatus.upstream}` : "This branch has no upstream"}
                       type="button"
@@ -3561,9 +3601,6 @@ export default function App() {
                     >
                       <ArrowDownUp aria-hidden="true" className="size-3.5 shrink-0" />
                       <span className="shrink-0">{gitStatus.upstream ? "Sync" : "No upstream"}</span>
-                      <span className="min-w-0 truncate font-mono text-[10px] font-normal text-muted-foreground">
-                        {gitBranchLabel}
-                      </span>
                       {gitStatus.upstream ? (
                         <span className="ml-auto flex shrink-0 items-center gap-2 font-normal text-muted-foreground">
                           <span className={gitStatus.ahead ? "text-foreground" : ""}>
@@ -3575,21 +3612,6 @@ export default function App() {
                         </span>
                       ) : null}
                     </Button>
-                    <Button
-                      aria-label={gitFetchError ? "Retry remote Git refresh" : "Refresh Git status and fetch remote"}
-                      className={`h-8 gap-1 px-2 text-[11px] ${gitFetchError ? "text-warning" : "text-muted-foreground"}`}
-                      disabled={gitStatusLoading || Boolean(gitMutation)}
-                      size="xs"
-                      title={gitFetchError ? `Remote refresh failed: ${gitFetchError}. Local status is still current.` : "Fetch remote and refresh local status"}
-                      type="button"
-                      variant="ghost"
-                      onClick={() => void loadGitStatus(false, true)}
-                    >
-                      <RefreshCw aria-hidden="true" className={`size-3 ${gitStatusLoading ? "animate-spin" : ""}`} />
-                      Refresh
-                    </Button>
-                  </div>
-                  {renderGitCommits()}
                   </div>
                 </>
               ) : null}
@@ -3599,7 +3621,7 @@ export default function App() {
 
         {contextVisible ? (
           <aside
-            className={`drawer-right fixed top-14 right-0 bottom-0 z-40 flex w-[var(--context-column-width)] max-w-[calc(100vw-3rem)] min-h-0 flex-col border-l bg-sidebar shadow-[-12px_0_30px_rgba(31,31,30,0.12)] lg:max-w-none ${
+            className={`drawer-right fixed top-14 right-0 bottom-0 z-40 flex w-[var(--context-column-width)] max-w-[calc(100vw-3rem)] min-h-0 flex-col border-l bg-sidebar shadow-[-12px_0_30px_rgba(31,31,30,0.12)] lg:col-start-5 lg:max-w-none ${
               contextPinnedOpen
                 ? "lg:relative lg:inset-y-auto lg:z-auto lg:shadow-none"
                 : "lg:absolute lg:top-14 lg:right-0 lg:bottom-0 lg:z-40"
