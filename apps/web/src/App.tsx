@@ -2,7 +2,7 @@ import { type CSSProperties, FormEvent, Fragment, lazy, type PointerEvent as Rea
 import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { Select as SelectPrimitive } from "@base-ui/react/select";
-import { AlertTriangle, ArrowDownUp, Check, ChevronDown, ChevronUp, Columns2, Copy, CornerUpRight, FolderGit2, GitBranch, Layers3, ListPlus, LoaderCircle, Minus, Minimize2, PanelLeft, PanelRight, Pencil, Plus, RefreshCw, Rows2, Send, Settings2, Sparkles, Square, Trash2, Undo2, WrapText, X } from "lucide-react";
+import { AlertTriangle, ArrowDownUp, Check, ChevronDown, ChevronUp, Columns2, Copy, CornerUpRight, FolderGit2, GitBranch, Layers3, ListPlus, LoaderCircle, Minus, PanelLeft, Pencil, Plus, RefreshCw, Send, Settings2, Sparkles, Square, Trash2, Undo2, WrapText, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -38,7 +38,6 @@ const ALT_LABEL = IS_MAC ? "Option" : "Alt";
 const GitDiffContents = lazy(() => import("@/components/GitDiffContents"));
 type Appearance = "light" | "dark" | "system";
 type ThreadSort = "recent-message" | "created";
-type ActivityPlacement = "side" | "inline";
 type MidRunEnterAction = "queue" | "steer";
 type PreviewPanel = "sidebar" | "git" | "context";
 type GitGroup = "staged" | "changes" | "commits";
@@ -65,10 +64,6 @@ function validAppearance(value: unknown): Appearance {
 
 function validThreadSort(value: unknown): ThreadSort {
   return value === "created" ? value : "recent-message";
-}
-
-function validActivityPlacement(value: unknown): ActivityPlacement {
-  return value === "inline" ? value : "side";
 }
 
 function validMidRunEnterAction(value: unknown): MidRunEnterAction {
@@ -346,9 +341,6 @@ export default function App() {
   const [queuedTasks, setQueuedTasks] = useState<QueuedTask[]>([]);
   const [stopping, setStopping] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
-  const [activityPlacement, setActivityPlacement] = useState<ActivityPlacement>(() =>
-    desktop ? "side" : validActivityPlacement(localStorage.getItem("activity-placement")),
-  );
   const [conversationAreaWidth, setConversationAreaWidth] = useState(0);
   const [contextOpen, setContextOpen] = useState(() =>
     !desktop && localStorage.getItem("context-open") === "true",
@@ -553,9 +545,6 @@ export default function App() {
         setActivityWidth(clampActivityWidth(
           settings.activityWidth ?? Number(localStorage.getItem("activity-width")),
         ));
-        setActivityPlacement(validActivityPlacement(
-          settings.activityPlacement ?? localStorage.getItem("activity-placement"),
-        ));
         setContextWidth(
           settings.contextWidth ??
             Math.min(
@@ -595,7 +584,7 @@ export default function App() {
           sidebarCollapsed,
           sidebarWidth,
           activityWidth,
-          activityPlacement,
+          activityPlacement: "inline",
           contextWidth,
           contextOpen,
           gitWidth,
@@ -633,7 +622,7 @@ export default function App() {
     localStorage.setItem("sidebar-collapsed", String(sidebarCollapsed));
     localStorage.setItem("sidebar-width", String(sidebarWidth));
     localStorage.setItem("activity-width", String(activityWidth));
-    localStorage.setItem("activity-placement", activityPlacement);
+    localStorage.setItem("activity-placement", "inline");
     localStorage.setItem("context-width", String(contextWidth));
     localStorage.setItem("context-open", String(contextOpen));
     localStorage.setItem("git-width", String(gitWidth));
@@ -641,7 +630,7 @@ export default function App() {
     localStorage.setItem("thread-sort", threadSort);
     localStorage.setItem("group-threads-by-path", String(groupThreadsByPath));
     localStorage.setItem("appearance", appearance);
-  }, [activityPlacement, activityWidth, apiKey, appearance, contextOpen, contextWidth, desktop, gitOpen, gitWidth, groupThreadsByPath, maxIterations, midRunEnterAction, sarvamApiKey, sendOnEnter, settingsLoaded, sidebarCollapsed, sidebarWidth, threadSort, uiScale]);
+  }, [activityWidth, apiKey, appearance, contextOpen, contextWidth, desktop, gitOpen, gitWidth, groupThreadsByPath, maxIterations, midRunEnterAction, sarvamApiKey, sendOnEnter, settingsLoaded, sidebarCollapsed, sidebarWidth, threadSort, uiScale]);
 
   useEffect(() => {
     const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
@@ -1705,24 +1694,9 @@ export default function App() {
       });
     }
   }
-  const iterationCount = countIterations(visibleEvents);
   const effectiveActivityWidth = clampActivityWidth(activityWidth);
-  const activitySideAvailable = conversationAreaWidth > 0
-    && conversationAreaWidth >= (
-      effectiveActivityWidth
-      + MIN_THREAD_WIDTH_WITH_ACTIVITY
-      + ACTIVITY_LAYOUT_GAP
-      + CONVERSATION_HORIZONTAL_GUTTER
-    );
-  const latestUserRunId = [...threadTurns].reverse().find((turn) => turn.role === "user")?.run_id ?? null;
-  const activityForcedInline = activityOpen
-    && status === "running"
-    && activeThread?.id === runningThreadId
-    && activityRunId === latestUserRunId;
-  const activityStacked = activityForcedInline
-    || activityPlacement === "inline"
-    || !activitySideAvailable;
-  const activityBesideThread = activityOpen && !activityStacked;
+  const activityStacked = true;
+  const activityBesideThread = false;
   const activeRunEnterAction: MidRunEnterAction = status === "running"
     ? midRunEnterAction
     : "queue";
@@ -2007,50 +1981,8 @@ export default function App() {
             <span className="absolute inset-y-0 left-1/2 w-px bg-transparent group-hover:bg-border" />
           </div>
         ) : null}
-        <header className="flex h-12 shrink-0 items-center justify-between rounded-t-xl border-b px-3">
-          <div className="flex items-center gap-2">
-            <Button
-              aria-label="Close activity"
-              className="size-8 bg-card"
-              size="icon-sm"
-              type="button"
-              variant="outline"
-              onClick={() => setActivityOpen(false)}
-            >
-              <Minimize2 aria-hidden="true" className="size-3.5" />
-            </Button>
-            <p className="text-sm font-semibold">Activity</p>
-            <span className="text-xs text-muted-foreground">
-              {iterationCount} {iterationCount === 1 ? "iteration" : "iterations"}
-            </span>
-          </div>
-          <div className="flex items-center gap-1">
-            <CopyButton
-              className=""
-              content={JSON.stringify(visibleEvents, null, 2)}
-              label="Copy activity"
-            />
-            {activitySideAvailable && !activityForcedInline ? (
-              <Button
-                aria-label={`Move activity ${activityPlacement === "side" ? "inline" : "beside the thread"}`}
-                className="size-7 bg-card text-muted-foreground"
-                size="icon-sm"
-                title={`Move activity ${activityPlacement === "side" ? "inline" : "beside the thread"}`}
-                type="button"
-                variant="outline"
-                onClick={() => setActivityPlacement((current) => current === "side" ? "inline" : "side")}
-              >
-                {activityPlacement === "side" ? (
-                  <PanelRight aria-hidden="true" className="size-3.5" />
-                ) : (
-                  <Rows2 aria-hidden="true" className="size-3.5" />
-                )}
-              </Button>
-            ) : null}
-          </div>
-        </header>
         <div
-          className={`space-y-4 rounded-b-xl p-3 ${
+          className={`space-y-4 rounded-xl p-3 ${
             resizable ? "min-h-0 flex-1 overflow-y-auto" : "overflow-visible"
           }`}
           ref={activityScrollRef}
@@ -2150,7 +2082,8 @@ export default function App() {
                               : "bg-card"
                         }`}
                       >
-                        <p className={`text-[10px] font-semibold uppercase tracking-[0.12em] ${
+                        <details>
+                        <summary className={`cursor-pointer text-[10px] font-semibold uppercase tracking-[0.12em] ${
                           isFailedEvent
                             ? "text-destructive"
                             : runtimeEvent.type === "tool.completed"
@@ -2158,11 +2091,13 @@ export default function App() {
                               : "text-muted-foreground"
                         }`}>
                           {runtimeEvent.type.replaceAll(".", " ")}
-                        </p>
+                          {isToolEvent && toolCall?.name ? (
+                            <span className="ml-1.5 font-mono normal-case tracking-normal text-foreground">· {toolCall.name}</span>
+                          ) : null}
+                        </summary>
 
                         {isToolEvent ? (
                           <div className="mt-2 space-y-2">
-                            <p className="font-medium">{toolCall?.name || "tool"}</p>
                             <pre className="overflow-x-auto whitespace-pre-wrap text-xs text-muted-foreground">
                               {JSON.stringify(toolCall?.arguments ?? {}, null, 2)}
                             </pre>
@@ -2180,6 +2115,7 @@ export default function App() {
                             {JSON.stringify(eventPayload, null, 2)}
                           </pre>
                         )}
+                        </details>
                       </Card>
                     );
                   })}
@@ -2996,6 +2932,11 @@ export default function App() {
                                 {activityIterationCount === 1 ? "iteration" : "iterations"}
                               </span>
                             </Button>
+                            <CopyButton
+                              className="!size-6"
+                              content={JSON.stringify(runEvents, null, 2)}
+                              label="Copy activity"
+                            />
                             {turn.finalized_by_iteration_limit || (finalizedByIterationLimit && isLatestPrompt) ? (
                               <Badge className="bg-warning-muted text-warning">
                                 Limit reached
