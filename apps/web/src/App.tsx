@@ -1262,6 +1262,11 @@ export default function App() {
     setNewThreadTitle(null);
     setModelName(selectableModel(lastUsedModel, availableModels));
     setWorkspacePath(nextWorkspacePath);
+    setContextPreviewOpen(false);
+    if (!nextWorkspacePath.trim()) {
+      setGitPreviewOpen(false);
+      closeGitDiff();
+    }
   }
 
   async function renameActiveThread(event: FormEvent<HTMLFormElement>) {
@@ -1670,6 +1675,7 @@ export default function App() {
   }
 
   function toggleGitPanel() {
+    if (!activeThread && !workspacePath.trim()) return;
     void loadGitStatus();
     if (gitClosing) {
       if (gitCloseTimerRef.current !== null) window.clearTimeout(gitCloseTimerRef.current);
@@ -1706,6 +1712,7 @@ export default function App() {
   }
 
   function toggleContextPanel() {
+    if (!activeThread) return;
     if (contextClosing) {
       if (contextCloseTimerRef.current !== null) window.clearTimeout(contextCloseTimerRef.current);
       contextCloseTimerRef.current = null;
@@ -1760,14 +1767,16 @@ export default function App() {
     runInProgress && runningThreadId && activeThread?.id !== runningThreadId,
   );
   const diffOpen = Boolean(gitDiff);
+  const gitAvailable = Boolean(activeThread || workspacePath.trim());
+  const contextAvailable = Boolean(activeThread);
   const gitDiffCanSplit = renderedDiffWidth >= MIN_SPLIT_DIFF_WIDTH;
   const diffRestrictsSidebarPinning = diffOpen && !largeDiffViewport;
   const sidebarPinnedOpen = !diffRestrictsSidebarPinning && !narrowView && !sidebarCollapsed;
   const sidebarOpen = sidebarPinnedOpen || sidebarPreviewOpen;
-  const contextPinnedOpen = !diffOpen && !narrowView && contextOpen;
-  const contextVisible = contextPinnedOpen || contextPreviewOpen;
-  const gitPinnedOpen = !narrowView && gitOpen;
-  const gitVisible = gitPinnedOpen || gitPreviewOpen;
+  const contextPinnedOpen = contextAvailable && !diffOpen && !narrowView && contextOpen;
+  const contextVisible = contextAvailable && (contextPinnedOpen || contextPreviewOpen);
+  const gitPinnedOpen = gitAvailable && !narrowView && gitOpen;
+  const gitVisible = gitAvailable && (gitPinnedOpen || gitPreviewOpen);
   const gitTracked = gitStatus?.is_repository === true;
   const gitBranchLabel = gitTracked
     ? gitStatus.branch || "Detached HEAD"
@@ -2440,7 +2449,11 @@ export default function App() {
           </aside>
         ) : null}
 
-        <section className="relative grid h-dvh min-h-0 min-w-0 grid-cols-1 grid-rows-[56px_minmax(0,1fr)_auto] bg-background lg:col-start-2">
+        <section className={`relative grid h-dvh min-h-0 min-w-0 grid-cols-1 bg-background lg:col-start-2 ${
+          activeThread
+            ? "grid-rows-[56px_minmax(0,1fr)_auto]"
+            : "grid-rows-[56px_minmax(0,1fr)_auto_minmax(0,1fr)]"
+        }`}>
           <header
             className={`fixed top-0 right-0 z-50 flex h-14 shrink-0 items-center border-b bg-background px-4 sm:px-5 ${desktop ? "titlebar-drag" : ""}`}
             style={{ left: sidebarPinnedOpen && !narrowView ? "var(--sidebar-width)" : 0 }}
@@ -2482,6 +2495,7 @@ export default function App() {
                 </Button>
               </div>
             ) : null}
+            {activeThread ? (
             <div className={`min-w-0 w-full text-left lg:mx-auto lg:max-w-3xl ${!sidebarPinnedOpen ? editingTitle ? "max-lg:pl-16" : "max-lg:pl-24" : ""} ${
               editingTitle
                 ? "max-lg:pr-3"
@@ -2562,6 +2576,7 @@ export default function App() {
                 </div>
               )}
             </div>
+            ) : null}
             <div
               className={`absolute z-50 flex items-center gap-1 ${editingTitle ? "max-lg:hidden" : ""} ${desktopWindowControls ? "" : "right-3"}`}
               style={desktopWindowControls ? { right: `${144 / uiScale}px` } : undefined}
@@ -2873,8 +2888,77 @@ export default function App() {
             </div>
           </header>
 
+          {!activeThread ? (
+            <div className="relative z-30 col-start-1 row-start-2 self-end px-4 pb-2 sm:px-5">
+              <div className="mx-auto w-full max-w-3xl px-3">
+                {editingTitle ? (
+                  <form className="flex min-w-0 items-center gap-2" onSubmit={renameActiveThread}>
+                    <Input
+                      autoFocus
+                      className="h-8 min-w-0 flex-1 bg-card text-sm font-semibold"
+                      maxLength={80}
+                      value={titleDraft}
+                      onChange={(event) => setTitleDraft(event.target.value)}
+                    />
+                    <Button className="h-7 px-2" size="sm" type="submit" variant="affirmative">Save</Button>
+                    <Button className="h-7 px-2 text-muted-foreground" size="sm" type="button" variant="ghost" onClick={() => setEditingTitle(false)}>
+                      Cancel
+                    </Button>
+                  </form>
+                ) : (
+                  <div className="min-w-0">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <h2 className="min-w-0 truncate text-sm font-semibold">{newThreadTitle || "New chat"}</h2>
+                      <Button
+                        aria-label="Rename thread"
+                        className="size-6 shrink-0 text-muted-foreground"
+                        size="icon-sm"
+                        type="button"
+                        variant="ghost"
+                        onClick={() => {
+                          setTitleDraft(newThreadTitle || "New chat");
+                          setEditingTitle(true);
+                        }}
+                      >
+                        <Pencil aria-hidden="true" className="size-3.5" />
+                      </Button>
+                    </div>
+                    <div className={`mt-0.5 flex min-w-0 w-fit max-w-full items-center gap-0.5 overflow-hidden rounded px-1 font-mono text-[10px] text-muted-foreground ${
+                      repositoryRequired ? "bg-warning-muted text-warning ring-2 ring-warning-border" : ""
+                    }`}>
+                      <FolderGit2 aria-hidden="true" className="mr-1 size-3 shrink-0" />
+                      {desktop ? (
+                        <button
+                          className={`min-w-0 truncate rounded px-0.5 text-left hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${repositoryRequired ? "text-warning" : ""}`}
+                          title={workspacePath || "Select a repository"}
+                          type="button"
+                          onClick={async () => {
+                            const selected = await desktop.selectRepository(workspacePath);
+                            if (selected) setWorkspacePath(selected);
+                          }}
+                        >
+                          {workspacePath || "Select a repository"}
+                        </button>
+                      ) : (
+                        <label className="min-w-0 flex-1">
+                          <span className="sr-only">Workspace path</span>
+                          <input
+                            className={`w-full bg-transparent outline-none ${repositoryRequired ? "text-warning" : ""}`}
+                            placeholder="Workspace path"
+                            value={workspacePath}
+                            onChange={(event) => setWorkspacePath(event.target.value)}
+                          />
+                        </label>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
+
           <div
-            className={`col-start-1 row-start-2 min-h-0 px-4 py-4 sm:px-5 ${
+            className={`col-start-1 row-start-2 min-h-0 px-4 py-4 sm:px-5 ${!activeThread ? "hidden" : ""} ${
               activityBesideThread ? "" : "overflow-y-auto"
             }`}
             ref={conversationAreaRef}
@@ -3094,7 +3178,7 @@ export default function App() {
             </div>
           </div>
 
-          <form ref={composerRef} className="relative z-30 col-start-1 row-start-3 border-t bg-background px-4 py-3 sm:px-5" onSubmit={startRun}>
+          <form ref={composerRef} className={`relative z-30 col-start-1 row-start-3 bg-background px-4 py-3 sm:px-5 ${activeThread ? "border-t" : ""}`} onSubmit={startRun}>
             <Card className={`@container/composer mx-auto w-full max-w-3xl rounded-2xl p-2 shadow-sm transition-shadow focus-within:shadow-md ${
               status === "connecting" || status === "running" ? "composer-running" : ""
             }`}>
@@ -3160,24 +3244,26 @@ export default function App() {
                     </Button>
                 </div>
                 ) : <span className="mr-auto" />}
-                <Button
-                  aria-label={`${contextVisible ? "Close" : "Open"} context, ${Math.round(contextUsage)}% of budget used`}
-                  aria-pressed={contextVisible}
-                  className="size-8 shrink-0 text-muted-foreground"
-                  size="icon-sm"
-                  title={`Context: ${Math.round(contextUsage)}% used`}
-                  type="button"
-                  variant={contextVisible ? "secondary" : "ghost"}
-                  onClick={toggleContextPanel}
-                >
-                  <span
-                    aria-hidden="true"
-                    className="flex size-6 items-center justify-center rounded-full p-0.5"
-                    style={{ background: `conic-gradient(var(--foreground) ${contextUsage}%, var(--border) 0)` }}
+                {contextAvailable ? (
+                  <Button
+                    aria-label={`${contextVisible ? "Close" : "Open"} context, ${Math.round(contextUsage)}% of budget used`}
+                    aria-pressed={contextVisible}
+                    className="size-8 shrink-0 text-muted-foreground"
+                    size="icon-sm"
+                    title={`Context: ${Math.round(contextUsage)}% used`}
+                    type="button"
+                    variant={contextVisible ? "secondary" : "ghost"}
+                    onClick={toggleContextPanel}
                   >
-                    <span className="size-full rounded-full bg-background" />
-                  </span>
-                </Button>
+                    <span
+                      aria-hidden="true"
+                      className="flex size-6 items-center justify-center rounded-full p-0.5"
+                      style={{ background: `conic-gradient(var(--foreground) ${contextUsage}%, var(--border) 0)` }}
+                    >
+                      <span className="size-full rounded-full bg-background" />
+                    </span>
+                  </Button>
+                ) : null}
                 <label className="text-xs text-muted-foreground">
                   <span className="sr-only">Model</span>
                   {availableModels.length ? (
