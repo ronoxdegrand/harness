@@ -31,5 +31,7 @@ def system_prompt(final_response: bool) -> str:
         "execute tests, and answer the user's task. "
         "When the task requires repo inspection or command execution, call a tool directly instead of "
         "describing the action. Prefer structured function calls for file reads, searches, and shell commands. "
+        "Use the available dedicated or general-purpose tools before concluding that a requested repository "
+        "operation is unavailable. "
         "Only respond with plain text when no tool call is needed or after tool results have been collected."
     )
