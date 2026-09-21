@@ -7,6 +7,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { Badge, Button, Card, Input, Separator, Textarea } from "@/components/ui";
+import { TooltipLayer } from "@/components/TooltipLayer";
 import webPackage from "../package.json";
 
 const GEMINI_MODELS = [
@@ -34,7 +35,6 @@ const GIT_REFRESH_INTERVAL_MS = 5000;
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform);
 const SHORTCUT_KEY = IS_MAC ? "Meta" : "Control";
 const SHORTCUT_LABEL = IS_MAC ? "Cmd" : "Ctrl";
-const ALT_LABEL = IS_MAC ? "Option" : "Alt";
 const GitDiffContents = lazy(() => import("@/components/GitDiffContents"));
 type Appearance = "light" | "dark" | "system";
 type ThreadSort = "recent-message" | "created";
@@ -235,7 +235,7 @@ function CopyButton({ content, className, label = "Copy message" }: { content: s
       aria-label={copied ? "Copied" : label}
       className={`size-7 text-muted-foreground opacity-60 hover:opacity-100 ${className}`}
       size="icon-sm"
-      title={copied ? "Copied" : label}
+      data-tooltip={copied ? "Copied" : label}
       type="button"
       variant="ghost"
       onClick={() => navigator.clipboard.writeText(content).then(() => setCopied(true)).catch(() => undefined)}
@@ -467,6 +467,7 @@ export default function App() {
   const gitCloseTimerRef = useRef<number | null>(null);
   const contextCloseTimerRef = useRef<number | null>(null);
   const gitDiffRequestRef = useRef<AbortController | null>(null);
+  const gitDiffSelectionRef = useRef<Pick<GitDiffState, "path" | "staged"> | null>(null);
   const resizeRef = useRef<{
     panel: "sidebar" | "activity" | "context" | "git" | "diff";
     startX: number;
@@ -795,18 +796,14 @@ export default function App() {
         if (activeThread) void openThread(activeThread.id, true);
         return;
       }
-      if (!modifierHeld || event.key.toLowerCase() !== "b") return;
+      if (!modifierHeld || event.altKey || event.shiftKey || event.key.toLowerCase() !== "b") return;
 
       event.preventDefault();
-      if (event.altKey) {
-        toggleContextPanel();
+      if (gitDiff && !largeDiffViewport) {
+        setSidebarPreviewOpen((open) => !open);
       } else {
-        if (gitDiff && !largeDiffViewport) {
-          setSidebarPreviewOpen((open) => !open);
-        } else {
-          setSidebarCollapsed((collapsed) => !collapsed);
-          setSidebarPreviewOpen(false);
-        }
+        setSidebarCollapsed((collapsed) => !collapsed);
+        setSidebarPreviewOpen(false);
       }
     }
 
@@ -846,6 +843,7 @@ export default function App() {
     setGitFetchError(null);
     setCommitMessage("");
     gitDiffRequestRef.current?.abort();
+    gitDiffSelectionRef.current = null;
     setGitDiff(null);
   }, [workspacePath]);
 
@@ -971,6 +969,7 @@ export default function App() {
     gitDiffRequestRef.current?.abort();
     const controller = new AbortController();
     gitDiffRequestRef.current = controller;
+    gitDiffSelectionRef.current = { path: file.path, staged };
     setGitDiff({ path: file.path, staged, patch: null, binary: false, error: null });
     if (!narrowView) {
       setGitOpen(true);
@@ -1009,6 +1008,7 @@ export default function App() {
   function closeGitDiff() {
     gitDiffRequestRef.current?.abort();
     gitDiffRequestRef.current = null;
+    gitDiffSelectionRef.current = null;
     setGitDiff(null);
     setSidebarPreviewOpen(false);
     setContextPreviewOpen(false);
@@ -1017,6 +1017,7 @@ export default function App() {
   async function updateGitIndex(action: "stage" | "unstage", paths: string[]) {
     if (!workspacePath.trim() || gitMutation) return;
     gitStatusRequestRef.current?.abort();
+    const viewedDiff = gitDiffSelectionRef.current;
     const mutation = `${action}:${paths.join("\0") || "all"}`;
     setGitMutation(mutation);
     try {
@@ -1029,8 +1030,19 @@ export default function App() {
         const payload = await readJson<{ detail?: string }>(response);
         throw new Error(payload.detail || `Could not ${action} files.`);
       }
-      setGitStatus(await readJson<GitStatusState>(response));
-      if (gitDiff && (!paths.length || paths.includes(gitDiff.path))) closeGitDiff();
+      const nextStatus = await readJson<GitStatusState>(response);
+      setGitStatus(nextStatus);
+      if (viewedDiff && (!paths.length || paths.includes(viewedDiff.path))
+        && gitDiffSelectionRef.current?.path === viewedDiff.path
+        && gitDiffSelectionRef.current.staged === viewedDiff.staged) {
+        const staged = action === "stage";
+        const nextFiles = staged
+          ? nextStatus.staged
+          : [...nextStatus.modified, ...nextStatus.untracked];
+        const nextFile = nextFiles.find((file) => file.path === viewedDiff.path);
+        if (nextFile) void openGitDiff(nextFile, staged);
+        else closeGitDiff();
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : `Could not ${action} files.`);
     } finally {
@@ -1918,7 +1930,7 @@ export default function App() {
               className="size-5 text-muted-foreground"
               disabled={Boolean(gitMutation)}
               size="icon-sm"
-              title={`${actionLabel} all`}
+              data-tooltip={`${actionLabel} all`}
               type="button"
               variant="ghost"
               onClick={() => void updateGitIndex(action, [])}
@@ -1931,7 +1943,7 @@ export default function App() {
                 className="size-5 text-muted-foreground hover:text-destructive"
                 disabled={Boolean(gitMutation)}
                 size="icon-sm"
-                title="Discard all"
+                data-tooltip="Discard all"
                 type="button"
                 variant="ghost"
                 onClick={() => void discardGitChanges([])}
@@ -1965,7 +1977,7 @@ export default function App() {
                 <span className={`w-5 shrink-0 font-mono text-[10px] font-semibold ${gitStatusClass(file.status)}`}>
                   {file.status.trim() || file.status}
                 </span>
-                <div className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground" title={file.path}>
+                <div className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground" data-tooltip={file.path}>
                   <span className={`text-foreground ${file.status.includes("D") ? "line-through opacity-70" : ""}`}>
                     {fileName}
                   </span>
@@ -1980,7 +1992,7 @@ export default function App() {
                   className="size-5 shrink-0 text-muted-foreground"
                   disabled={Boolean(gitMutation)}
                   size="icon-sm"
-                  title={actionLabel}
+                  data-tooltip={actionLabel}
                   type="button"
                   variant="ghost"
                   onClick={() => void updateGitIndex(action, [file.path])}
@@ -1993,7 +2005,7 @@ export default function App() {
                     className="size-5 shrink-0 text-muted-foreground hover:text-destructive"
                     disabled={Boolean(gitMutation)}
                     size="icon-sm"
-                    title="Discard changes"
+                    data-tooltip="Discard changes"
                     type="button"
                     variant="ghost"
                     onClick={() => void discardGitChanges([file.path])}
@@ -2038,7 +2050,7 @@ export default function App() {
             className="ml-auto size-6"
             disabled={Boolean(gitMutation) || runInProgress}
             size="icon-sm"
-            title="Undo last unsynced commit and keep its changes staged"
+            data-tooltip="Undo last unsynced commit and keep its changes staged"
             type="button"
             variant="ghost"
             onClick={() => void undoLastCommit(commits[0])}
@@ -2050,7 +2062,7 @@ export default function App() {
           <div className="overflow-hidden rounded-lg border bg-card">
             {commits.map((commit) => (
               <div className="group/commit relative min-w-0" key={commit.hash}>
-                <div className="min-w-0 px-2.5 py-1.5 transition-[padding] group-hover/commit:pr-[5.25rem] group-focus-within/commit:pr-[5.25rem]" title={commit.subject}>
+                <div className="min-w-0 px-2.5 py-1.5 transition-[padding] group-hover/commit:pr-[5.25rem] group-focus-within/commit:pr-[5.25rem]" data-tooltip={commit.subject}>
                 <div className="flex min-w-0 items-center gap-2">
                   <span className="min-w-0 flex-1 truncate text-xs text-foreground">{commit.subject}</span>
                 </div>
@@ -2066,7 +2078,7 @@ export default function App() {
             ))}
             {gitStatus?.base_commit ? (
               <div className="group/commit relative min-w-0 bg-muted/45">
-                <div className="flex min-w-0 items-start gap-2 px-2.5 py-1.5 pr-2.5 transition-[padding] group-hover/commit:pr-[5.25rem] group-focus-within/commit:pr-[5.25rem]" title={gitStatus.base_commit.subject}>
+                <div className="flex min-w-0 items-start gap-2 px-2.5 py-1.5 pr-2.5 transition-[padding] group-hover/commit:pr-[5.25rem] group-focus-within/commit:pr-[5.25rem]" data-tooltip={gitStatus.base_commit.subject}>
                   <Check aria-hidden="true" className="mt-0.5 size-3 shrink-0 text-success" />
                   <div className="min-w-0 flex-1">
                   <div className="flex min-w-0 items-center gap-2">
@@ -2144,7 +2156,7 @@ export default function App() {
                         {group.iteration === null ? "Initialization" : `Iteration ${group.iteration}`}
                       </p>
                       {typeof iterationModel === "string" && iterationModel ? (
-                        <Badge className="h-5 min-w-0 max-w-40 truncate rounded-sm px-1.5 text-xs" title={iterationModel}>
+                        <Badge className="h-5 min-w-0 max-w-40 truncate rounded-sm px-1.5 text-xs" data-tooltip={iterationModel}>
                           {iterationModel}
                         </Badge>
                       ) : null}
@@ -2269,6 +2281,7 @@ export default function App() {
 
   return (
     <main className="h-dvh overflow-hidden bg-background text-foreground">
+      <TooltipLayer />
       <section
         style={{
           "--sidebar-width": `${sidebarWidth}px`,
@@ -2362,7 +2375,7 @@ export default function App() {
                 aria-label="Group threads by repository path"
                 aria-pressed={groupThreadsByPath}
                 className="h-8 gap-1.5 px-2 text-xs"
-                title="Group by repository path"
+                data-tooltip="Group by repository path"
                 type="button"
                 variant={groupThreadsByPath ? "secondary" : "outline"}
                 onClick={() => setGroupThreadsByPath((grouped) => !grouped)}
@@ -2377,7 +2390,7 @@ export default function App() {
                     {path ? (
                       <p
                         className="overflow-hidden whitespace-nowrap px-3 pb-1 pt-2 text-left font-mono text-[10px] font-medium text-muted-foreground [direction:rtl]"
-                        title={path}
+                        data-tooltip={path}
                       >
                         {path}
                       </p>
@@ -2399,11 +2412,11 @@ export default function App() {
                       onClick={() => void openThread(thread.id)}
                     >
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm" title={thread.title}>{thread.title}</span>
+                        <span className="block truncate text-sm" data-tooltip={thread.title}>{thread.title}</span>
                         {!groupThreadsByPath ? (
                           <span
                             className="mt-1 block overflow-hidden text-ellipsis whitespace-nowrap text-left font-mono text-xs text-muted-foreground [direction:rtl]"
-                            title={thread.workspace_path}
+                            data-tooltip={thread.workspace_path}
                           >
                             {thread.workspace_path}
                           </span>
@@ -2473,6 +2486,7 @@ export default function App() {
             : "grid-rows-[56px_minmax(0,1fr)_auto_minmax(0,1fr)]"
         }`}>
           <header
+            data-app-titlebar
             className={`fixed top-0 right-0 z-50 flex h-14 shrink-0 items-center border-b bg-background px-4 sm:px-5 ${desktop ? "titlebar-drag" : ""}`}
             style={{ left: sidebarPinnedOpen && !narrowView ? "var(--sidebar-width)" : 0 }}
           >
@@ -2566,11 +2580,11 @@ export default function App() {
                   }`}>
                     <FolderGit2 aria-hidden="true" className="mr-1 size-3 shrink-0" />
                     {activeThread ? (
-                      <span className="min-w-0 truncate" title={workspacePath}>{workspacePath}</span>
+                      <span className="min-w-0 truncate" data-tooltip={workspacePath}>{workspacePath}</span>
                     ) : desktop ? (
                       <button
                         className={`min-w-0 truncate rounded px-0.5 text-left hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${repositoryRequired ? "text-warning" : ""}`}
-                        title={workspacePath || "Select a repository"}
+                        data-tooltip={workspacePath || "Select a repository"}
                         type="button"
                         onClick={async () => {
                           const selected = await desktop.selectRepository(workspacePath);
@@ -2673,7 +2687,7 @@ export default function App() {
                           </span>
                               {desktop ? (
                                 <Button type="button" size="sm" variant={updateState.status === "ready" ? "affirmative" : "outline"}
-                                  title={updateState.status === "ready" ? `Restart and install v${updateState.version}` : updateState.status === "unavailable" ? "Updates are available in installed releases only." : undefined}
+                                  data-tooltip={updateState.status === "ready" ? `Restart and install v${updateState.version}` : updateState.status === "unavailable" ? "Updates are available in installed releases only." : undefined}
                                   disabled={["checking", "downloading", "unavailable"].includes(updateState.status) || (updateState.status !== "ready" && updateCooldown > 0)}
                                   onClick={() => {
                                     if (updateState.status === "ready") {
@@ -2948,7 +2962,7 @@ export default function App() {
                       {desktop ? (
                         <button
                           className={`min-w-0 truncate rounded px-0.5 text-left hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${repositoryRequired ? "text-warning" : ""}`}
-                          title={workspacePath || "Select a repository"}
+                          data-tooltip={workspacePath || "Select a repository"}
                           type="button"
                           onClick={async () => {
                             const selected = await desktop.selectRepository(workspacePath);
@@ -3162,7 +3176,7 @@ export default function App() {
                         className="!size-4 text-muted-foreground opacity-60 hover:text-foreground hover:opacity-100 [&_svg]:!size-2.5"
                         disabled={status !== "running" || stopping}
                         size="icon-sm"
-                        title="Steer now"
+                        data-tooltip="Steer now"
                         type="button"
                         variant="ghost"
                         onClick={() => steerQueuedTask(queuedTask.id)}
@@ -3178,7 +3192,7 @@ export default function App() {
                         aria-label="Delete queued message"
                         className="!size-4 text-muted-foreground opacity-60 hover:text-destructive hover:opacity-100 [&_svg]:!size-2.5"
                         size="icon-sm"
-                        title="Delete queued message"
+                        data-tooltip="Delete queued message"
                         type="button"
                         variant="ghost"
                         onClick={() => deleteQueuedTask(queuedTask.id)}
@@ -3241,7 +3255,7 @@ export default function App() {
                           ? "bg-warning-muted text-warning hover:bg-warning-muted/80"
                           : "text-muted-foreground"
                       }`}
-                      title={gitTracked ? `Branch: ${gitBranchLabel} · ${gitChangedFileCount} changed · ${gitStatus?.ahead ?? 0} ahead · ${gitStatus?.behind ?? 0} behind` : "This path is not tracked by Git"}
+                      data-tooltip={gitTracked ? `Branch: ${gitBranchLabel} · ${gitChangedFileCount} changed · ${gitStatus?.ahead ?? 0} ahead · ${gitStatus?.behind ?? 0} behind` : "This path is not tracked by Git"}
                       type="button"
                       variant="ghost"
                       onClick={toggleGitPanel}
@@ -3268,7 +3282,7 @@ export default function App() {
                     aria-pressed={contextVisible}
                     className="size-8 shrink-0 text-muted-foreground"
                     size="icon-sm"
-                    title={`Context: ${Math.round(contextUsage)}% used`}
+                    data-tooltip={`Context: ${Math.round(contextUsage)}% used`}
                     type="button"
                     variant={contextVisible ? "secondary" : "ghost"}
                     onClick={toggleContextPanel}
@@ -3293,7 +3307,7 @@ export default function App() {
                   >
                     <SelectPrimitive.Trigger
                       aria-label={`Model: ${modelName}`}
-                      title={modelName}
+                      data-tooltip={modelName}
                       className={`flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-lg px-2.5 text-xs outline-none focus-visible:ring-3 focus-visible:ring-ring/50 @max-[640px]/composer:w-32 ${
                         modelRequired
                           ? "bg-warning-muted text-warning ring-2 ring-warning-border"
@@ -3376,7 +3390,7 @@ export default function App() {
                   <>
                     <Button
                       aria-label={stopping ? "Stopping run" : "Stop run"}
-                      title={stopping ? "Stopping run" : "Stop run"}
+                      data-tooltip={stopping ? "Stopping run" : "Stop run"}
                       className="size-8"
                       disabled={stopping}
                       size="icon-sm"
@@ -3396,7 +3410,7 @@ export default function App() {
                           key={action}
                           size="sm"
                           type="button"
-                          title={`${action === "queue" ? "Queue" : "Steer"} (${primary ? "Enter" : `${SHORTCUT_LABEL}+Enter`})`}
+                          data-tooltip={`${action === "queue" ? "Queue" : "Steer"} (${primary ? "Enter" : `${SHORTCUT_LABEL}+Enter`})`}
                           variant={primary ? "affirmative" : "outline"}
                           onClick={action === "queue" ? queueTask : steerRun}
                         >
@@ -3409,7 +3423,7 @@ export default function App() {
                 ) : (
                   <Button
                     aria-label="Send message"
-                    title="Send message"
+                    data-tooltip="Send message"
                     className="size-8 text-xs font-semibold"
                     disabled={!task.trim() || !modelName || (!activeThread && !workspacePath.trim())}
                     size="icon-sm"
@@ -3446,7 +3460,7 @@ export default function App() {
             </div>
             <header className="flex h-14 shrink-0 items-center gap-3 border-b px-3">
               <div className="min-w-0 flex-1">
-                <div className="truncate font-mono text-xs font-medium text-foreground" title={gitDiff.path}>
+                <div className="truncate font-mono text-xs font-medium text-foreground" data-tooltip={gitDiff.path}>
                   {gitPathParts(gitDiff.path).fileName}
                   {gitPathParts(gitDiff.path).relativeDirectory ? (
                     <span className="ml-2 text-[10px] font-normal text-muted-foreground">
@@ -3465,7 +3479,7 @@ export default function App() {
                     aria-pressed={gitDiffSplit}
                     className="size-7 rounded-md text-muted-foreground"
                     size="icon-sm"
-                    title={gitDiffSplit ? "Use unified view" : "Use split view"}
+                    data-tooltip={gitDiffSplit ? "Use unified view" : "Use split view"}
                     type="button"
                     variant={gitDiffSplit ? "secondary" : "ghost"}
                     onClick={() => setGitDiffSplit((split) => !split)}
@@ -3478,7 +3492,7 @@ export default function App() {
                   aria-pressed={gitDiffShowUnchanged}
                   className="size-7 rounded-md text-muted-foreground"
                   size="icon-sm"
-                  title={gitDiffShowUnchanged ? "Hide unchanged regions" : "Show unchanged regions"}
+                  data-tooltip={gitDiffShowUnchanged ? "Hide unchanged regions" : "Show unchanged regions"}
                   type="button"
                   variant={gitDiffShowUnchanged ? "secondary" : "ghost"}
                   onClick={() => {
@@ -3498,7 +3512,7 @@ export default function App() {
                   aria-pressed={gitDiffWrap}
                   className="size-7 rounded-md text-muted-foreground"
                   size="icon-sm"
-                  title={gitDiffWrap ? "Disable word wrap" : "Enable word wrap"}
+                  data-tooltip={gitDiffWrap ? "Disable word wrap" : "Enable word wrap"}
                   type="button"
                   variant={gitDiffWrap ? "secondary" : "ghost"}
                   onClick={() => setGitDiffWrap((wrap) => !wrap)}
@@ -3510,7 +3524,7 @@ export default function App() {
                 aria-label="Close diff"
                 className="size-8 shrink-0 text-muted-foreground"
                 size="icon-sm"
-                title="Close diff"
+                data-tooltip="Close diff"
                 type="button"
                 variant="ghost"
                 onClick={closeGitDiff}
@@ -3629,7 +3643,7 @@ export default function App() {
                     className={`size-9 shrink-0 ${gitFetchError ? "text-warning" : "text-muted-foreground"}`}
                     disabled={gitStatusLoading || Boolean(gitMutation)}
                     size="icon-sm"
-                    title={gitFetchError ? `Remote refresh failed: ${gitFetchError}. Local status is still current.` : "Fetch remote and refresh local status"}
+                    data-tooltip={gitFetchError ? `Remote refresh failed: ${gitFetchError}. Local status is still current.` : "Fetch remote and refresh local status"}
                     type="button"
                     variant="outline"
                     onClick={() => void loadGitStatus(false, true)}
@@ -3708,7 +3722,7 @@ export default function App() {
                         className="group/commit-ai absolute top-1 right-1 size-6 rounded-md text-muted-foreground hover:bg-muted/60"
                         disabled={!commitMessageGenerating && (!gitHasChanges || Boolean(gitMutation))}
                         size="icon-sm"
-                        title={commitMessageGenerating ? "Cancel generation" : gitHasStagedChanges ? "Generate from staged changes" : "Generate from working-tree changes"}
+                        data-tooltip={commitMessageGenerating ? "Cancel generation" : gitHasStagedChanges ? "Generate from staged changes" : "Generate from working-tree changes"}
                         type="button"
                         variant="ghost"
                         onClick={() => {
@@ -3745,16 +3759,24 @@ export default function App() {
                   {renderGitCommits()}
                   {gitStatus.local_commits.length ? <GitFlowSeparator /> : null}
                     <Button
-                      aria-label={`Synchronize ${gitBranchLabel}: ${gitStatus.ahead} to push, ${gitStatus.behind} to pull`}
+                      aria-label={gitMutation === "sync"
+                        ? `Synchronizing with ${gitStatus.upstream}`
+                        : `Synchronize ${gitBranchLabel} with ${gitStatus.upstream ?? "upstream"}: ${gitStatus.ahead} to push, ${gitStatus.behind} to pull`}
+                      aria-busy={gitMutation === "sync"}
                       className="h-8 w-full min-w-0 justify-start gap-2 px-2.5 text-xs"
                       disabled={!gitStatus.upstream || (!gitStatus.ahead && !gitStatus.behind) || Boolean(gitMutation)}
-                      title={gitStatus.upstream ? `Synchronize with ${gitStatus.upstream}` : "This branch has no upstream"}
+                      data-tooltip={gitMutation === "sync" ? `Synchronizing with ${gitStatus.upstream}` : gitStatus.upstream ? `Synchronize with ${gitStatus.upstream}` : "This branch has no upstream"}
                       type="button"
                       variant="outline"
                       onClick={() => void syncGitBranch()}
                     >
-                      <ArrowDownUp aria-hidden="true" className="size-3.5 shrink-0" />
+                      {gitMutation === "sync"
+                        ? <LoaderCircle aria-hidden="true" className="size-3.5 shrink-0 animate-spin" />
+                        : <ArrowDownUp aria-hidden="true" className="size-3.5 shrink-0" />}
                       <span className="shrink-0">{gitStatus.upstream ? "Sync" : "No upstream"}</span>
+                      {gitStatus.upstream ? (
+                        <span className="min-w-0 truncate font-mono text-muted-foreground">{gitStatus.upstream}</span>
+                      ) : null}
                       {gitStatus.upstream ? (
                         <span className="ml-auto flex shrink-0 items-center gap-2 font-normal text-muted-foreground">
                           <span className={gitStatus.ahead ? "text-foreground" : ""}>
@@ -3963,10 +3985,6 @@ export default function App() {
                 <span>Toggle threads</span>
                 <ShortcutKeys keys={[SHORTCUT_LABEL, "B"]} />
               </div>
-              <div className="flex items-center justify-between gap-4 py-1.5 text-sm">
-                <span>Toggle context</span>
-                <ShortcutKeys keys={[SHORTCUT_LABEL, ALT_LABEL, "B"]} />
-              </div>
                 </div>
               </section>
               <section className="border-t">
@@ -4094,7 +4112,7 @@ export default function App() {
                               {branchSwitchError.files.map((file) => {
                                 const { fileName, relativeDirectory } = gitPathParts(file);
                                 return (
-                                  <span className="flex min-w-0 items-center px-2.5 py-1 font-mono text-xs" key={file} title={file}>
+                                  <span className="flex min-w-0 items-center px-2.5 py-1 font-mono text-xs" key={file} data-tooltip={file}>
                                     <span className="min-w-0 flex-1 truncate text-muted-foreground">
                                       <span className="text-foreground">{fileName}</span>
                                       {relativeDirectory ? (
