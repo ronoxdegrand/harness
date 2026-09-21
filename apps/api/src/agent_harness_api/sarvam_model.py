@@ -7,6 +7,7 @@ import httpx
 
 from .context import Context
 from .model import ModelProvider, ModelResponse, system_prompt
+from .model_request import post_model_request
 from .tools import ToolCall
 
 
@@ -56,13 +57,13 @@ class SarvamModelProvider(ModelProvider):
             ]
             payload["tool_choice"] = "auto"
 
-        response = httpx.post(
+        response = post_model_request(
+            "Sarvam",
             "https://api.sarvam.ai/v1/chat/completions",
             headers={"api-subscription-key": self.api_key},
             json=payload,
             timeout=120,
         )
-        response.raise_for_status()
         choices = response.json().get("choices") or []
         if not choices:
             return ModelResponse()

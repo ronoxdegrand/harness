@@ -56,6 +56,7 @@ def test_run_websocket_rejects_invalid_requests(tmp_path: Path, monkeypatch) -> 
         ({"task": "inspect", "max_iterations": "8"}, "Max iterations must be an integer"),
         ({"task": "inspect", "workspace_path": "../outside"}, "Workspace path escapes"),
         ({"task": "inspect", "workspace_path": "missing"}, "Workspace path does not exist"),
+        ({"task": "inspect", "workspace_path": "."}, "Model name is required"),
     ]
 
     with TestClient(app) as client:
@@ -81,7 +82,7 @@ def test_run_websocket_reports_missing_gemini_key(tmp_path: Path, monkeypatch) -
         with TestClient(app) as client:
             with client.websocket_connect("/ws/run") as websocket:
                 assert websocket.receive_json()["kind"] == "session.ready"
-                websocket.send_json({"task": "inspect", "workspace_path": "."})
+                websocket.send_json({"task": "inspect", "workspace_path": ".", "model_name": "gemini-3.5-flash"})
                 failure = _receive_failure(websocket)
 
     assert "GEMINI_API_KEY is not set" in str(failure["error"])
@@ -98,7 +99,7 @@ def test_run_websocket_streams_runtime_events(tmp_path: Path, monkeypatch) -> No
 
     def fake_post(*args, **kwargs):
         call_count["value"] += 1
-        assert kwargs["params"]["key"] == "ui-key"
+        assert kwargs["headers"]["x-goog-api-key"] == "ui-key"
 
         class FakeResponse:
             def raise_for_status(self):
@@ -141,12 +142,14 @@ def test_run_websocket_streams_runtime_events(tmp_path: Path, monkeypatch) -> No
                         "task": 'inspect the repo, search for "test_ok", run tests, and show git diff',
                         "workspace_path": "demo",
                         "api_key": "ui-key",
+                        "model_name": "gemini-3.5-flash",
                         "max_iterations": 4,
                     }
                 )
 
                 kinds: list[str] = []
                 runtime_event_types: list[str] = []
+                runtime_event_times: list[str] = []
                 model_completed_payloads: list[dict[str, object]] = []
                 final_payload: dict[str, object] | None = None
 
@@ -155,6 +158,7 @@ def test_run_websocket_streams_runtime_events(tmp_path: Path, monkeypatch) -> No
                     kinds.append(message["kind"])
                     if message["kind"] == "runtime.event":
                         runtime_event_types.append(message["event"]["type"])
+                        runtime_event_times.append(message["event"]["created_at"])
                         if message["event"]["type"] == "model.completed":
                             model_completed_payloads.append(message["event"]["payload"])
                     if message["kind"] == "run.completed":
@@ -168,6 +172,7 @@ def test_run_websocket_streams_runtime_events(tmp_path: Path, monkeypatch) -> No
     assert "model.delta" in runtime_event_types
     assert "tool.started" in runtime_event_types
     assert "tool.completed" in runtime_event_types
+    assert runtime_event_times and all(time.endswith("+00:00") for time in runtime_event_times)
     assert model_completed_payloads
     assert "output_text" not in model_completed_payloads[0]
     assert final_payload is not None
@@ -219,6 +224,7 @@ def test_run_websocket_accepts_iteration_warning_decisions(tmp_path: Path, monke
                         "task": "keep inspecting",
                         "workspace_path": "demo",
                         "api_key": "ui-key",
+                        "model_name": "gemini-3.5-flash",
                         "max_iterations": 2,
                     }
                 )
@@ -276,6 +282,7 @@ def test_run_websocket_stops_at_a_safe_boundary(tmp_path: Path, monkeypatch) -> 
                         "task": "keep inspecting",
                         "workspace_path": "demo",
                         "api_key": "ui-key",
+                        "model_name": "gemini-3.5-flash",
                         "max_iterations": 2,
                     }
                 )
@@ -290,6 +297,58 @@ def test_run_websocket_stops_at_a_safe_boundary(tmp_path: Path, monkeypatch) -> 
 
     assert final_payload is not None
     assert final_payload["status"] == "stopped"
+
+
+def test_run_websocket_pauses_after_repeated_tool_failure(tmp_path: Path, monkeypatch) -> None:
+    workspace_root = tmp_path / "workspace"
+    _create_repo(workspace_root)
+    monkeypatch.setenv("HARNESS_WORKSPACE_ROOT", str(workspace_root))
+    get_settings.cache_clear()
+
+    def fake_post(*args, **kwargs):
+        final_response = kwargs["json"]["system_instruction"]["parts"][0]["text"].startswith(
+            "Produce the final answer"
+        )
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                part = {"text": "I could not read that file."} if final_response else {
+                    "functionCall": {"name": "read_file", "args": {"path": "missing.txt"}}
+                }
+                return {"candidates": [{"content": {"parts": [part]}}]}
+
+        return FakeResponse()
+
+    pause = None
+    final_payload = None
+    with patch("agent_harness_api.gemini_model.httpx.post", side_effect=fake_post):
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws/run") as websocket:
+                assert websocket.receive_json()["kind"] == "session.ready"
+                websocket.send_json({
+                    "task": "read missing file", "workspace_path": ".", "api_key": "ui-key",
+                    "model_name": "gemini-3.5-flash",
+                    "max_iterations": 10,
+                })
+                while True:
+                    message = websocket.receive_json()
+                    if message["kind"] == "run.continuation_required":
+                        pause = message["payload"]
+                        websocket.send_json({"kind": "run.continuation_decision", "continue": False})
+                    elif message["kind"] == "run.completed":
+                        final_payload = message["payload"]
+                    elif message["kind"] == "run.finished":
+                        break
+
+    assert pause is not None
+    assert pause["reason"] == "repeated_failure"
+    assert pause["tool_name"] == "read_file"
+    assert pause["repeat_count"] == 3
+    assert final_payload is not None
+    assert final_payload["output_text"] == "I could not read that file."
 
 
 def test_run_websocket_routes_sarvam_model_and_key(tmp_path: Path, monkeypatch) -> None:

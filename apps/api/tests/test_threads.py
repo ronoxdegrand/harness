@@ -5,9 +5,55 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from agent_harness_api.config import get_settings
-from agent_harness_api.db import initialize_database
+from agent_harness_api.db import MIGRATIONS, initialize_database
 from agent_harness_api.main import app
+from agent_harness_api.model_catalog import MODELS
 from agent_harness_api.store import RunStore
+
+
+def test_model_catalog_has_no_implicit_default(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(tmp_path / "models.db"))
+    get_settings.cache_clear()
+
+    with TestClient(app) as client:
+        response = client.get("/models")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "default_model" not in payload
+    assert [model["id"] for model in payload["models"] if model["selectable"]] == [
+        spec.id for spec in MODELS if spec.selectable
+    ]
+    assert next(model for model in payload["models"] if model["id"] == "gemini-3-flash")["selectable"] is False
+
+
+def test_migration_makes_thread_model_optional_without_losing_data(tmp_path: Path, monkeypatch) -> None:
+    database_path = tmp_path / "previous-schema.db"
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(database_path))
+    get_settings.cache_clear()
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("CREATE TABLE harness_schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+        for version, name, migration in MIGRATIONS[:4]:
+            migration(connection)
+            connection.execute("INSERT INTO harness_schema_migrations VALUES (?, ?)", (version, name))
+        connection.execute(
+            "INSERT INTO harness_threads (id, title, workspace_path, model_name) VALUES (?, ?, ?, ?)",
+            ("old-thread", "Old", str(tmp_path), "gemini-3-flash"),
+        )
+        connection.execute(
+            "INSERT INTO harness_runs (id, thread_id, status, target_path, max_iterations, timeout_seconds) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("old-run", "old-thread", "completed", str(tmp_path), 1, 30),
+        )
+
+    initialize_database()
+
+    with sqlite3.connect(database_path) as connection:
+        model_column = next(row for row in connection.execute("PRAGMA table_info(harness_threads)") if row[1] == "model_name")
+        assert model_column[3] == 0
+        assert connection.execute("SELECT model_name FROM harness_threads WHERE id = 'old-thread'").fetchone() == ("gemini-3-flash",)
+        assert connection.execute("SELECT thread_id FROM harness_runs WHERE id = 'old-run'").fetchone() == ("old-thread",)
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
 def _receive_run(websocket) -> tuple[str, dict[str, object]]:
@@ -96,6 +142,7 @@ def test_thread_api_persists_across_app_sessions(tmp_path: Path, monkeypatch) ->
         created = client.post("/threads", json={"workspace_path": ".", "title": "First thread"})
         assert created.status_code == 200
         thread = created.json()["thread"]
+        assert thread["model_name"] is None
         assert thread["title"] == "First thread"
         assert thread["created_at"]
         assert thread["updated_at"]
@@ -133,6 +180,41 @@ def test_thread_api_persists_across_app_sessions(tmp_path: Path, monkeypatch) ->
         assert reopened.status_code == 200
         assert reopened.json()["thread"] == thread
         assert client.get("/threads/does-not-exist").status_code == 404
+
+
+def test_empty_thread_requires_selection_then_reuses_saved_model(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HARNESS_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(tmp_path / "selection.db"))
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    get_settings.cache_clear()
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"candidates": [{"content": {"parts": [{"text": "Done."}]}}]}
+
+    with patch("agent_harness_api.gemini_model.httpx.post", return_value=FakeResponse()):
+        with TestClient(app) as client:
+            thread_id = client.post("/threads", json={"workspace_path": ".", "title": "Empty"}).json()["thread"]["id"]
+            with client.websocket_connect("/ws/run") as websocket:
+                websocket.receive_json()
+                websocket.send_json({"task": "First", "thread_id": thread_id})
+                assert websocket.receive_json()["error"] == "Model name is required to start a run."
+
+            with client.websocket_connect("/ws/run") as websocket:
+                websocket.receive_json()
+                websocket.send_json({"task": "First", "thread_id": thread_id, "model_name": "gemini-3.5-flash"})
+                first_thread_id, _ = _receive_run(websocket)
+
+            with client.websocket_connect("/ws/run") as websocket:
+                websocket.receive_json()
+                websocket.send_json({"task": "Second", "thread_id": thread_id})
+                second_thread_id, _ = _receive_run(websocket)
+
+            assert first_thread_id == second_thread_id == thread_id
+            assert client.get(f"/threads/{thread_id}").json()["thread"]["model_name"] == "gemini-3.5-flash"
 
 
 def test_websocket_continues_a_persisted_thread(tmp_path: Path, monkeypatch) -> None:

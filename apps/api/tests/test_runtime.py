@@ -3,6 +3,8 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -216,6 +218,36 @@ def test_runtime_fails_when_model_returns_no_text_or_tools(tmp_path: Path, monke
     assert failure.payload["iteration"] == 1
 
 
+def test_model_exception_is_sanitized_before_persistence(tmp_path: Path, monkeypatch) -> None:
+    class FailingModel:
+        def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
+            raise RuntimeError("provider URL contains secret-test-key")
+
+    database_path = tmp_path / "failed_model.db"
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(database_path))
+    get_settings.cache_clear()
+    initialize_database()
+    events: list[RuntimeEvent] = []
+    emitter = EventEmitter()
+    emitter.subscribe(events.append)
+    registry = build_default_tool_registry()
+    runtime = AgentRuntime(
+        model=FailingModel(),
+        tool_registry=registry,
+        tool_executor=ToolExecutor(registry),
+        store=RunStore(database_path),
+        event_emitter=emitter,
+    )
+
+    with pytest.raises(RuntimeError, match="model request failed unexpectedly"):
+        runtime.run("hello", target_path=tmp_path)
+
+    with sqlite3.connect(database_path) as connection:
+        stored_error = connection.execute("SELECT error FROM harness_runs").fetchone()[0]
+    assert "secret-test-key" not in stored_error
+    assert "secret-test-key" not in str(next(event for event in events if event.type == "turn.failed").payload)
+
+
 def test_runtime_stops_before_starting_more_work(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("HARNESS_SQLITE_PATH", str(tmp_path / "stopped.db"))
     get_settings.cache_clear()
@@ -383,6 +415,119 @@ def test_iteration_warning_repeats_after_each_full_interval(
     assert model.final_response_flags == [False] * 23 + [True]
     assert result.iterations == 24
     assert result.finalized_by_iteration_limit is True
+
+
+def test_repeated_identical_tool_failures_pause_before_more_work(tmp_path: Path, monkeypatch) -> None:
+    database_path = tmp_path / "repeated-failure.db"
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(database_path))
+    get_settings.cache_clear()
+    initialize_database()
+
+    class RepeatingModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
+            self.calls += 1
+            if final_response:
+                return ModelResponse(output_text="The file could not be read after repeated attempts.")
+            return ModelResponse(tool_calls=[
+                ToolCall(id=f"missing-{self.calls}", name="read_file", arguments={"path": "missing.txt"})
+            ])
+
+    model = RepeatingModel()
+    pauses: list[tuple[str, int, dict[str, object]]] = []
+
+    def decide(reason: str, iteration: int, details: dict[str, object]) -> bool:
+        pauses.append((reason, iteration, details))
+        return False
+
+    registry = build_default_tool_registry()
+    runtime = AgentRuntime(
+        model=model, tool_registry=registry, tool_executor=ToolExecutor(registry),
+        store=RunStore(database_path), progress_decider=decide,
+    )
+
+    result = runtime.run("read the missing file", target_path=tmp_path)
+
+    assert result.status == "completed"
+    assert result.finalized_by_iteration_limit is False
+    assert model.calls == 4
+    assert pauses == [("repeated_failure", 3, {"tool_name": "read_file", "repeat_count": 3})]
+    assert "repeated attempts" in result.output_text
+
+
+def test_emergency_time_ceiling_offers_a_final_response(tmp_path: Path, monkeypatch) -> None:
+    database_path = tmp_path / "time-ceiling.db"
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(database_path))
+    get_settings.cache_clear()
+    initialize_database()
+    clock = [0.0]
+
+    class SlowModel:
+        def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
+            if final_response:
+                return ModelResponse(output_text="Here is what I found so far.")
+            clock[0] = 31.0
+            return ModelResponse(tool_calls=[ToolCall(id="list", name="list_files")])
+
+    pauses: list[str] = []
+
+    def decide(reason: str, iteration: int, details: dict[str, object]) -> bool:
+        pauses.append(reason)
+        return False
+
+    registry = build_default_tool_registry()
+    runtime = AgentRuntime(
+        model=SlowModel(), tool_registry=registry, tool_executor=ToolExecutor(registry),
+        store=RunStore(database_path), timeout_seconds=30, progress_decider=decide,
+    )
+
+    with patch("agent_harness_api.runtime.time", SimpleNamespace(monotonic=lambda: clock[0])):
+        result = runtime.run("inspect", target_path=tmp_path)
+
+    assert result.status == "completed"
+    assert result.finalized_by_iteration_limit is False
+    assert result.output_text == "Here is what I found so far."
+    assert pauses == ["time_limit"]
+
+
+def test_continuing_after_time_ceiling_resets_the_window(tmp_path: Path, monkeypatch) -> None:
+    database_path = tmp_path / "continued-time-ceiling.db"
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(database_path))
+    get_settings.cache_clear()
+    initialize_database()
+    clock = [0.0]
+
+    class ContinuingModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
+            self.calls += 1
+            if self.calls == 1:
+                clock[0] = 31.0
+                return ModelResponse(tool_calls=[ToolCall(id="list", name="list_files")])
+            return ModelResponse(output_text="Done after continuing.")
+
+    pauses: list[str] = []
+
+    def decide(reason: str, iteration: int, details: dict[str, object]) -> bool:
+        pauses.append(reason)
+        return True
+
+    registry = build_default_tool_registry()
+    runtime = AgentRuntime(
+        model=ContinuingModel(), tool_registry=registry, tool_executor=ToolExecutor(registry),
+        store=RunStore(database_path), timeout_seconds=30, progress_decider=decide,
+    )
+
+    with patch("agent_harness_api.runtime.time", SimpleNamespace(monotonic=lambda: clock[0])):
+        result = runtime.run("inspect", target_path=tmp_path)
+
+    assert result.output_text == "Done after continuing."
+    assert result.finalized_by_iteration_limit is False
+    assert pauses == ["time_limit"]
 
 
 def test_runtime_resume_loads_latest_snapshot(tmp_path: Path, monkeypatch) -> None:

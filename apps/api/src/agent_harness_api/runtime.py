@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from dataclasses import dataclass
@@ -9,8 +10,9 @@ from typing import Callable
 from .context import Context
 from .events import EventEmitter
 from .model import ModelProvider
+from .model_request import ModelRequestError
 from .store import RunStore
-from .tools import ToolCall, ToolExecutor, ToolRegistry
+from .tools import ToolCall, ToolExecutor, ToolRegistry, ToolResult
 
 
 @dataclass
@@ -35,8 +37,10 @@ class AgentRuntime:
         store: RunStore,
         event_emitter: EventEmitter | None = None,
         max_iterations: int = 50,
-        timeout_seconds: int = 120,
+        timeout_seconds: int = 1800,
         continuation_decider: Callable[[int], bool] | None = None,
+        progress_decider: Callable[[str, int, dict[str, object]], bool] | None = None,
+        repeat_failure_limit: int = 3,
         stop_requested: Callable[[], bool] | None = None,
         steering_provider: Callable[[], list[str]] | None = None,
     ) -> None:
@@ -49,6 +53,8 @@ class AgentRuntime:
         self.max_iterations = max_iterations
         self.timeout_seconds = timeout_seconds
         self.continuation_decider = continuation_decider
+        self.progress_decider = progress_decider
+        self.repeat_failure_limit = repeat_failure_limit
         self.stop_requested = stop_requested
         self.steering_provider = steering_provider
 
@@ -85,17 +91,56 @@ class AgentRuntime:
         iteration = 0
         warning_interval = iteration_limit
         warning_after = iteration_limit - 1
+        last_failure: str | None = None
+        last_failure_name: str | None = None
+        repeated_failures = 0
         try:
             while True:
                 iteration += 1
                 self._check_stop()
                 self._apply_steering(active_run_id, iteration, context)
-                if time.monotonic() - started_at > timeout_limit:
-                    raise TimeoutError(f"Run exceeded {timeout_limit} seconds.")
-
                 force_final_response = False
+                finalized_by_iteration_limit = False
                 completed_iterations = iteration - 1
-                if completed_iterations == warning_after:
+                elapsed = time.monotonic() - started_at
+                pause_reason = (
+                    "repeated_failure" if repeated_failures >= self.repeat_failure_limit
+                    else "time_limit" if elapsed >= timeout_limit else None
+                )
+                if pause_reason:
+                    details: dict[str, object] = (
+                        {"tool_name": last_failure_name, "repeat_count": repeated_failures}
+                        if pause_reason == "repeated_failure" else
+                        {"ceiling_seconds": timeout_limit}
+                    )
+                    self.store.save_snapshot(active_run_id, completed_iterations, context.snapshot())
+                    self._emit(
+                        active_run_id, "run.continuation_requested",
+                        iteration=completed_iterations, completed_iterations=completed_iterations,
+                        reason=pause_reason, **details,
+                    )
+                    wait_started = time.monotonic()
+                    continue_run = (
+                        self.progress_decider(pause_reason, completed_iterations, details)
+                        if self.progress_decider else False
+                    )
+                    started_at += time.monotonic() - wait_started
+                    self._emit(
+                        active_run_id, "run.continuation_decided",
+                        iteration=completed_iterations, continue_run=continue_run, reason=pause_reason,
+                    )
+                    if continue_run:
+                        if pause_reason == "time_limit":
+                            started_at = time.monotonic()
+                        if completed_iterations == warning_after:
+                            warning_after += warning_interval
+                        last_failure = None
+                        last_failure_name = None
+                        repeated_failures = 0
+                    else:
+                        force_final_response = True
+
+                if not pause_reason and completed_iterations == warning_after:
                     self._emit(
                         active_run_id,
                         "run.continuation_requested",
@@ -119,6 +164,7 @@ class AgentRuntime:
                         warning_after += warning_interval
                     else:
                         force_final_response = True
+                        finalized_by_iteration_limit = True
 
                 self._check_stop()
 
@@ -129,10 +175,15 @@ class AgentRuntime:
                     iteration=iteration,
                     model_name=self.model_name,
                 )
-                response = self.model.complete(
-                    context,
-                    final_response=force_final_response,
-                )
+                try:
+                    response = self.model.complete(
+                        context,
+                        final_response=force_final_response,
+                    )
+                except ModelRequestError:
+                    raise
+                except Exception as exc:
+                    raise ModelRequestError("The model request failed unexpectedly. Please try again.") from exc
 
                 if force_final_response and response.tool_calls:
                     if not response.output_text:
@@ -193,7 +244,6 @@ class AgentRuntime:
                         status="completed",
                     )
                     self.store.save_snapshot(active_run_id, iteration, context.snapshot())
-                    finalized_by_iteration_limit = force_final_response
                     self.store.complete_run(
                         active_run_id,
                         response.output_text,
@@ -209,13 +259,24 @@ class AgentRuntime:
 
                 for call in response.tool_calls:
                     self._check_stop()
-                    self._execute_tool(
+                    result = self._execute_tool(
                         active_run_id,
                         iteration,
                         call,
                         resolved_target,
                         context,
                     )
+                    if result.success:
+                        last_failure = None
+                        last_failure_name = None
+                        repeated_failures = 0
+                    else:
+                        signature = json.dumps(
+                            {"name": call.name, "arguments": call.arguments}, sort_keys=True, default=str,
+                        )
+                        repeated_failures = repeated_failures + 1 if signature == last_failure else 1
+                        last_failure = signature
+                        last_failure_name = call.name
 
                 self._emit(
                     active_run_id,
@@ -324,7 +385,7 @@ class AgentRuntime:
         context: Context,
         *,
         already_started: bool = False,
-    ) -> None:
+    ) -> ToolResult:
         tool_call = call.as_dict()
         started_payload = {
             "run_id": run_id,
@@ -365,6 +426,7 @@ class AgentRuntime:
         )
         self.events.emit("context.updated", **context_payload)
         self.events.emit(result_event, **result_payload)
+        return result
 
     def _emit(self, run_id: str, event_type: str, **payload: object) -> None:
         durable_payload = {"run_id": run_id, **payload}

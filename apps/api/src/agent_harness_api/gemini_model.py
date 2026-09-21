@@ -7,6 +7,7 @@ import httpx
 
 from .context import Context
 from .model import ModelProvider, ModelResponse, system_prompt
+from .model_request import post_model_request
 from .tools import ToolCall
 
 
@@ -33,13 +34,13 @@ class GeminiModelProvider(ModelProvider):
             return ModelResponse(output_text="")
 
         payload = self._build_payload(messages, final_response=final_response)
-        response = httpx.post(
+        response = post_model_request(
+            "Gemini",
             f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_name}:generateContent",
-            params={"key": self.api_key},
+            headers={"x-goog-api-key": self.api_key},
             json=payload,
             timeout=60,
         )
-        response.raise_for_status()
         data = response.json()
 
         text = self._extract_text(data)

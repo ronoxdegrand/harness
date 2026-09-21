@@ -46,6 +46,7 @@ function writeSettings(file, settings, encryption) {
     gitDiffWrap: settings.gitDiffWrap,
     gitDiffSplit: settings.gitDiffSplit,
     gitDiffShowUnchanged: settings.gitDiffShowUnchanged,
+    gitDiffWidth: settings.gitDiffWidth,
     threadSort: settings.threadSort,
     groupThreadsByPath: settings.groupThreadsByPath,
     scale: settings.scale,

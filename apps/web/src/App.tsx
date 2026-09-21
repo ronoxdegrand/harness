@@ -10,11 +10,6 @@ import { Badge, Button, Card, Input, Separator, Textarea } from "@/components/ui
 import { TooltipLayer } from "@/components/TooltipLayer";
 import webPackage from "../package.json";
 
-const GEMINI_MODELS = [
-  "gemini-3.5-flash",
-  "gemini-3.5-flash-lite",
-];
-const SARVAM_MODELS = ["sarvam-105b"];
 const DEFAULT_SIDEBAR_WIDTH = 272;
 const DEFAULT_ACTIVITY_WIDTH = 420;
 const MIN_ACTIVITY_WIDTH = 400;
@@ -39,6 +34,7 @@ const GitDiffContents = lazy(() => import("@/components/GitDiffContents"));
 type Appearance = "light" | "dark" | "system";
 type ThreadSort = "recent-message" | "created";
 type MidRunEnterAction = "queue" | "steer";
+type ModelOption = { id: string; provider: "gemini" | "sarvam"; selectable: boolean };
 type PreviewPanel = "sidebar" | "git" | "context";
 type GitGroup = "staged" | "changes" | "commits";
 
@@ -84,8 +80,24 @@ function clampActivityWidth(value: number) {
   return Math.min(Math.max(value || DEFAULT_ACTIVITY_WIDTH, MIN_ACTIVITY_WIDTH), MAX_ACTIVITY_WIDTH);
 }
 
+function clampDiffWidth(value: number) {
+  return Math.min(Math.max(value || DEFAULT_DIFF_WIDTH, 420), MAX_DIFF_WIDTH);
+}
+
 function selectableModel(model: string, options: string[]) {
-  return options.includes(model) ? model : options[0] ?? "";
+  return options.includes(model) ? model : "";
+}
+
+function eventTime(event: RuntimeEvent): number | null {
+  if (!event.created_at) return null;
+  const timestamp = event.created_at;
+  const parsed = Date.parse(/(?:Z|[+-]\d\d:\d\d)$/.test(timestamp) ? timestamp : `${timestamp.replace(" ", "T")}Z`);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function elapsedLabel(milliseconds: number) {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
 type RunSocketMessage =
@@ -106,7 +118,15 @@ type RunSocketMessage =
   | { kind: "run.steering_accepted"; payload: { content: string } }
   | {
       kind: "run.continuation_required";
-      payload: { iteration: number; completed_iterations: number; additional_iterations: number };
+      payload: {
+        iteration: number;
+        completed_iterations: number;
+        additional_iterations: number;
+        reason?: "time_limit" | "repeated_failure";
+        ceiling_seconds?: number;
+        tool_name?: string;
+        repeat_count?: number;
+      };
     }
   | { kind: "run.finished" };
 
@@ -121,7 +141,7 @@ type ThreadSummary = {
   id: string;
   title: string;
   workspace_path: string;
-  model_name: string;
+  model_name: string | null;
   created_at: string;
   updated_at: string;
   last_message_at: string | null;
@@ -293,6 +313,7 @@ export default function App() {
   const [task, setTask] = useState("");
   const [workspacePath, setWorkspacePath] = useState("");
   const [modelName, setModelName] = useState("");
+  const [modelCatalog, setModelCatalog] = useState<ModelOption[]>([]);
   const [apiKey, setApiKey] = useState(() =>
     desktop ? "" : sessionStorage.getItem("gemini-api-key") || "",
   );
@@ -313,7 +334,6 @@ export default function App() {
     desktop ? "light" : validAppearance(localStorage.getItem("appearance")),
   );
   const [settingsLoaded, setSettingsLoaded] = useState(!desktop);
-  const [lastUsedModel, setLastUsedModel] = useState("");
   const [status, setStatus] = useState("idle");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
@@ -341,6 +361,7 @@ export default function App() {
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [activeThread, setActiveThread] = useState<ThreadSummary | null>(null);
   const [runningThreadId, setRunningThreadId] = useState<string | null>(null);
+  const [runningRunId, setRunningRunId] = useState<string | null>(null);
   const [threadToDelete, setThreadToDelete] = useState<ThreadSummary | null>(null);
   const [threadTurns, setThreadTurns] = useState<ThreadTurn[]>([]);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
@@ -350,6 +371,7 @@ export default function App() {
   const [assistantText, setAssistantText] = useState("");
   const [queuedTasks, setQueuedTasks] = useState<QueuedTask[]>([]);
   const [stopping, setStopping] = useState(false);
+  const [activityClock, setActivityClock] = useState(Date.now());
   const [activityOpen, setActivityOpen] = useState(false);
   const [conversationAreaWidth, setConversationAreaWidth] = useState(0);
   const [contextOpen, setContextOpen] = useState(() =>
@@ -424,7 +446,9 @@ export default function App() {
           MAX_GIT_WIDTH,
         ),
   );
-  const [diffWidth, setDiffWidth] = useState(DEFAULT_DIFF_WIDTH);
+  const [diffWidth, setDiffWidth] = useState(() =>
+    desktop ? DEFAULT_DIFF_WIDTH : clampDiffWidth(Number(localStorage.getItem("git-diff-width"))),
+  );
   const [threadSort, setThreadSort] = useState<ThreadSort>(() =>
     desktop ? "recent-message" : validThreadSort(localStorage.getItem("thread-sort")),
   );
@@ -439,6 +463,10 @@ export default function App() {
     iteration: number;
     completed_iterations: number;
     additional_iterations: number;
+    reason?: "time_limit" | "repeated_failure";
+    ceiling_seconds?: number;
+    tool_name?: string;
+    repeat_count?: number;
   } | null>(null);
   const [error, setError] = useState("");
   const [branchSwitchError, setBranchSwitchError] = useState<BranchSwitchError | null>(null);
@@ -473,10 +501,15 @@ export default function App() {
     startX: number;
     startWidth: number;
   } | null>(null);
-  const availableModels = [
-    ...(apiKey.trim() ? GEMINI_MODELS : []),
-    ...(sarvamApiKey.trim() ? SARVAM_MODELS : []),
-  ];
+  const modelInfo = new Map(modelCatalog.map((model) => [model.id, model]));
+  const availableModels = modelCatalog
+    .filter((model) => model.selectable && (model.provider === "gemini" ? apiKey.trim() : sarvamApiKey.trim()))
+    .map((model) => model.id);
+  useEffect(() => {
+    if (status !== "running" && status !== "connecting") return;
+    const timer = window.setInterval(() => setActivityClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [status]);
 
   useEffect(() => {
     conversationBottomRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
@@ -524,10 +557,28 @@ export default function App() {
   }, [activeThread, settingsOpen]);
 
   useEffect(() => {
-    const latestModel = threads[0]?.model_name ?? "";
-    setModelName((current) => selectableModel(current || latestModel, availableModels));
-    setLastUsedModel((current) => selectableModel(current || latestModel, availableModels));
-  }, [apiKey, sarvamApiKey, threads]);
+    let cancelled = false;
+    void fetch("/models")
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Could not load models.");
+        return readJson<{ models: ModelOption[] }>(response);
+      })
+      .then((payload) => {
+        if (cancelled) return;
+        setModelCatalog(payload.models);
+      })
+      .catch(() => {
+        if (!cancelled) setError("Could not load models. Is the API running?");
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    setModelName((current) => {
+      if (current && availableModels.includes(current)) return current;
+      return selectableModel(activeThread?.model_name ?? "", availableModels);
+    });
+  }, [apiKey, sarvamApiKey, modelCatalog, activeThread?.model_name]);
 
   useEffect(() => {
     return () => {
@@ -602,6 +653,7 @@ export default function App() {
         setGitDiffShowUnchanged(
           settings.gitDiffShowUnchanged ?? localStorage.getItem("git-diff-show-unchanged") === "true",
         );
+        setDiffWidth(clampDiffWidth(settings.gitDiffWidth ?? Number(localStorage.getItem("git-diff-width"))));
         setThreadSort(validThreadSort(settings.threadSort));
         setGroupThreadsByPath(settings.groupThreadsByPath ?? false);
         setSettingsLoaded(true);
@@ -631,6 +683,7 @@ export default function App() {
           gitDiffWrap,
           gitDiffSplit,
           gitDiffShowUnchanged,
+          gitDiffWidth: diffWidth,
           threadSort,
           groupThreadsByPath,
           scale: uiScale,
@@ -653,6 +706,7 @@ export default function App() {
           localStorage.removeItem("git-diff-wrap");
           localStorage.removeItem("git-diff-split");
           localStorage.removeItem("git-diff-show-unchanged");
+          localStorage.removeItem("git-diff-width");
           localStorage.removeItem("thread-sort");
           localStorage.removeItem("group-threads-by-path");
         })
@@ -675,10 +729,11 @@ export default function App() {
     localStorage.setItem("git-diff-wrap", String(gitDiffWrap));
     localStorage.setItem("git-diff-split", String(gitDiffSplit));
     localStorage.setItem("git-diff-show-unchanged", String(gitDiffShowUnchanged));
+    localStorage.setItem("git-diff-width", String(diffWidth));
     localStorage.setItem("thread-sort", threadSort);
     localStorage.setItem("group-threads-by-path", String(groupThreadsByPath));
     localStorage.setItem("appearance", appearance);
-  }, [activityWidth, apiKey, appearance, contextOpen, contextWidth, desktop, gitDiffShowUnchanged, gitDiffSplit, gitDiffWrap, gitOpen, gitWidth, groupThreadsByPath, maxIterations, midRunEnterAction, sarvamApiKey, sendOnEnter, settingsLoaded, sidebarCollapsed, sidebarWidth, threadSort, uiScale]);
+  }, [activityWidth, apiKey, appearance, contextOpen, contextWidth, desktop, diffWidth, gitDiffShowUnchanged, gitDiffSplit, gitDiffWrap, gitOpen, gitWidth, groupThreadsByPath, maxIterations, midRunEnterAction, sarvamApiKey, sendOnEnter, settingsLoaded, sidebarCollapsed, sidebarWidth, threadSort, uiScale]);
 
   useEffect(() => {
     const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
@@ -820,7 +875,7 @@ export default function App() {
       window.removeEventListener("keyup", handleKeyUp);
       window.removeEventListener("blur", closeShortcuts);
     };
-  }, [activeThread, gitDiff, largeDiffViewport, lastUsedModel, narrowView, threads, workspacePath]);
+  }, [activeThread, gitDiff, largeDiffViewport, narrowView, threads, workspacePath]);
 
   useEffect(() => {
     void refreshThreads(true);
@@ -893,16 +948,13 @@ export default function App() {
     };
   }, [workspacePath, status, gitMutation]);
 
-  async function refreshThreads(initializeModel = false) {
+  async function refreshThreads(initializePath = false) {
     try {
       const response = await fetch("/threads");
       if (!response.ok) throw new Error();
       const payload = await readJson<{ threads: ThreadSummary[] }>(response);
       setThreads(payload.threads);
-      if (initializeModel && payload.threads[0]) {
-        const latestModel = selectableModel(payload.threads[0].model_name, availableModels);
-        setModelName(latestModel);
-        setLastUsedModel(latestModel);
+      if (initializePath && payload.threads[0]) {
         setWorkspacePath(payload.threads[0].workspace_path);
       }
     } catch {
@@ -1193,7 +1245,7 @@ export default function App() {
         body: JSON.stringify({
           workspace_path: workspacePath,
           model_name: modelName,
-          ...(modelName === "sarvam-105b"
+          ...(modelInfo.get(modelName)?.provider === "sarvam"
             ? sarvamApiKey.trim() ? { sarvam_api_key: sarvamApiKey.trim() } : {}
             : apiKey.trim() ? { api_key: apiKey.trim() } : {}),
         }),
@@ -1248,7 +1300,7 @@ export default function App() {
       activeThreadIdRef.current = payload.thread.id;
       setActiveThread(payload.thread);
       setWorkspacePath(payload.thread.workspace_path);
-      setModelName(selectableModel(payload.thread.model_name, availableModels));
+      setModelName(selectableModel(payload.thread.model_name ?? "", availableModels));
       setThreadTurns(payload.turns);
       setEvents(payload.events);
       setThreadContext(payload.context);
@@ -1290,7 +1342,7 @@ export default function App() {
     setStatus("idle");
     setTask("");
     setNewThreadTitle(null);
-    setModelName(selectableModel(lastUsedModel, availableModels));
+    setModelName("");
     setWorkspacePath(nextWorkspacePath);
     setContextPreviewOpen(false);
     if (!nextWorkspacePath.trim()) {
@@ -1359,7 +1411,6 @@ export default function App() {
     let activeRunId: string | null = null;
     let completionRefresh: Promise<void> | null = null;
     const submittedTask = submittedTaskValue.trim();
-    setLastUsedModel(modelName);
 
     setStatus("connecting");
     setRunningThreadId(runThreadId);
@@ -1400,7 +1451,7 @@ export default function App() {
             workspace_path: workspacePath,
             model_name: modelName,
             max_iterations: maxIterations,
-            ...(modelName === "sarvam-105b"
+            ...(modelInfo.get(modelName)?.provider === "sarvam"
               ? sarvamApiKey.trim() ? { sarvam_api_key: sarvamApiKey.trim() } : {}
               : apiKey.trim() ? { api_key: apiKey.trim() } : {}),
             ...(thread ? { thread_id: thread.id } : {}),
@@ -1416,6 +1467,7 @@ export default function App() {
         runThreadId = payload.payload.thread.id;
         activeThreadIdRef.current = runThreadId;
         setRunningThreadId(runThreadId);
+        setRunningRunId(activeRunId);
         setActiveThread(payload.payload.thread);
         setWorkspacePath(payload.payload.thread.workspace_path);
         setThreadTurns((current) => {
@@ -1430,6 +1482,7 @@ export default function App() {
       if (payload.kind === "runtime.event") {
         if (runThreadId && activeThreadIdRef.current !== runThreadId) return;
         setEvents((current) => [...current, payload.event]);
+
 
         if (payload.event.type === "context.updated") {
           const context = payload.event.payload.context;
@@ -1450,9 +1503,8 @@ export default function App() {
         }
 
         if (payload.event.type === "turn.failed") {
-          const errorMessage = String(payload.event.payload.error ?? "The model request failed.");
           setStatus("failed");
-          setError(errorMessage);
+          setAssistantText("");
         }
 
         if (payload.event.type === "model.completed") {
@@ -1516,16 +1568,15 @@ export default function App() {
 
       if (payload.kind === "run.failed") {
         setStatus("failed");
-        if (activeThreadIdRef.current === runThreadId) {
-          setError(payload.error);
-          setAssistantText((current) => current || "The run failed.");
-        }
+        if (runThreadId && activeThreadIdRef.current === runThreadId) setAssistantText("");
+        else setError(payload.error);
         return;
       }
 
       if (payload.kind === "run.finished") {
         continuationPendingRef.current = false;
         setContinuationRequest(null);
+        setRunningRunId(null);
         socket.close();
         const nextTask = queuedTasksRef.current.shift();
         setQueuedTasks([...queuedTasksRef.current]);
@@ -1546,6 +1597,7 @@ export default function App() {
       continuationPendingRef.current = false;
       setContinuationRequest(null);
       setRunningThreadId(null);
+      setRunningRunId(null);
       setStatus("failed");
       setError("WebSocket connection failed.");
     };
@@ -3044,6 +3096,15 @@ export default function App() {
                     ? events.filter((runtimeEvent) => eventRunId(runtimeEvent) === turn.run_id)
                     : events;
                   const activityIterationCount = countIterations(runEvents);
+                  const activityStart = turn.run_id ? runEvents.map(eventTime).find((time) => time !== null) : null;
+                  const terminalEvent = [...runEvents].reverse().find((runtimeEvent) =>
+                    runtimeEvent.type === "turn.failed" || runtimeEvent.type === "turn.stopped"
+                    || (runtimeEvent.type === "turn.completed" && runtimeEvent.payload.status === "completed"),
+                  );
+                  const activityEnd = terminalEvent ? eventTime(terminalEvent)
+                    : turn.run_id === runningRunId && status === "running" ? activityClock : null;
+                  const activityDuration = activityStart !== null && activityStart !== undefined && activityEnd !== null
+                    ? elapsedLabel(activityEnd - activityStart) : null;
                   const isLatestPrompt =
                     turn.role === "user" && !threadTurns.slice(index + 1).some((item) => item.role === "user");
                   const isSteered = turn.role === "user"
@@ -3055,6 +3116,17 @@ export default function App() {
                     && !threadTurns.slice(index + 1).some(
                       (item) => item.role === "user" && item.run_id === turn.run_id,
                     );
+                  const failure = runEvents.find((runtimeEvent) => runtimeEvent.type === "turn.failed");
+                  const modelFailed = failure && runEvents.some((runtimeEvent) =>
+                    runtimeEvent.type === "model.started"
+                    && runtimeEvent.payload.iteration === failure.payload.iteration,
+                  ) && !runEvents.some((runtimeEvent) =>
+                    runtimeEvent.type === "model.completed"
+                    && runtimeEvent.payload.iteration === failure.payload.iteration,
+                  );
+                  const failureCode = String(failure?.payload.error ?? "").match(/\bHTTP (\d{3})\b/)?.[1];
+                  const provider = modelInfo.get(turn.model_name ?? "")?.provider;
+                  const providerLabel = provider ? provider[0].toUpperCase() + provider.slice(1) : "model";
 
                   return (
                     <Fragment key={turn.id}>
@@ -3125,6 +3197,11 @@ export default function App() {
                               <span className="text-muted-foreground/80">
                                 {activityIterationCount === 1 ? "iteration" : "iterations"}
                               </span>
+                              {activityDuration ? (
+                                <span className="tabular-nums text-muted-foreground/80" data-tooltip="Run duration">
+                                  · {activityDuration}
+                                </span>
+                              ) : null}
                             </Button>
                             <CopyButton
                               className="!size-6"
@@ -3141,6 +3218,15 @@ export default function App() {
                           {activityOpen && activityStacked && activityRunId === turn.run_id
                             ? renderActivityIsland(false)
                             : null}
+                          {turn.run_id && failure ? (
+                            <Card className="message-in flex items-start gap-2 rounded-xl border-destructive/30 bg-destructive/5 p-3 text-sm text-foreground shadow-none" role="alert">
+                              <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-destructive" />
+                              <span>
+                                {modelFailed ? `The ${providerLabel} model request failed` : "This run failed"}
+                                {failureCode ? ` (HTTP ${failureCode})` : ""}. Please try again.
+                              </span>
+                            </Card>
+                          ) : null}
                         </>
                       ) : null}
                     </Fragment>
@@ -3162,8 +3248,11 @@ export default function App() {
                   >
                     <p className="text-sm font-semibold">Continue running?</p>
                     <p className="mt-1 text-sm leading-6 text-warning/85">
-                      The harness completed {continuationRequest.completed_iterations} iterations. Continue for up to{" "}
-                      {continuationRequest.additional_iterations} more, or stop and generate a final response now.
+                      {continuationRequest.reason === "time_limit"
+                        ? `This run has been active for ${Math.round((continuationRequest.ceiling_seconds ?? 1800) / 60)} minutes. Continue for another interval, or stop and generate a final response now.`
+                        : continuationRequest.reason === "repeated_failure"
+                          ? `${continuationRequest.tool_name ?? "A tool"} failed ${continuationRequest.repeat_count ?? 3} times with the same arguments. Continue, or stop and generate a final response now.`
+                          : `The harness completed ${continuationRequest.completed_iterations} iterations. Continue for up to ${continuationRequest.additional_iterations} more, or stop and generate a final response now.`}
                     </p>
                     <div className="mt-3 flex flex-wrap gap-2">
                       <Button type="submit" variant="affirmative">Continue</Button>
@@ -3325,48 +3414,37 @@ export default function App() {
                     onValueChange={(value) => value && setModelName(value as string)}
                   >
                     <SelectPrimitive.Trigger
-                      aria-label={`Model: ${modelName}`}
-                      data-tooltip={modelName}
+                      aria-label={modelName ? `Model: ${modelName}` : "Choose model"}
+                      data-tooltip={modelName || "Choose model"}
                       className={`flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-lg px-2.5 text-xs outline-none focus-visible:ring-3 focus-visible:ring-ring/50 @max-[640px]/composer:w-32 ${
                         modelRequired
                           ? "bg-warning-muted text-warning ring-2 ring-warning-border"
                           : "bg-transparent"
                       }`}
                     >
-                      <SelectPrimitive.Value className="min-w-0 truncate" />
+                      <SelectPrimitive.Value className="min-w-0 truncate" placeholder="Choose model" />
                       <SelectPrimitive.Icon render={<ChevronUp className="size-4 shrink-0 text-muted-foreground" />} />
                     </SelectPrimitive.Trigger>
                     <SelectPrimitive.Portal>
                       <SelectPrimitive.Positioner alignItemWithTrigger sideOffset={4} className="z-50">
                         <SelectPrimitive.Popup className="min-w-48 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md">
                           <SelectPrimitive.List>
-                            {apiKey.trim() ? GEMINI_MODELS.map((model) => (
-                              <SelectPrimitive.Item
-                                className="relative flex cursor-default items-center rounded-md py-1.5 pr-8 pl-2 text-sm outline-none focus:bg-accent focus:text-accent-foreground"
-                                key={model}
-                                value={model}
-                              >
-                                <SelectPrimitive.ItemText>{model}</SelectPrimitive.ItemText>
-                                <SelectPrimitive.ItemIndicator
-                                  className="absolute right-2"
-                                  render={<Check className="size-4" />}
-                                />
-                              </SelectPrimitive.Item>
-                            )) : null}
-                            {apiKey.trim() && sarvamApiKey.trim() ? <Separator className="my-1" /> : null}
-                            {sarvamApiKey.trim() ? SARVAM_MODELS.map((model) => (
-                              <SelectPrimitive.Item
-                                className="relative flex cursor-default items-center rounded-md py-1.5 pr-8 pl-2 text-sm outline-none focus:bg-accent focus:text-accent-foreground"
-                                key={model}
-                                value={model}
-                              >
-                                <SelectPrimitive.ItemText>{model}</SelectPrimitive.ItemText>
-                                <SelectPrimitive.ItemIndicator
-                                  className="absolute right-2"
-                                  render={<Check className="size-4" />}
-                                />
-                              </SelectPrimitive.Item>
-                            )) : null}
+                            {availableModels.map((model, index) => (
+                              <Fragment key={model}>
+                                {index > 0 && modelInfo.get(availableModels[index - 1])?.provider !== modelInfo.get(model)?.provider
+                                  ? <Separator className="my-1" /> : null}
+                                <SelectPrimitive.Item
+                                  className="relative flex cursor-default items-center rounded-md py-1.5 pr-8 pl-2 text-sm outline-none focus:bg-accent focus:text-accent-foreground"
+                                  value={model}
+                                >
+                                  <SelectPrimitive.ItemText>{model}</SelectPrimitive.ItemText>
+                                  <SelectPrimitive.ItemIndicator
+                                    className="absolute right-2"
+                                    render={<Check className="size-4" />}
+                                  />
+                                </SelectPrimitive.Item>
+                              </Fragment>
+                            ))}
                             {availableModels.length ? <Separator className="my-1" /> : null}
                             <Button
                               className="h-8 w-full justify-start gap-2 px-2 text-xs"

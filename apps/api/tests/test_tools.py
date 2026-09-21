@@ -2,6 +2,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 from agent_harness_api.tools import ToolCall, ToolExecutor, build_default_tool_registry
 
@@ -38,6 +39,7 @@ def test_tool_registry_exposes_metadata_and_schemas() -> None:
     assert "write_file" in tool_names
     assert "git_status" in tool_names
     assert "git_log" in tool_names
+    assert "fetch_url" in tool_names
     assert {"git_refresh", "git_switch", "git_sync", "git_commit", "git_stage", "git_unstage", "git_discard"} <= set(tool_names)
     assert any(tool["name"] == "shell" for tool in definitions)
     assert registry.get("write_file").input_schema["required"] == ["path", "content"]
@@ -96,6 +98,98 @@ def test_filesystem_tools_respect_workspace_root(tmp_path: Path) -> None:
     assert "escapes the workspace root" in (escape_result.error or "")
 
 
+def test_read_file_pages_by_line_and_character_offset(tmp_path: Path) -> None:
+    content = "".join(f"line {number}\n" for number in range(250))
+    (tmp_path / "large.txt").write_text(content, encoding="utf-8")
+    executor = ToolExecutor(build_default_tool_registry())
+
+    first = executor.execute(ToolCall(id="read-1", name="read_file", arguments={"path": "large.txt"}), target_path=tmp_path)
+    second = executor.execute(
+        ToolCall(id="read-2", name="read_file", arguments={"path": "large.txt", "offset": first.metadata["next_offset"]}),
+        target_path=tmp_path,
+    )
+
+    assert first.output.count("\n") == 200
+    assert first.metadata["truncated"] is True
+    assert second.metadata["truncated"] is False
+    assert first.output + second.output == content
+
+    (tmp_path / "single-line.txt").write_text("x" * 20_000, encoding="utf-8")
+    first_line = executor.execute(
+        ToolCall(id="long-1", name="read_file", arguments={"path": "single-line.txt"}), target_path=tmp_path,
+    )
+    second_line = executor.execute(
+        ToolCall(id="long-2", name="read_file", arguments={"path": "single-line.txt", "offset": first_line.metadata["next_offset"]}),
+        target_path=tmp_path,
+    )
+    assert first_line.output + second_line.output == "x" * 20_000
+
+
+def test_shell_output_is_bounded_and_git_diff_can_be_paged(tmp_path: Path) -> None:
+    executor = ToolExecutor(build_default_tool_registry())
+    output = "x" * 20_000
+    completed = subprocess.CompletedProcess(args=["command"], returncode=0, stdout=output, stderr="")
+
+    with patch("agent_harness_api.tools._run_command", return_value=completed):
+        shell_result = executor.execute(
+            ToolCall(id="shell", name="shell", arguments={"command": "command"}), target_path=tmp_path,
+        )
+        first_diff = executor.execute(ToolCall(id="diff-1", name="git_diff"), target_path=tmp_path)
+        second_diff = executor.execute(
+            ToolCall(id="diff-2", name="git_diff", arguments={"offset": first_diff.metadata["next_offset"]}),
+            target_path=tmp_path,
+        )
+
+    assert len(shell_result.output) == 16_000
+    assert shell_result.metadata["truncated"] is True
+    assert "next_offset" not in shell_result.metadata
+    assert first_diff.output + second_diff.output == output
+    assert second_diff.metadata["truncated"] is False
+
+
+def test_list_files_skips_generated_files_and_backups(tmp_path: Path) -> None:
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / ".gitignore").write_text(
+        "node_modules/\ndist/\nbuild/\nrelease/\n__pycache__/\nvenv/\nbackups/\n*.db*\n*.pyc\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("pass", encoding="utf-8")
+    for directory in ("node_modules", "dist", "build", "release", "__pycache__", "venv", "backups"):
+        (tmp_path / directory).mkdir()
+        (tmp_path / directory / "generated.txt").write_text("generated", encoding="utf-8")
+    (tmp_path / "app.db.backup-20260921").write_text("backup", encoding="utf-8")
+    (tmp_path / "app.db").write_text("database", encoding="utf-8")
+    (tmp_path / "app.pyc").write_text("cache", encoding="utf-8")
+
+    result = ToolExecutor(build_default_tool_registry()).execute(
+        ToolCall(id="list", name="list_files"), target_path=tmp_path,
+    )
+
+    assert result.output == "src/app.py"
+    assert result.metadata["count"] == 1
+
+    included = ToolExecutor(build_default_tool_registry()).execute(
+        ToolCall(id="all", name="list_files", arguments={"include_ignored": True}),
+        target_path=tmp_path,
+    )
+    assert "node_modules/generated.txt" in included.output
+
+
+def test_list_files_keeps_tracked_source_in_an_ignored_directory(tmp_path: Path) -> None:
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / ".gitignore").write_text("build/\n", encoding="utf-8")
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "handwritten.py").write_text("source", encoding="utf-8")
+    subprocess.run(["git", "add", "-f", "build/handwritten.py"], cwd=tmp_path, check=True, capture_output=True)
+
+    result = ToolExecutor(build_default_tool_registry()).execute(
+        ToolCall(id="list", name="list_files"), target_path=tmp_path,
+    )
+
+    assert result.output == "build/handwritten.py"
+
+
 def test_search_and_shell_tools_support_repo_inspection(tmp_path: Path) -> None:
     workspace = tmp_path / "repo"
     _create_repo(workspace)
@@ -144,6 +238,25 @@ def test_search_and_shell_tools_support_repo_inspection(tmp_path: Path) -> None:
     assert "hello from shell" in shell_result.output
     assert shell_escape.success is False
     assert "escapes the workspace root" in (shell_escape.error or "")
+
+
+def test_search_skips_generated_and_hidden_files(tmp_path: Path) -> None:
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / ".gitignore").write_text("node_modules/\n.tmp/\n", encoding="utf-8")
+    (tmp_path / ".tmp").mkdir()
+    (tmp_path / ".tmp" / "build.txt").write_text("needle in build", encoding="utf-8")
+    (tmp_path / ".env").write_text("SECRET=needle", encoding="utf-8")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "package.js").write_text("needle in package", encoding="utf-8")
+    (tmp_path / "source.py").write_text("needle in source", encoding="utf-8")
+
+    result = ToolExecutor(build_default_tool_registry()).execute(
+        ToolCall(id="search", name="search_files", arguments={"query": "needle"}),
+        target_path=tmp_path,
+    )
+
+    assert result.success is True
+    assert result.output == "source.py:1:needle in source"
 
 
 def test_git_tools_and_repo_workflow(tmp_path: Path) -> None:

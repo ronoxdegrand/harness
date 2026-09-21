@@ -1,6 +1,10 @@
 from unittest.mock import patch
 
+import httpx
+import pytest
+
 from agent_harness_api.context import Context
+from agent_harness_api.model_request import ModelRequestError
 from agent_harness_api.sarvam_model import SarvamModelProvider
 from agent_harness_api.tools import build_default_tool_registry
 
@@ -71,3 +75,23 @@ def test_sarvam_final_response_disables_tools() -> None:
 
     assert "tools" not in post.call_args.kwargs["json"]
     assert result.output_text == "Done."
+
+
+def test_sarvam_503_retries_without_exposing_its_key() -> None:
+    context = Context()
+    context.add_user("hello")
+    provider = SarvamModelProvider(
+        api_key="secret-sarvam-key",
+        model_name="sarvam-105b",
+        tool_registry=build_default_tool_registry(),
+    )
+    request = httpx.Request("POST", "https://api.sarvam.ai/v1/chat/completions")
+    response = httpx.Response(503, request=request)
+
+    with patch("agent_harness_api.sarvam_model.httpx.post", return_value=response) as post:
+        with patch("agent_harness_api.model_request.time.sleep"):
+            with pytest.raises(ModelRequestError, match="Sarvam is temporarily unavailable") as error:
+                provider.complete(context)
+
+    assert post.call_count == 3
+    assert "secret-sarvam-key" not in str(error.value)

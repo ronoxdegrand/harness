@@ -7,10 +7,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from .config import DEFAULT_MODEL, get_settings
+from .config import get_settings
 from .context import Context
 from .db import LATEST_SCHEMA_VERSION, database_status, initialize_database
-from .gemini_model import GeminiModelProvider
+from .model_catalog import MODELS, build_model_provider, model_spec
 from .git_status import (
     GitBranchSwitchError,
     GitStagedChangesWarning,
@@ -26,7 +26,6 @@ from .git_status import (
     update_git_index,
     undo_last_git_commit,
 )
-from .sarvam_model import SarvamModelProvider
 from .store import RunStore, Thread, thread_title_from_prompt
 from .tools import build_default_tool_registry
 from .ws import handle_run_websocket, resolve_workspace_path
@@ -36,6 +35,7 @@ class ThreadCreateRequest(BaseModel):
     workspace_path: str
     title: str | None = None
     prompt: str | None = None
+    model_name: str | None = None
 
 
 class ThreadRenameRequest(BaseModel):
@@ -130,6 +130,16 @@ async def health_db() -> dict[str, str | bool | int]:
     return database_status()
 
 
+@app.get("/models")
+async def list_models() -> dict[str, object]:
+    return {
+        "models": [
+            {"id": spec.id, "provider": spec.provider, "selectable": spec.selectable}
+            for spec in MODELS
+        ],
+    }
+
+
 @app.post("/shutdown", status_code=202)
 async def shutdown(request: Request) -> dict[str, str]:
     callback = getattr(request.app.state, "request_shutdown", None)
@@ -161,10 +171,15 @@ async def create_thread(request: ThreadCreateRequest) -> dict[str, object]:
         raise HTTPException(status_code=400, detail="Workspace path does not exist or is not a directory.")
     if not request.title and not request.prompt:
         raise HTTPException(status_code=400, detail="Thread title or first prompt is required.")
+    if request.model_name is not None:
+        try:
+            model_spec(request.model_name.strip())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     store = RunStore()
     thread = store.create_thread(
         workspace_path=workspace_path,
-        model_name=DEFAULT_MODEL,
+        model_name=request.model_name.strip() if request.model_name else None,
         title=request.title or thread_title_from_prompt(request.prompt or ""),
     )
     return _thread_payload(store, thread)
@@ -304,20 +319,12 @@ async def git_commit_message(request: GitCommitMessageRequest) -> dict[str, str]
             raise ValueError("Workspace path does not exist or is not a directory.")
         change_details = read_commit_message_diff(workspace_path)
         registry = build_default_tool_registry()
-        if request.model_name == "sarvam-105b":
-            provider = SarvamModelProvider(
-                api_key=request.sarvam_api_key or settings.sarvam_api_key,
-                model_name=request.model_name,
-                tool_registry=registry,
-            )
-        elif request.model_name.startswith("gemini-"):
-            provider = GeminiModelProvider(
-                api_key=request.api_key or settings.gemini_api_key,
-                model_name=request.model_name,
-                tool_registry=registry,
-            )
-        else:
-            raise ValueError(f"Unsupported model: {request.model_name}")
+        provider = build_model_provider(
+            request.model_name,
+            registry,
+            gemini_api_key=request.api_key or settings.gemini_api_key,
+            sarvam_api_key=request.sarvam_api_key or settings.sarvam_api_key,
+        )
         context = Context()
         context.add_user(
             "Write exactly one concise Git commit subject for the changes below. "

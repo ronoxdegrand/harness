@@ -4,9 +4,6 @@ from pathlib import Path
 from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-DEFAULT_MODEL = "gemini-3-flash"
-
-
 class Settings(BaseSettings):
     app_name: str = "AI Agent Harness API"
     app_env: str = "development"

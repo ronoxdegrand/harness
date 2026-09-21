@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -16,6 +17,7 @@ from .git_status import (
     switch_git_branch,
     update_git_index,
 )
+from .web_fetch import fetch_public_page
 
 ToolHandler = Callable[[dict[str, Any], Path], "ToolResult"]
 
@@ -25,6 +27,55 @@ _SCHEMA_TYPE_MAP: dict[str, type[Any]] = {
     "integer": int,
     "string": str,
 }
+_MAX_DISCOVERY_FILES = 5_000
+_OUTPUT_CHARS = 16_000
+_READ_LINES = 200
+
+
+def _workspace_files(
+    search_root: Path, *, include_hidden: bool = False, include_ignored: bool = False,
+) -> tuple[list[Path], bool]:
+    """Discover files using Git's ignore rules, with a bounded fallback outside Git."""
+    if not include_ignored:
+        try:
+            completed = subprocess.run(
+                ["git", "-C", str(search_root), "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+                capture_output=True,
+                check=False,
+                timeout=10,
+            )
+            if completed.returncode == 0:
+                names = completed.stdout.split(b"\0")
+                paths = []
+                for raw_name in names:
+                    if not raw_name:
+                        continue
+                    relative = Path(os.fsdecode(raw_name))
+                    if not include_hidden and any(part.startswith(".") for part in relative.parts):
+                        continue
+                    path = search_root / relative
+                    if path.is_file() and not path.is_symlink():
+                        paths.append(path)
+                    if len(paths) > _MAX_DISCOVERY_FILES:
+                        return sorted(paths[:_MAX_DISCOVERY_FILES]), True
+                return sorted(paths), False
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    paths = []
+    for directory, directories, files in os.walk(search_root):
+        directories[:] = sorted(
+            name for name in directories
+            if name != ".git" and (include_hidden or not name.startswith("."))
+            and not (Path(directory) / name).is_symlink()
+        )
+        for name in sorted(files):
+            path = Path(directory) / name
+            if (include_hidden or not name.startswith(".")) and not path.is_symlink():
+                paths.append(path)
+                if len(paths) > _MAX_DISCOVERY_FILES:
+                    return paths[:_MAX_DISCOVERY_FILES], True
+    return paths, False
 
 
 def _object_schema(
@@ -141,9 +192,12 @@ def build_default_tool_registry() -> ToolRegistry:
         tools=[
             ToolDefinition(
                 name="read_file",
-                description="Read a UTF-8 text file relative to the workspace root.",
+                description=(
+                    "Read a UTF-8 file in bounded slices. The result includes next_offset when more "
+                    "content remains; pass it as offset to continue reading."
+                ),
                 input_schema=_object_schema(
-                    {"path": {"type": "string"}},
+                    {"path": {"type": "string"}, "offset": {"type": "integer"}},
                     required=["path"],
                 ),
                 handler=_read_file,
@@ -165,14 +219,16 @@ def build_default_tool_registry() -> ToolRegistry:
             ToolDefinition(
                 name="list_files",
                 description=(
-                    "List files relative to the workspace root. Dot-prefixed files and directories "
-                    "are excluded unless include_hidden is true."
+                    "List workspace files. Git-ignored files are excluded by default in Git repositories. "
+                    "Use path to narrow a large listing, include_hidden for dotfiles, or include_ignored "
+                    "when ignored files are needed."
                 ),
                 input_schema=_object_schema(
                     {
                         "path": {"type": "string"},
                         "limit": {"type": "integer"},
                         "include_hidden": {"type": "boolean"},
+                        "include_ignored": {"type": "boolean"},
                     },
                 ),
                 handler=_list_files,
@@ -180,13 +236,19 @@ def build_default_tool_registry() -> ToolRegistry:
             ),
             ToolDefinition(
                 name="search_files",
-                description="Search files by text or regex pattern within the workspace root.",
+                description=(
+                    "Search workspace files by text or regex pattern. Git-ignored files are excluded "
+                    "by default in Git repositories. Use path or include_ignored when needed. "
+                    "This does not search the internet."
+                ),
                 input_schema=_object_schema(
                     {
                         "query": {"type": "string"},
                         "path": {"type": "string"},
                         "limit": {"type": "integer"},
                         "regex": {"type": "boolean"},
+                        "include_hidden": {"type": "boolean"},
+                        "include_ignored": {"type": "boolean"},
                     },
                     required=["query"],
                 ),
@@ -194,8 +256,25 @@ def build_default_tool_registry() -> ToolRegistry:
                 replay_policy="safe",
             ),
             ToolDefinition(
+                name="fetch_url",
+                description=(
+                    "Read a public HTTPS text page at a known URL. The result includes page links and "
+                    "the final URL for citation. Use query to locate a term in long pages. "
+                    "This tool reads pages but does not search the web for URLs."
+                ),
+                input_schema=_object_schema(
+                    {"url": {"type": "string"}, "query": {"type": "string"}},
+                    required=["url"],
+                ),
+                handler=_fetch_url,
+                replay_policy="safe",
+            ),
+            ToolDefinition(
                 name="shell",
-                description="Run a command inside the workspace root or a subdirectory.",
+                description=(
+                    "Run a command inside the workspace root or a subdirectory. Output is bounded; "
+                    "if truncated, narrow the command rather than rerunning it for a later output slice."
+                ),
                 input_schema=_object_schema(
                     {
                         "command": {"type": "string"},
@@ -220,12 +299,16 @@ def build_default_tool_registry() -> ToolRegistry:
             ),
             ToolDefinition(
                 name="git_diff",
-                description="Return unstaged or staged git diff output. An omitted or blank path means the workspace root.",
+                description=(
+                    "Return unstaged or staged git diff output. An omitted path means the workspace root. "
+                    "Use next_offset from a truncated result to read the next slice."
+                ),
                 input_schema=_object_schema(
                     {
                         "path": {"type": "string"},
                         "staged": {"type": "boolean"},
                         "timeout_seconds": {"type": "integer"},
+                        "offset": {"type": "integer"},
                     },
                 ),
                 handler=_git_diff,
@@ -372,12 +455,36 @@ def _resolve_path(root: Path, relative_path: str = ".") -> Path:
     return resolved
 
 
+def _slice_output(content: str, offset: int, *, max_lines: int | None = None) -> tuple[str, dict[str, Any]]:
+    if offset < 0 or offset > len(content):
+        raise ValueError("Output offset is outside the available content.")
+    portion = content[offset : offset + _OUTPUT_CHARS]
+    if max_lines is not None:
+        portion = "".join(portion.splitlines(keepends=True)[:max_lines])
+    end = offset + len(portion)
+    return portion, {
+        "offset": offset,
+        "total_chars": len(content),
+        "truncated": end < len(content),
+        "next_offset": end if end < len(content) else None,
+    }
+
+
 def _read_file(arguments: dict[str, Any], root: Path) -> ToolResult:
     path = _resolve_path(root, arguments["path"])
+    content = path.read_text(encoding="utf-8")
+    offset = int(arguments.get("offset", 0))
+    output, metadata = _slice_output(content, offset, max_lines=_READ_LINES)
+    start_line = content.count("\n", 0, offset) + 1
     return ToolResult(
         success=True,
-        output=path.read_text(encoding="utf-8"),
-        metadata={"path": str(path.relative_to(root).as_posix())},
+        output=output,
+        metadata={
+            "path": str(path.relative_to(root).as_posix()),
+            "start_line": start_line,
+            "end_line": start_line + output.count("\n") - int(output.endswith("\n")),
+            **metadata,
+        },
     )
 
 
@@ -399,14 +506,12 @@ def _list_files(arguments: dict[str, Any], root: Path) -> ToolResult:
     relative_root = arguments.get("path", ".")
     search_root = _resolve_path(root, relative_root)
     include_hidden = bool(arguments.get("include_hidden", False))
-    entries = []
-    for path in search_root.rglob("*"):
-        relative_path = path.relative_to(root)
-        if path.is_file() and (
-            include_hidden or not any(part.startswith(".") for part in relative_path.parts)
-        ):
-            entries.append(relative_path.as_posix())
-    entries.sort()
+    paths, truncated = _workspace_files(
+        search_root,
+        include_hidden=include_hidden,
+        include_ignored=bool(arguments.get("include_ignored", False)),
+    )
+    entries = sorted(path.relative_to(root).as_posix() for path in paths)
     limit = int(arguments.get("limit", 200))
     return ToolResult(
         success=True,
@@ -416,6 +521,7 @@ def _list_files(arguments: dict[str, Any], root: Path) -> ToolResult:
             "returned": min(limit, len(entries)),
             "path": str(search_root.relative_to(root).as_posix()) if search_root != root else ".",
             "include_hidden": include_hidden,
+            "truncated": truncated or len(entries) > limit,
         },
     )
 
@@ -427,13 +533,17 @@ def _search_files(arguments: dict[str, Any], root: Path) -> ToolResult:
     use_regex = bool(arguments.get("regex", False))
     compiled = re.compile(query) if use_regex else None
     matches: list[str] = []
-
-    for path in search_root.rglob("*"):
-        if not path.is_file():
-            continue
+    paths, discovery_truncated = _workspace_files(
+        search_root,
+        include_hidden=bool(arguments.get("include_hidden", False)),
+        include_ignored=bool(arguments.get("include_ignored", False)),
+    )
+    for path in paths:
         try:
+            if path.stat().st_size > 1_000_000:
+                continue
             content = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
+        except (OSError, UnicodeDecodeError):
             continue
         for index, line in enumerate(content.splitlines(), start=1):
             found = compiled.search(line) is not None if compiled else query in line
@@ -449,7 +559,16 @@ def _search_files(arguments: dict[str, Any], root: Path) -> ToolResult:
     return ToolResult(
         success=True,
         output="\n".join(matches),
-        metadata={"count": len(matches), "truncated": False, "regex": use_regex},
+        metadata={"count": len(matches), "truncated": discovery_truncated, "regex": use_regex},
+    )
+
+
+def _fetch_url(arguments: dict[str, Any], root: Path) -> ToolResult:
+    url, content, truncated = fetch_public_page(arguments["url"], arguments.get("query"))
+    return ToolResult(
+        success=True,
+        output=content,
+        metadata={"url": url, "truncated": truncated},
     )
 
 
@@ -464,6 +583,7 @@ def _run_command(
     timeout_seconds: int,
     shell: bool = False,
 ) -> subprocess.CompletedProcess[str]:
+    timeout_seconds = max(1, min(timeout_seconds, 120))
     return subprocess.run(
         command,
         cwd=cwd,
@@ -484,12 +604,15 @@ def _shell(arguments: dict[str, Any], root: Path) -> ToolResult:
         shell=True,
         timeout_seconds=timeout_seconds,
     )
+    output, output_metadata = _slice_output(_output_from_completed(completed), 0)
+    output_metadata.pop("next_offset")
 
     return ToolResult(
         success=completed.returncode == 0,
-        output=_output_from_completed(completed),
+        output=output,
         metadata={
             "returncode": completed.returncode,
+            **output_metadata,
             "working_directory": (
                 working_directory.relative_to(root).as_posix()
                 if working_directory != root
@@ -662,9 +785,12 @@ def _git_diff(arguments: dict[str, Any], root: Path) -> ToolResult:
         cwd=root,
         timeout_seconds=int(arguments.get("timeout_seconds", 30)),
     )
+    output, output_metadata = _slice_output(
+        _output_from_completed(completed), int(arguments.get("offset", 0)),
+    )
     return ToolResult(
         success=completed.returncode == 0,
-        output=_output_from_completed(completed),
-        metadata={"returncode": completed.returncode, "path": target},
+        output=output,
+        metadata={"returncode": completed.returncode, "path": target, **output_metadata},
         error=None if completed.returncode == 0 else f"git diff exited with {completed.returncode}",
     )
