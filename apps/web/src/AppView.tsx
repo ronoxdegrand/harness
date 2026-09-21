@@ -1,5 +1,6 @@
 import { type CSSProperties, Fragment, lazy, Suspense } from "react";
 import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog";
+import { Menu as MenuPrimitive } from "@base-ui/react/menu";
 
 import { Select as SelectPrimitive } from "@base-ui/react/select";
 import {
@@ -197,6 +198,22 @@ export function AppView(controller: AppController) {
     layoutColumns,
     activityProps,
   } = controller;
+  let composerPlaceholder: string;
+  if (viewingOtherThreadDuringRun) {
+    composerPlaceholder = "Open the running thread to send a message";
+  } else if (status === "connecting") {
+    composerPlaceholder = "Queue a follow-up while the run starts";
+  } else if (status === "running") {
+    composerPlaceholder = activeRunEnterAction === "queue"
+      ? "Queue a follow-up or steer this run"
+      : "Steer this run or queue a follow-up";
+  } else if (activeThread) {
+    composerPlaceholder = "Ask a follow-up or start a new task";
+  } else {
+    composerPlaceholder = workspacePath.trim()
+      ? "What should I work on in this repository?"
+      : "Select a repository to begin";
+  }
   return (
     <main className="h-dvh overflow-hidden bg-background text-foreground">
       <TooltipLayer />
@@ -883,11 +900,10 @@ export function AppView(controller: AppController) {
             }`}>
               <Textarea
                 ref={taskInputRef}
-                className="min-h-16 max-h-60 resize-none overflow-y-auto border-0 bg-transparent px-3 py-2 text-sm leading-6 shadow-none focus-visible:ring-0"
+                rows={1}
+                className="min-h-10 max-h-60 resize-none overflow-y-auto border-0 bg-transparent px-3 py-2 text-sm leading-6 shadow-none [field-sizing:content] focus-visible:ring-0"
                 disabled={viewingOtherThreadDuringRun}
-                placeholder={status === "connecting" || status === "running"
-                  ? "Add a follow-up to queue or steer the current run"
-                  : 'Inspect the repo, search for "AgentRuntime", run tests, and show git diff'}
+                placeholder={composerPlaceholder}
                 value={task}
                 onChange={(event) => setTask(event.target.value)}
                 onKeyDown={(event) => {
@@ -911,13 +927,14 @@ export function AppView(controller: AppController) {
                   event.currentTarget.form?.requestSubmit();
                 }}
               />
-              <div className="flex flex-wrap items-center gap-2 px-1 pt-1">
+              <div className="mt-1 flex min-w-0 items-center gap-1.5 border-t border-border px-1 pt-2">
+                <div className="flex min-w-0 flex-1 items-center gap-1.5">
                 {workspacePath.trim() ? (
-                <div className="mr-auto flex min-w-0 items-stretch overflow-hidden rounded-lg border bg-card text-xs text-muted-foreground">
+                <div className="flex min-w-0 items-stretch overflow-hidden rounded-lg border bg-card text-xs text-muted-foreground">
                     <Button
                       aria-label={`${gitVisible ? "Close" : "Open"} Git panel, branch ${gitBranchLabel}, ${gitChangedFileCount} changed files, ${gitStatus?.ahead ?? 0} ahead and ${gitStatus?.behind ?? 0} behind`}
                       aria-pressed={gitVisible}
-                      className={`h-8 max-w-56 shrink-0 gap-1.5 rounded-none px-2 font-mono text-[10px] font-semibold @max-[640px]/composer:max-w-40 ${
+                      className={`h-8 max-w-56 min-w-0 gap-1.5 rounded-none px-2 font-mono text-[10px] font-semibold @max-[640px]/composer:max-w-40 @max-[400px]/composer:px-1.5 ${
                         !gitStatusLoading && !gitTracked
                           ? "bg-warning-muted text-warning hover:bg-warning-muted/80"
                           : "text-muted-foreground"
@@ -928,42 +945,42 @@ export function AppView(controller: AppController) {
                       onClick={toggleGitPanel}
                     >
                       <GitBranch aria-hidden="true" className="size-3.5 shrink-0" />
-                      <span className="truncate">{gitBranchLabel}</span>
+                      <span className="truncate @max-[340px]/composer:hidden">{gitBranchLabel}</span>
                       {gitChangedFileCount ? (
-                        <span className="flex items-center gap-1 text-warning">
+                        <span className="flex items-center gap-1 text-warning @max-[400px]/composer:hidden">
                           <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />{gitChangedFileCount}
                         </span>
                       ) : null}
-                      {gitStatus?.ahead ? <span>
+                      {gitStatus?.ahead ? <span className="@max-[400px]/composer:hidden">
                         <ChevronUp aria-hidden="true" className="inline size-3" />{gitStatus?.ahead ?? 0}
                       </span> : null}
-                      {gitStatus?.behind ? <span>
+                      {gitStatus?.behind ? <span className="@max-[400px]/composer:hidden">
                         <ChevronDown aria-hidden="true" className="inline size-3" />{gitStatus?.behind ?? 0}
                       </span> : null}
                     </Button>
                 </div>
-                ) : <span className="mr-auto" />}
+                ) : null}
                 {contextAvailable ? (
                   <Button
                     aria-label={`${contextVisible ? "Close" : "Open"} context, ${Math.round(contextUsage)}% of budget used`}
                     aria-pressed={contextVisible}
-                    className="size-8 shrink-0 text-muted-foreground"
+                    className="size-8 shrink-0 border border-border bg-card text-muted-foreground hover:bg-muted"
                     size="icon-sm"
                     data-tooltip={`Context: ${Math.round(contextUsage)}% used`}
                     type="button"
-                    variant={contextVisible ? "secondary" : "ghost"}
+                    variant={contextVisible ? "secondary" : "outline"}
                     onClick={toggleContextPanel}
                   >
                     <span
                       aria-hidden="true"
-                      className="flex size-6 items-center justify-center rounded-full p-0.5"
+                      className="flex size-5 items-center justify-center rounded-full p-[2.5px]"
                       style={{ background: `conic-gradient(var(--foreground) ${contextUsage}%, var(--border) 0)` }}
                     >
-                      <span className="size-full rounded-full bg-background" />
+                      <span className="size-full rounded-full bg-card" />
                     </span>
                   </Button>
                 ) : null}
-                <label className="text-xs text-muted-foreground">
+                <label className="min-w-0 text-xs text-muted-foreground">
                   <span className="sr-only">Model</span>
                   {availableModels.length ? (
                     <SelectPrimitive.Root
@@ -975,14 +992,14 @@ export function AppView(controller: AppController) {
                     <SelectPrimitive.Trigger
                       aria-label={modelName ? `Model: ${modelName}` : "Choose model"}
                       data-tooltip={modelName || "Choose model"}
-                      className={`flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-lg px-2.5 text-xs outline-none focus-visible:ring-3 focus-visible:ring-ring/50 @max-[640px]/composer:w-32 ${
+                      className={`flex h-8 w-36 max-w-full min-w-0 cursor-pointer items-center justify-start gap-1.5 rounded-lg border border-border bg-card px-2.5 text-left text-xs outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 @max-[640px]/composer:w-28 @max-[400px]/composer:w-20 @max-[400px]/composer:px-1.5 @max-[340px]/composer:w-16 ${
                         modelRequired
                           ? "bg-warning-muted text-warning ring-2 ring-warning-border"
                           : "bg-transparent"
                       }`}
                     >
-                      <SelectPrimitive.Value className="min-w-0 truncate" placeholder="Choose model" />
-                      <SelectPrimitive.Icon render={<ChevronUp className="size-4 shrink-0 text-muted-foreground" />} />
+                      <SelectPrimitive.Value className="min-w-0 flex-1 truncate text-left" placeholder="Choose model" />
+                      <SelectPrimitive.Icon render={<ChevronUp className="size-4 shrink-0 text-muted-foreground @max-[400px]/composer:hidden" />} />
                     </SelectPrimitive.Trigger>
                     <SelectPrimitive.Portal>
                       <SelectPrimitive.Positioner alignItemWithTrigger sideOffset={4} className="z-50">
@@ -1023,7 +1040,7 @@ export function AppView(controller: AppController) {
                     </SelectPrimitive.Root>
                   ) : (
                     <Button
-                      className={`h-8 w-48 justify-between px-2.5 text-xs font-normal @max-[640px]/composer:w-32 ${
+                      className={`h-8 w-36 max-w-full min-w-0 justify-between border border-border px-2.5 text-left text-xs font-normal @max-[640px]/composer:w-28 @max-[400px]/composer:w-20 @max-[400px]/composer:px-1.5 @max-[340px]/composer:w-16 ${
                         modelRequired
                           ? "bg-warning-muted text-warning ring-2 ring-warning-border hover:bg-warning-muted/80"
                           : "text-muted-foreground"
@@ -1032,13 +1049,14 @@ export function AppView(controller: AppController) {
                       variant="ghost"
                       onClick={openSettings}
                     >
-                      <span>Set API key</span>
-                      <Settings2 aria-hidden="true" className="size-4" />
+                      <span className="min-w-0 truncate">Set API key</span>
+                      <Settings2 aria-hidden="true" className="size-4 @max-[400px]/composer:hidden" />
                     </Button>
                   )}
                 </label>
+                </div>
                 {(status === "connecting" || status === "running") && queuedTasks.length > 0 ? (
-                  <span className="text-xs font-medium text-muted-foreground" role="status">
+                  <span className="shrink-0 text-xs font-medium text-muted-foreground @max-[640px]/composer:hidden" role="status">
                     {queuedTasks.length} queued
                   </span>
                 ) : null}
@@ -1047,34 +1065,61 @@ export function AppView(controller: AppController) {
                     <Button
                       aria-label={stopping ? "Stopping run" : "Stop run"}
                       data-tooltip={stopping ? "Stopping run" : "Stop run"}
-                      className="size-8"
+                      className="size-8 bg-card"
                       disabled={stopping}
                       size="icon-sm"
                       type="button"
-                      variant="destructive"
+                      variant="outline"
                       onClick={stopRun}
                     >
                       {stopping ? <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" /> : <Square aria-hidden="true" className="size-3.5 fill-current" />}
                     </Button>
-                    {task.trim() ? ([alternateRunEnterAction, activeRunEnterAction] as const).map((action) => {
-                      const primary = action === activeRunEnterAction;
-                      return (
+                    {task.trim() ? (
+                      <div className="flex shrink-0 items-center">
                         <Button
-                          aria-label={action === "queue" ? "Queue message" : "Steer run"}
-                          className="h-8 px-3 text-xs font-semibold capitalize @max-[640px]/composer:w-8 @max-[640px]/composer:px-0"
-                          disabled={stopping || viewingOtherThreadDuringRun || (action === "steer" && status !== "running")}
-                          key={action}
+                          aria-label={activeRunEnterAction === "queue" ? "Queue message, Enter" : "Steer run, Enter"}
+                          className="h-8 rounded-r-none px-3 text-xs font-semibold capitalize @max-[400px]/composer:w-8 @max-[400px]/composer:px-0"
+                          disabled={stopping || viewingOtherThreadDuringRun}
                           size="sm"
                           type="button"
-                          data-tooltip={`${action === "queue" ? "Queue" : "Steer"} (${primary ? "Enter" : `${SHORTCUT_LABEL}+Enter`})`}
-                          variant={primary ? "affirmative" : "outline"}
-                          onClick={action === "queue" ? queueTask : steerRun}
+                          data-tooltip={`${activeRunEnterAction === "queue" ? "Queue" : "Steer"} (Enter)`}
+                          variant="affirmative"
+                          onClick={activeRunEnterAction === "queue" ? queueTask : steerRun}
                         >
-                          {action === "queue" ? <ListPlus aria-hidden="true" className="size-3.5" /> : <CornerUpRight aria-hidden="true" className="size-3.5" />}
-                          <span className="@max-[640px]/composer:hidden">{action}</span>
+                          {activeRunEnterAction === "queue" ? <ListPlus aria-hidden="true" className="size-3.5" /> : <CornerUpRight aria-hidden="true" className="size-3.5" />}
+                          <span className="@max-[400px]/composer:hidden">{activeRunEnterAction}</span>
                         </Button>
-                      );
-                    }) : null}
+                        <MenuPrimitive.Root>
+                          <MenuPrimitive.Trigger
+                            render={<Button
+                              aria-label="Other run action"
+                              className="h-8 w-7 rounded-l-none border-l border-affirmative-foreground/20 px-0 text-affirmative-foreground"
+                              disabled={stopping || viewingOtherThreadDuringRun}
+                              size="sm"
+                              type="button"
+                              variant="affirmative"
+                            />}
+                          >
+                            <ChevronDown aria-hidden="true" className="size-3.5" />
+                          </MenuPrimitive.Trigger>
+                          <MenuPrimitive.Portal>
+                            <MenuPrimitive.Positioner side="top" align="end" sideOffset={6} className="z-50">
+                              <MenuPrimitive.Popup className="min-w-40 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md outline-none">
+                                <MenuPrimitive.Item
+                                  className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-xs outline-none data-[highlighted]:bg-accent data-[disabled]:cursor-not-allowed data-[disabled]:opacity-50"
+                                  disabled={alternateRunEnterAction === "steer" && status !== "running"}
+                                  onClick={alternateRunEnterAction === "queue" ? queueTask : steerRun}
+                                >
+                                  {alternateRunEnterAction === "queue" ? <ListPlus aria-hidden="true" className="size-3.5" /> : <CornerUpRight aria-hidden="true" className="size-3.5" />}
+                                  <span className="capitalize">{alternateRunEnterAction}</span>
+                                  <span className="ml-auto text-muted-foreground">{SHORTCUT_LABEL}+Enter</span>
+                                </MenuPrimitive.Item>
+                              </MenuPrimitive.Popup>
+                            </MenuPrimitive.Positioner>
+                          </MenuPrimitive.Portal>
+                        </MenuPrimitive.Root>
+                      </div>
+                    ) : null}
                   </>
                 ) : (
                   <Button
