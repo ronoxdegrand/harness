@@ -467,6 +467,7 @@ export default function App() {
   const gitCloseTimerRef = useRef<number | null>(null);
   const contextCloseTimerRef = useRef<number | null>(null);
   const gitDiffRequestRef = useRef<AbortController | null>(null);
+  const gitDiffSelectionRef = useRef<Pick<GitDiffState, "path" | "staged"> | null>(null);
   const resizeRef = useRef<{
     panel: "sidebar" | "activity" | "context" | "git" | "diff";
     startX: number;
@@ -842,6 +843,7 @@ export default function App() {
     setGitFetchError(null);
     setCommitMessage("");
     gitDiffRequestRef.current?.abort();
+    gitDiffSelectionRef.current = null;
     setGitDiff(null);
   }, [workspacePath]);
 
@@ -967,6 +969,7 @@ export default function App() {
     gitDiffRequestRef.current?.abort();
     const controller = new AbortController();
     gitDiffRequestRef.current = controller;
+    gitDiffSelectionRef.current = { path: file.path, staged };
     setGitDiff({ path: file.path, staged, patch: null, binary: false, error: null });
     if (!narrowView) {
       setGitOpen(true);
@@ -1005,6 +1008,7 @@ export default function App() {
   function closeGitDiff() {
     gitDiffRequestRef.current?.abort();
     gitDiffRequestRef.current = null;
+    gitDiffSelectionRef.current = null;
     setGitDiff(null);
     setSidebarPreviewOpen(false);
     setContextPreviewOpen(false);
@@ -1013,6 +1017,7 @@ export default function App() {
   async function updateGitIndex(action: "stage" | "unstage", paths: string[]) {
     if (!workspacePath.trim() || gitMutation) return;
     gitStatusRequestRef.current?.abort();
+    const viewedDiff = gitDiffSelectionRef.current;
     const mutation = `${action}:${paths.join("\0") || "all"}`;
     setGitMutation(mutation);
     try {
@@ -1025,8 +1030,19 @@ export default function App() {
         const payload = await readJson<{ detail?: string }>(response);
         throw new Error(payload.detail || `Could not ${action} files.`);
       }
-      setGitStatus(await readJson<GitStatusState>(response));
-      if (gitDiff && (!paths.length || paths.includes(gitDiff.path))) closeGitDiff();
+      const nextStatus = await readJson<GitStatusState>(response);
+      setGitStatus(nextStatus);
+      if (viewedDiff && (!paths.length || paths.includes(viewedDiff.path))
+        && gitDiffSelectionRef.current?.path === viewedDiff.path
+        && gitDiffSelectionRef.current.staged === viewedDiff.staged) {
+        const staged = action === "stage";
+        const nextFiles = staged
+          ? nextStatus.staged
+          : [...nextStatus.modified, ...nextStatus.untracked];
+        const nextFile = nextFiles.find((file) => file.path === viewedDiff.path);
+        if (nextFile) void openGitDiff(nextFile, staged);
+        else closeGitDiff();
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : `Could not ${action} files.`);
     } finally {
@@ -3743,16 +3759,24 @@ export default function App() {
                   {renderGitCommits()}
                   {gitStatus.local_commits.length ? <GitFlowSeparator /> : null}
                     <Button
-                      aria-label={`Synchronize ${gitBranchLabel}: ${gitStatus.ahead} to push, ${gitStatus.behind} to pull`}
+                      aria-label={gitMutation === "sync"
+                        ? `Synchronizing with ${gitStatus.upstream}`
+                        : `Synchronize ${gitBranchLabel} with ${gitStatus.upstream ?? "upstream"}: ${gitStatus.ahead} to push, ${gitStatus.behind} to pull`}
+                      aria-busy={gitMutation === "sync"}
                       className="h-8 w-full min-w-0 justify-start gap-2 px-2.5 text-xs"
                       disabled={!gitStatus.upstream || (!gitStatus.ahead && !gitStatus.behind) || Boolean(gitMutation)}
-                      data-tooltip={gitStatus.upstream ? `Synchronize with ${gitStatus.upstream}` : "This branch has no upstream"}
+                      data-tooltip={gitMutation === "sync" ? `Synchronizing with ${gitStatus.upstream}` : gitStatus.upstream ? `Synchronize with ${gitStatus.upstream}` : "This branch has no upstream"}
                       type="button"
                       variant="outline"
                       onClick={() => void syncGitBranch()}
                     >
-                      <ArrowDownUp aria-hidden="true" className="size-3.5 shrink-0" />
+                      {gitMutation === "sync"
+                        ? <LoaderCircle aria-hidden="true" className="size-3.5 shrink-0 animate-spin" />
+                        : <ArrowDownUp aria-hidden="true" className="size-3.5 shrink-0" />}
                       <span className="shrink-0">{gitStatus.upstream ? "Sync" : "No upstream"}</span>
+                      {gitStatus.upstream ? (
+                        <span className="min-w-0 truncate font-mono text-muted-foreground">{gitStatus.upstream}</span>
+                      ) : null}
                       {gitStatus.upstream ? (
                         <span className="ml-auto flex shrink-0 items-center gap-2 font-normal text-muted-foreground">
                           <span className={gitStatus.ahead ? "text-foreground" : ""}>
