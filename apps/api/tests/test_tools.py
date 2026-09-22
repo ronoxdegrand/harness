@@ -48,6 +48,23 @@ def test_tool_registry_exposes_metadata_and_schemas() -> None:
     assert registry.get("git_diff").input_schema["properties"]["staged"]["type"] == "boolean"
 
 
+def test_invalid_tool_call_returns_schema_or_available_tools(tmp_path: Path) -> None:
+    executor = ToolExecutor(build_default_tool_registry())
+
+    invalid_arguments = executor.execute(
+        ToolCall(id="bad-args", name="read_file", arguments={"path": "file.txt", "limit": 20}),
+        target_path=tmp_path,
+    )
+    unknown_tool = executor.execute(
+        ToolCall(id="bad-name", name="missing_tool"), target_path=tmp_path,
+    )
+
+    assert invalid_arguments.success is False
+    assert "Unknown arguments: limit" in (invalid_arguments.error or "")
+    assert invalid_arguments.metadata["expected_schema"] == executor.registry.get("read_file").input_schema
+    assert "read_file" in unknown_tool.metadata["available_tools"]
+
+
 def test_filesystem_tools_respect_workspace_root(tmp_path: Path) -> None:
     executor = ToolExecutor(build_default_tool_registry())
     workspace = tmp_path / "workspace"

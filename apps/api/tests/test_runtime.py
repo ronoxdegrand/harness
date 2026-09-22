@@ -837,3 +837,118 @@ def test_repeated_unstructured_tool_markup_fails_without_editing(tmp_path: Path,
         runtime.run("Update agent.py", target_path=tmp_path)
 
     assert path.read_text(encoding="utf-8") == "original\n"
+
+
+def test_serialized_json_tool_call_gets_one_structured_retry(tmp_path: Path, monkeypatch) -> None:
+    class JsonThenStructured:
+        calls = 0
+
+        def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
+            self.calls += 1
+            if self.calls == 1:
+                return ModelResponse(output_text='{"tool_calls": [{"name": "list_files", "arguments": {}}]}')
+            if self.calls == 2:
+                assert context.retry_instruction is not None
+                return ModelResponse(tool_calls=[ToolCall(id="list", name="list_files")])
+            assert context.retry_instruction is None
+            return ModelResponse(output_text="The workspace was inspected.")
+
+    database_path = tmp_path / "json_tool_call.db"
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(database_path))
+    get_settings.cache_clear()
+    initialize_database()
+    registry = build_default_tool_registry()
+    model = JsonThenStructured()
+    runtime = AgentRuntime(
+        model=model, tool_registry=registry, tool_executor=ToolExecutor(registry),
+        store=RunStore(database_path),
+    )
+
+    result = runtime.run("Inspect the workspace", target_path=tmp_path)
+
+    assert result.status == "completed"
+    assert model.calls == 3
+
+
+def test_unsupported_edit_claim_gets_one_chance_to_do_the_work(tmp_path: Path, monkeypatch) -> None:
+    class PrematureClaimThenEdit:
+        calls = 0
+
+        def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
+            self.calls += 1
+            if self.calls == 1:
+                return ModelResponse(output_text="I updated the file.")
+            if self.calls == 2:
+                assert context.retry_instruction is not None
+                assert "no successful action" in context.retry_instruction
+                return ModelResponse(tool_calls=[ToolCall(
+                    id="write", name="write_file",
+                    arguments={"path": "result.txt", "content": "done"},
+                )])
+            assert context.retry_instruction is None
+            return ModelResponse(output_text="I updated the file.")
+
+    database_path = tmp_path / "unsupported_claim.db"
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(database_path))
+    get_settings.cache_clear()
+    initialize_database()
+    registry = build_default_tool_registry()
+    runtime = AgentRuntime(
+        model=PrematureClaimThenEdit(), tool_registry=registry,
+        tool_executor=ToolExecutor(registry), store=RunStore(database_path),
+    )
+
+    result = runtime.run("Update result.txt", target_path=tmp_path)
+
+    assert result.status == "completed"
+    assert (tmp_path / "result.txt").read_text(encoding="utf-8") == "done"
+
+
+def test_read_only_results_do_not_support_a_claimed_edit(tmp_path: Path, monkeypatch) -> None:
+    class ReadsThenClaimsEdit:
+        calls = 0
+
+        def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
+            self.calls += 1
+            if self.calls == 1:
+                return ModelResponse(tool_calls=[ToolCall(id="list", name="list_files")])
+            return ModelResponse(output_text="I fixed the file.")
+
+    database_path = tmp_path / "read_only_claim.db"
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(database_path))
+    get_settings.cache_clear()
+    initialize_database()
+    registry = build_default_tool_registry()
+    runtime = AgentRuntime(
+        model=ReadsThenClaimsEdit(), tool_registry=registry,
+        tool_executor=ToolExecutor(registry), store=RunStore(database_path),
+    )
+
+    with pytest.raises(RuntimeError, match="no successful action"):
+        runtime.run("Fix the file", target_path=tmp_path)
+
+
+def test_unknown_structured_tool_is_returned_as_a_correctable_result(tmp_path: Path, monkeypatch) -> None:
+    class UnknownThenKnown:
+        calls = 0
+
+        def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
+            self.calls += 1
+            if self.calls == 1:
+                return ModelResponse(tool_calls=[ToolCall(id="bad", name="unknown_tool")])
+            failed_result = json.loads(next(message.content for message in context.messages if message.role == "tool"))
+            assert failed_result["success"] is False
+            assert "list_files" in failed_result["metadata"]["available_tools"]
+            return ModelResponse(output_text="That tool is unavailable.")
+
+    database_path = tmp_path / "unknown_tool.db"
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(database_path))
+    get_settings.cache_clear()
+    initialize_database()
+    registry = build_default_tool_registry()
+    runtime = AgentRuntime(
+        model=UnknownThenKnown(), tool_registry=registry,
+        tool_executor=ToolExecutor(registry), store=RunStore(database_path),
+    )
+
+    assert runtime.run("Check the available tools", target_path=tmp_path).status == "completed"

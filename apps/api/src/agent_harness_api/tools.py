@@ -6,7 +6,7 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from .git_status import (
     GitBranchSwitchError,
@@ -20,6 +20,12 @@ from .git_status import (
 from .web_fetch import fetch_public_page
 
 ToolHandler = Callable[[dict[str, Any], Path], "ToolResult"]
+ToolEffect = Literal["observe", "mutate", "execute"]
+
+
+class ToolArgumentError(ValueError):
+    pass
+
 
 _SCHEMA_TYPE_MAP: dict[str, type[Any]] = {
     "array": list,
@@ -129,6 +135,7 @@ class ToolDefinition:
     input_schema: dict[str, Any]
     handler: ToolHandler
     replay_policy: str = "never"
+    effect: ToolEffect = "observe"
 
     def execute(self, arguments: dict[str, Any], workspace_root: Path) -> ToolResult:
         _validate_arguments(self.input_schema, arguments)
@@ -171,10 +178,33 @@ class ToolExecutor:
         workspace_root = target_path.resolve()
         try:
             tool = self.registry.get(call.name)
+        except KeyError as exc:
+            return ToolResult(
+                success=False,
+                output="",
+                error=str(exc),
+                metadata={
+                    "tool_name": call.name,
+                    "workspace_root": str(workspace_root),
+                    "available_tools": self.registry.list(),
+                },
+            )
+        try:
             result = tool.execute(call.arguments, workspace_root)
             result.metadata.setdefault("tool_name", call.name)
             result.metadata.setdefault("workspace_root", str(workspace_root))
             return result
+        except ToolArgumentError as exc:
+            return ToolResult(
+                success=False,
+                output="",
+                error=str(exc),
+                metadata={
+                    "tool_name": call.name,
+                    "workspace_root": str(workspace_root),
+                    "expected_schema": tool.input_schema,
+                },
+            )
         except Exception as exc:
             return ToolResult(
                 success=False,
@@ -215,6 +245,7 @@ def build_default_tool_registry() -> ToolRegistry:
                 ),
                 handler=_write_file,
                 replay_policy="idempotent",
+                effect="mutate",
             ),
             ToolDefinition(
                 name="patch",
@@ -233,6 +264,7 @@ def build_default_tool_registry() -> ToolRegistry:
                 ),
                 handler=_patch_file,
                 replay_policy="never",
+                effect="mutate",
             ),
             ToolDefinition(
                 name="list_files",
@@ -302,6 +334,7 @@ def build_default_tool_registry() -> ToolRegistry:
                     required=["command"],
                 ),
                 handler=_shell,
+                effect="execute",
             ),
             ToolDefinition(
                 name="git_status",
@@ -372,6 +405,7 @@ def build_default_tool_registry() -> ToolRegistry:
                     required=["branch"],
                 ),
                 handler=_git_switch,
+                effect="mutate",
             ),
             ToolDefinition(
                 name="git_sync",
@@ -381,6 +415,7 @@ def build_default_tool_registry() -> ToolRegistry:
                 ),
                 input_schema=_object_schema({"path": {"type": "string"}}),
                 handler=_git_sync,
+                effect="mutate",
             ),
             ToolDefinition(
                 name="git_commit",
@@ -390,6 +425,7 @@ def build_default_tool_registry() -> ToolRegistry:
                     required=["message"],
                 ),
                 handler=_git_commit,
+                effect="mutate",
             ),
             ToolDefinition(
                 name="git_stage",
@@ -401,6 +437,7 @@ def build_default_tool_registry() -> ToolRegistry:
                     },
                 ),
                 handler=_git_stage,
+                effect="mutate",
             ),
             ToolDefinition(
                 name="git_unstage",
@@ -412,6 +449,7 @@ def build_default_tool_registry() -> ToolRegistry:
                     },
                 ),
                 handler=_git_unstage,
+                effect="mutate",
             ),
             ToolDefinition(
                 name="git_discard",
@@ -426,6 +464,7 @@ def build_default_tool_registry() -> ToolRegistry:
                     },
                 ),
                 handler=_git_discard,
+                effect="mutate",
             ),
         ]
     )
@@ -433,7 +472,9 @@ def build_default_tool_registry() -> ToolRegistry:
 
 def _validate_arguments(schema: dict[str, Any], arguments: dict[str, Any]) -> None:
     if schema.get("type") != "object":
-        raise ValueError("Tool schemas must be object schemas.")
+        raise ToolArgumentError("Tool schemas must be object schemas.")
+    if not isinstance(arguments, dict):
+        raise ToolArgumentError("Tool arguments must be an object.")
 
     properties = schema.get("properties", {})
     required = set(schema.get("required", []))
@@ -441,12 +482,12 @@ def _validate_arguments(schema: dict[str, Any], arguments: dict[str, Any]) -> No
 
     missing = sorted(field for field in required if field not in arguments)
     if missing:
-        raise ValueError(f"Missing required arguments: {', '.join(missing)}")
+        raise ToolArgumentError(f"Missing required arguments: {', '.join(missing)}")
 
     if additional_properties is False:
         unknown = sorted(key for key in arguments if key not in properties)
         if unknown:
-            raise ValueError(f"Unknown arguments: {', '.join(unknown)}")
+            raise ToolArgumentError(f"Unknown arguments: {', '.join(unknown)}")
 
     for key, value in arguments.items():
         expected_type = properties.get(key, {}).get("type")
@@ -455,15 +496,15 @@ def _validate_arguments(schema: dict[str, Any], arguments: dict[str, Any]) -> No
         python_type = _SCHEMA_TYPE_MAP.get(expected_type)
         if python_type is None:
             continue
-        if not isinstance(value, python_type):
-            raise ValueError(
+        if not isinstance(value, python_type) or (expected_type == "integer" and isinstance(value, bool)):
+            raise ToolArgumentError(
                 f"Argument '{key}' must be of type {expected_type}, got {type(value).__name__}."
             )
         item_type = properties.get(key, {}).get("items", {}).get("type")
         item_python_type = _SCHEMA_TYPE_MAP.get(item_type)
         if expected_type == "array" and item_python_type is not None:
             if any(not isinstance(item, item_python_type) for item in value):
-                raise ValueError(f"Every item in argument '{key}' must be of type {item_type}.")
+                raise ToolArgumentError(f"Every item in argument '{key}' must be of type {item_type}.")
 
 
 def _resolve_path(root: Path, relative_path: str = ".") -> Path:

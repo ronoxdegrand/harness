@@ -129,7 +129,7 @@ def test_run_websocket_streams_runtime_events(tmp_path: Path, monkeypatch) -> No
                     }
                 return {
                     "candidates": [
-                        {"content": {"parts": [{"text": "I inspected the repo and the tests pass."}]}}
+                            {"content": {"parts": [{"text": "I inspected the repo."}]}}
                     ]
                 }
 
@@ -143,7 +143,7 @@ def test_run_websocket_streams_runtime_events(tmp_path: Path, monkeypatch) -> No
 
                 websocket.send_json(
                     {
-                        "task": 'inspect the repo, search for "test_ok", run tests, and show git diff',
+                        "task": "inspect the repo",
                         "workspace_path": "demo",
                         "api_key": "ui-key",
                         "model_name": "gemini-3.5-flash",
