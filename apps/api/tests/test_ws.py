@@ -3,6 +3,8 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+from watchfiles import Change
 
 from agent_harness_api.config import get_settings
 from agent_harness_api.main import app
@@ -35,6 +37,42 @@ def test_absolute_workspaces_require_explicit_permission(tmp_path: Path) -> None
     with pytest.raises(ValueError, match="escapes"):
         resolve_workspace_path(workspace_root, str(repository))
     assert resolve_workspace_path(workspace_root, str(repository), True) == repository.resolve()
+
+
+def test_git_changes_websocket_streams_workspace_paths(tmp_path: Path, monkeypatch) -> None:
+    repository = tmp_path / "demo"
+    repository.mkdir()
+    monkeypatch.setenv("HARNESS_WORKSPACE_ROOT", str(tmp_path))
+    get_settings.cache_clear()
+
+    async def fake_awatch(path: Path, **_kwargs):
+        yield {(Change.modified, str(path / "source.py"))}
+
+    with patch("agent_harness_api.main.awatch", side_effect=fake_awatch):
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws/git/changes?workspace_path=demo") as websocket:
+                assert websocket.receive_json() == {"kind": "git.changed", "paths": ["source.py"]}
+
+
+def test_git_changes_websocket_rejects_outside_workspace(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HARNESS_WORKSPACE_ROOT", str(tmp_path))
+    get_settings.cache_clear()
+    with TestClient(app) as client:
+        with pytest.raises(WebSocketDisconnect) as rejected:
+            with client.websocket_connect("/ws/git/changes?workspace_path=../outside"):
+                pass
+        assert rejected.value.code == 1008
+
+
+def test_git_changes_websocket_requires_authentication(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HARNESS_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("HARNESS_AUTH_TOKEN", "test-secret")
+    get_settings.cache_clear()
+    with TestClient(app) as client:
+        with pytest.raises(WebSocketDisconnect) as rejected:
+            with client.websocket_connect("/ws/git/changes?workspace_path=."):
+                pass
+        assert rejected.value.code == 1008
 
 
 def test_run_websocket_rejects_invalid_requests(tmp_path: Path, monkeypatch) -> None:

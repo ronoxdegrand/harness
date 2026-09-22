@@ -52,13 +52,77 @@ export function useGitController({
 
   const gitDiffSelectionRef = useRef<Pick<GitDiffState, "path" | "staged"> | null>(null);
 
-  async function loadGitStatus(silent = false, fetchRemote = false) {
+  const showUnchangedRef = useRef(gitDiffShowUnchanged);
+  showUnchangedRef.current = gitDiffShowUnchanged;
+
+  async function refreshSelectedDiff(nextStatus: GitStatusState, changedPaths: string[], autoOpen = false) {
+    if (!nextStatus.is_repository) {
+      if (gitDiffSelectionRef.current) closeGitDiff();
+      return;
+    }
+    const selected = gitDiffSelectionRef.current;
+    const changes = [...nextStatus.modified, ...nextStatus.untracked];
+    const allFiles = [
+      ...changes.map((file) => ({ file, staged: false })),
+      ...nextStatus.staged.map((file) => ({ file, staged: true })),
+    ];
+    if (!selected) {
+      if (autoOpen) {
+        const firstChanged = allFiles.find(({ file }) => changedPaths.includes(file.path));
+        if (firstChanged) void openGitDiff(firstChanged.file, firstChanged.staged);
+      }
+      return;
+    }
+    if (changedPaths.length && !changedPaths.includes(selected.path)) return;
+    const current = allFiles.find(({ file, staged }) => file.path === selected.path && staged === selected.staged)
+      ?? allFiles.find(({ file }) => file.path === selected.path);
+    if (!current) {
+      closeGitDiff();
+      return;
+    }
+    gitDiffRequestRef.current?.abort();
+    const controller = new AbortController();
+    gitDiffRequestRef.current = controller;
+    try {
+      const response = await fetch("/git/diff", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspace_path: workspacePath,
+          path: current.file.path,
+          staged: current.staged,
+          full_context: showUnchangedRef.current,
+        }),
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error("Could not refresh the file diff.");
+      const payload = await readJson<{ path: string; staged: boolean; patch: string; binary: boolean }>(response);
+      if (gitDiffSelectionRef.current?.path !== selected.path
+        || gitDiffSelectionRef.current.staged !== selected.staged
+        || controller.signal.aborted) return;
+      gitDiffSelectionRef.current = { path: payload.path, staged: payload.staged };
+      setGitDiff((previous) => previous?.path === selected.path
+        ? previous.patch === payload.patch && previous.staged === payload.staged && previous.binary === payload.binary && !previous.error
+          ? previous
+          : { ...payload, error: null }
+        : previous);
+    } catch (reason) {
+      if (reason instanceof DOMException && reason.name === "AbortError") return;
+      setGitDiff((previous) => previous?.path === selected.path
+        ? { ...previous, error: reason instanceof Error ? reason.message : "Could not refresh the file diff." }
+        : previous);
+    } finally {
+      if (gitDiffRequestRef.current === controller) gitDiffRequestRef.current = null;
+    }
+  }
+
+  async function loadGitStatus(silent = false, fetchRemote = false, changedPaths?: string[], autoOpen = false): Promise<GitStatusState | null> {
     gitStatusRequestRef.current?.abort();
     if (!workspacePath.trim()) {
       setGitStatus(null);
       setGitFetchError(null);
       setGitStatusLoading(false);
-      return;
+      return null;
     }
     const controller = new AbortController();
     gitStatusRequestRef.current = controller;
@@ -73,9 +137,11 @@ export function useGitController({
       if (!response.ok) throw new Error();
       const nextStatus = await readJson<GitStatusState>(response);
       setGitStatus(nextStatus);
+      if (changedPaths) void refreshSelectedDiff(nextStatus, changedPaths, autoOpen);
       if (fetchRemote) setGitFetchError(nextStatus.fetch_error);
+      return nextStatus;
     } catch (reason) {
-      if (reason instanceof DOMException && reason.name === "AbortError") return;
+      if (reason instanceof DOMException && reason.name === "AbortError") return null;
       setGitStatus({
         is_repository: false,
         root: null,
@@ -94,6 +160,7 @@ export function useGitController({
         fetch_error: null,
       });
       if (fetchRemote) setGitFetchError("Could not contact the Git service.");
+      return null;
     } finally {
       if (gitStatusRequestRef.current === controller) {
         gitStatusRequestRef.current = null;

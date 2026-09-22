@@ -1,11 +1,15 @@
-from contextlib import asynccontextmanager
+import asyncio
 import secrets
+from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
+from starlette.websockets import WebSocketDisconnect
+from watchfiles import awatch
 
 from .config import get_settings
 from .context import Context
@@ -439,6 +443,57 @@ async def run_websocket(websocket: WebSocket) -> None:
         await websocket.close(code=1008, reason="Unauthorized")
         return
     await handle_run_websocket(websocket, settings)
+
+
+@app.websocket("/ws/git/changes")
+async def git_changes_websocket(websocket: WebSocket) -> None:
+    settings = get_settings()
+    authorization = websocket.headers.get("authorization", "")
+    query_token = websocket.query_params.get("token", "")
+    if settings.auth_token and not (
+        secrets.compare_digest(authorization, f"Bearer {settings.auth_token}")
+        or secrets.compare_digest(query_token, settings.auth_token)
+    ):
+        await websocket.close(code=1008, reason="Unauthorized")
+        return
+    workspace_path = websocket.query_params.get("workspace_path", "").strip()
+    try:
+        target = resolve_workspace_path(
+            settings.workspace_root, workspace_path, settings.allow_absolute_workspaces,
+        ) if workspace_path else None
+    except ValueError:
+        target = None
+    if target is None or not target.is_dir():
+        await websocket.close(code=1008, reason="Invalid workspace")
+        return
+    status = await run_in_threadpool(read_git_status, target)
+    git_root = Path(status["root"]).resolve() if status["root"] else target
+
+    await websocket.accept()
+    stop = asyncio.Event()
+
+    async def wait_for_disconnect() -> None:
+        try:
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            stop.set()
+
+    receiver = asyncio.create_task(wait_for_disconnect())
+    try:
+        async for changes in awatch(target, stop_event=stop, debounce=250):
+            paths = sorted({
+                str(Path(path).relative_to(git_root)).replace("\\", "/")
+                for _, path in changes
+                if Path(path).is_relative_to(git_root)
+            })
+            if paths:
+                await websocket.send_json({"kind": "git.changed", "paths": paths})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        stop.set()
+        receiver.cancel()
 
 
 if settings.web_dist_path and settings.web_dist_path.is_dir():

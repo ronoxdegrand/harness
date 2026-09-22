@@ -236,6 +236,8 @@ export function useAppController() {
   const conversationBottomRef = useRef<HTMLDivElement | null>(null);
   const conversationAreaRef = useRef<HTMLDivElement | null>(null);
   const diffPanelRef = useRef<HTMLElement | null>(null);
+  const diffBodyRef = useRef<HTMLDivElement | null>(null);
+  const diffScrollRef = useRef({ key: "", top: 0, left: 0 });
   const threadScrollRef = useRef<HTMLDivElement | null>(null);
   const conversationScrollTopRef = useRef(0);
   const activityScrollRef = useRef<HTMLDivElement | null>(null);
@@ -296,6 +298,10 @@ export function useAppController() {
     modelName, modelInfo, apiKey, sarvamApiKey, setError, setGitOpen,
     setGitPreviewOpen, setSidebarPreviewOpen, setContextPreviewOpen, setBranchPickerOpen,
   });
+  const loadGitStatusRef = useRef(loadGitStatus);
+  loadGitStatusRef.current = loadGitStatus;
+  const autoOpenDiffRef = useRef(false);
+  autoOpenDiffRef.current = status === "running" && !gitDiff;
   const availableModels = modelCatalog
     .filter((model) => model.selectable && (model.provider === "gemini" ? apiKey.trim() : sarvamApiKey.trim()))
     .map((model) => model.id);
@@ -620,8 +626,7 @@ export function useAppController() {
         setContextPreviewOpen(false);
         setThreadToDelete(null);
         setBranchSwitchError(null);
-        setGitDiff(null);
-        gitDiffRequestRef.current?.abort();
+        closeGitDiff();
         setError("");
       }
       if (desktop && modifierHeld && ["-", "=", "+", "0"].includes(event.key)) {
@@ -693,6 +698,17 @@ export function useAppController() {
     return () => observer.disconnect();
   }, [gitDiff]);
 
+  useLayoutEffect(() => {
+    const body = diffBodyRef.current;
+    if (!body || !gitDiff || gitDiff.patch === null) return;
+    const key = `${gitDiff.staged ? "staged" : "working"}:${gitDiff.path}`;
+    if (diffScrollRef.current.key !== key) {
+      diffScrollRef.current = { key, top: 0, left: 0 };
+    }
+    body.scrollTop = diffScrollRef.current.top;
+    body.scrollLeft = diffScrollRef.current.left;
+  }, [gitDiff?.patch, gitDiff?.path, gitDiff?.staged]);
+
   useEffect(() => {
     setGitFetchError(null);
     setCommitMessage("");
@@ -717,7 +733,7 @@ export function useAppController() {
         && !gitStatusRequestRef.current
         && !gitMutation
       ) {
-        void loadGitStatus(true);
+        void loadGitStatusRef.current(true, false, []);
       }
     }
 
@@ -746,6 +762,36 @@ export function useAppController() {
       gitStatusRequestRef.current?.abort();
     };
   }, [workspacePath, status, gitMutation]);
+
+  useEffect(() => {
+    if (!workspacePath.trim()) return;
+    let disposed = false;
+    let retry: number | null = null;
+    let socket: WebSocket | null = null;
+    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+    function connect() {
+      socket = new WebSocket(`${protocol}://${window.location.host}/ws/git/changes?workspace_path=${encodeURIComponent(workspacePath)}`);
+      socket.onopen = () => { void loadGitStatusRef.current(true, false, []); };
+      socket.onmessage = (message) => {
+        try {
+          const event = JSON.parse(message.data) as { kind?: string; paths?: unknown };
+          if (event.kind !== "git.changed" || !Array.isArray(event.paths)) return;
+          const paths = event.paths.filter((path): path is string => typeof path === "string");
+          if (paths.length) void loadGitStatusRef.current(true, false, paths, autoOpenDiffRef.current);
+        } catch { /* Ignore malformed notifications; the status poll remains active. */ }
+      };
+      socket.onerror = () => socket?.close();
+      socket.onclose = (event) => {
+        if (!disposed && event.code !== 1008) retry = window.setTimeout(connect, 2000);
+      };
+    }
+    connect();
+    return () => {
+      disposed = true;
+      if (retry !== null) window.clearTimeout(retry);
+      socket?.close();
+    };
+  }, [workspacePath]);
 
   // API-backed thread and Git actions.
   async function refreshThreads(initializePath = false) {
@@ -1387,6 +1433,39 @@ export function useAppController() {
     ...(gitStatus?.modified ?? []),
     ...(gitStatus?.untracked ?? []),
   ].map((file) => file.path)).size;
+  const gitDiffFiles = [
+    ...(gitStatus?.modified ?? []),
+    ...(gitStatus?.untracked ?? []),
+  ].map((file) => ({ file, staged: false })).concat(
+    (gitStatus?.staged ?? []).map((file) => ({ file, staged: true })),
+  );
+  const gitDiffIndex = gitDiffFiles.findIndex(({ file, staged }) =>
+    file.path === gitDiff?.path && staged === gitDiff?.staged);
+  function openAdjacentGitDiff(direction: -1 | 1) {
+    const next = gitDiffFiles[gitDiffIndex + direction];
+    if (next) void openGitDiff(next.file, next.staged);
+  }
+  function rememberDiffScroll() {
+    const body = diffBodyRef.current;
+    if (!body || !gitDiff) return;
+    diffScrollRef.current = {
+      key: `${gitDiff.staged ? "staged" : "working"}:${gitDiff.path}`,
+      top: body.scrollTop,
+      left: body.scrollLeft,
+    };
+  }
+  async function openEditedFile(path: string) {
+    const match = gitDiffFiles.find(({ file }) => file.path === path);
+    if (match) {
+      await openGitDiff(match.file, match.staged);
+      return;
+    }
+    const fresh = await loadGitStatus(true);
+    const changed = [...(fresh?.modified ?? []), ...(fresh?.untracked ?? [])].find((file) => file.path === path);
+    const staged = fresh?.staged.find((file) => file.path === path);
+    if (changed) await openGitDiff(changed, false);
+    else if (staged) await openGitDiff(staged, true);
+  }
   const eventGroups: Array<{
     iteration: number | null;
     createdAt?: string;
@@ -1461,6 +1540,7 @@ export function useAppController() {
   const activityProps = {
     eventGroups, activityRunId, collapsedActivityGroups, setCollapsedActivityGroups,
     activityScrollRef, setActivityWidth, startResize, resizePanel,
+    onOpenEditedFile: openEditedFile,
     onResizeCancel: () => { resizeRef.current = null; },
   };
   const gitFileGroupProps = {
@@ -1599,6 +1679,7 @@ export function useAppController() {
     conversationBottomRef,
     conversationAreaRef,
     diffPanelRef,
+    diffBodyRef,
     threadScrollRef,
     conversationScrollTopRef,
     resizeRef,
@@ -1607,6 +1688,10 @@ export function useAppController() {
     loadGitStatus,
     openGitDiff,
     closeGitDiff,
+    openAdjacentGitDiff,
+    rememberDiffScroll,
+    gitDiffIndex,
+    gitDiffFiles,
     switchGitBranch,
     syncGitBranch,
     createGitCommit,

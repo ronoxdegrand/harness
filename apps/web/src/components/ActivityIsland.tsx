@@ -16,11 +16,12 @@ type ActivityIslandProps = {
   onResizeCancel: () => void;
   startResize: (panel: "activity", event: ReactPointerEvent<HTMLDivElement>) => void;
   resizePanel: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onOpenEditedFile: (path: string) => void;
 };
 
 export function ActivityIsland({
   resizable, eventGroups, activityRunId, collapsedActivityGroups, setCollapsedActivityGroups,
-  activityScrollRef, setActivityWidth, onResizeCancel, startResize, resizePanel,
+  activityScrollRef, setActivityWidth, onResizeCancel, startResize, resizePanel, onOpenEditedFile,
 }: ActivityIslandProps) {
   return (
     <aside
@@ -127,6 +128,10 @@ export function ActivityIsland({
                     | { output?: string; error?: string }
                     | undefined;
                   const { iteration: _, run_id: __, ...eventPayload } = runtimeEvent.payload;
+                  const editedPath = runtimeEvent.type === "tool.completed"
+                    && (toolCall?.name === "write_file" || toolCall?.name === "patch")
+                    && typeof toolCall.arguments?.path === "string"
+                    ? toolCall.arguments.path : null;
 
                   if (runtimeEvent.type === "context.updated") {
                     return (
@@ -180,6 +185,17 @@ export function ActivityIsland({
                           ) : null}
                           {result?.error ? (
                             <p className="text-xs text-destructive">{String(result.error)}</p>
+                          ) : null}
+                          {editedPath ? (
+                            <Button
+                              className="h-6 px-2 text-xs"
+                              size="xs"
+                              type="button"
+                              variant="outline"
+                              onClick={() => onOpenEditedFile(editedPath)}
+                            >
+                              View diff
+                            </Button>
                           ) : null}
                         </div>
                       ) : (
