@@ -37,12 +37,14 @@ def test_tool_registry_exposes_metadata_and_schemas() -> None:
 
     assert "read_file" in tool_names
     assert "write_file" in tool_names
+    assert "patch" in tool_names
     assert "git_status" in tool_names
     assert "git_log" in tool_names
     assert "fetch_url" in tool_names
     assert {"git_refresh", "git_switch", "git_sync", "git_commit", "git_stage", "git_unstage", "git_discard"} <= set(tool_names)
     assert any(tool["name"] == "shell" for tool in definitions)
     assert registry.get("write_file").input_schema["required"] == ["path", "content"]
+    assert registry.get("patch").input_schema["required"] == ["path", "old_string", "new_string"]
     assert registry.get("git_diff").input_schema["properties"]["staged"]["type"] == "boolean"
 
 
@@ -96,6 +98,29 @@ def test_filesystem_tools_respect_workspace_root(tmp_path: Path) -> None:
     assert ".cache/state.json" in hidden_list_result.output
     assert escape_result.success is False
     assert "escapes the workspace root" in (escape_result.error or "")
+
+
+def test_patch_changes_one_exact_match_and_rejects_ambiguous_edits(tmp_path: Path) -> None:
+    path = tmp_path / "agent.py"
+    path.write_text("old = 1\nother = 2\n", encoding="utf-8")
+    executor = ToolExecutor(build_default_tool_registry())
+
+    changed = executor.execute(
+        ToolCall(id="patch-1", name="patch", arguments={
+            "path": "agent.py", "old_string": "old = 1", "new_string": "old = 3",
+        }), target_path=tmp_path,
+    )
+    assert changed.success is True
+    assert path.read_text(encoding="utf-8") == "old = 3\nother = 2\n"
+
+    ambiguous = executor.execute(
+        ToolCall(id="patch-2", name="patch", arguments={
+            "path": "agent.py", "old_string": "=", "new_string": ":",
+        }), target_path=tmp_path,
+    )
+    assert ambiguous.success is False
+    assert "exactly one match" in (ambiguous.error or "")
+    assert path.read_text(encoding="utf-8") == "old = 3\nother = 2\n"
 
 
 def test_read_file_pages_by_line_and_character_offset(tmp_path: Path) -> None:

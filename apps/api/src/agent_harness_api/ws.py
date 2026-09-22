@@ -46,6 +46,7 @@ def build_runtime(
     sarvam_api_key: str | None,
     model_name: str,
     max_iterations: int,
+    timeout_seconds: int,
     continuation_decider: Callable[[int], bool],
     progress_decider: Callable[[str, int, dict[str, object]], bool],
     stop_requested: Callable[[], bool],
@@ -62,7 +63,7 @@ def build_runtime(
         store=RunStore(),
         event_emitter=emitter,
         max_iterations=max_iterations,
-        timeout_seconds=1800,
+        timeout_seconds=timeout_seconds,
         continuation_decider=continuation_decider,
         progress_decider=progress_decider,
         stop_requested=stop_requested,
@@ -112,6 +113,7 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
     requested_api_key = request.get("api_key")
     requested_sarvam_api_key = request.get("sarvam_api_key")
     requested_max_iterations = request.get("max_iterations")
+    requested_timeout_minutes = request.get("timeout_minutes", 30)
 
     if not isinstance(task, str) or not (prompt := task.strip()):
         await _fail_run(websocket, "Task is required to start a run.")
@@ -142,6 +144,14 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
         or not 1 <= requested_max_iterations <= 50
     ):
         await _fail_run(websocket, "Max iterations must be an integer between 1 and 50.")
+        return
+
+    if (
+        isinstance(requested_timeout_minutes, bool)
+        or not isinstance(requested_timeout_minutes, int)
+        or not 1 <= requested_timeout_minutes <= 1440
+    ):
+        await _fail_run(websocket, "Run time warning must be a whole number of minutes from 1 to 1440.")
         return
 
     if requested_title is not None and (
@@ -271,6 +281,7 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
             ),
             model_name=model_name,
             max_iterations=requested_max_iterations or 50,
+            timeout_seconds=requested_timeout_minutes * 60,
             continuation_decider=decide_continuation,
             progress_decider=decide_progress,
             stop_requested=stop_event.is_set,

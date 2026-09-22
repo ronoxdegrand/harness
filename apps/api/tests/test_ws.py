@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from agent_harness_api.config import get_settings
 from agent_harness_api.main import app
+from agent_harness_api import ws as ws_module
 from agent_harness_api.ws import resolve_workspace_path
 
 
@@ -54,6 +55,9 @@ def test_run_websocket_rejects_invalid_requests(tmp_path: Path, monkeypatch) -> 
         ({"task": "inspect", "max_iterations": 0}, "Max iterations must be an integer"),
         ({"task": "inspect", "max_iterations": 51}, "Max iterations must be an integer"),
         ({"task": "inspect", "max_iterations": "8"}, "Max iterations must be an integer"),
+        ({"task": "inspect", "timeout_minutes": 0}, "Run time warning must be"),
+        ({"task": "inspect", "timeout_minutes": 1441}, "Run time warning must be"),
+        ({"task": "inspect", "timeout_minutes": "30"}, "Run time warning must be"),
         ({"task": "inspect", "workspace_path": "../outside"}, "Workspace path escapes"),
         ({"task": "inspect", "workspace_path": "missing"}, "Workspace path does not exist"),
         ({"task": "inspect", "workspace_path": "."}, "Model name is required"),
@@ -299,23 +303,33 @@ def test_run_websocket_stops_at_a_safe_boundary(tmp_path: Path, monkeypatch) -> 
     assert final_payload["status"] == "stopped"
 
 
-def test_run_websocket_pauses_after_repeated_tool_failure(tmp_path: Path, monkeypatch) -> None:
+def test_run_websocket_does_not_pause_after_repeated_tool_failure(tmp_path: Path, monkeypatch) -> None:
     workspace_root = tmp_path / "workspace"
     _create_repo(workspace_root)
     monkeypatch.setenv("HARNESS_WORKSPACE_ROOT", str(workspace_root))
     get_settings.cache_clear()
 
+    build_runtime = ws_module.build_runtime
+    configured_timeouts: list[int] = []
+
+    def capture_timeout(*args, **kwargs):
+        configured_timeouts.append(kwargs["timeout_seconds"])
+        return build_runtime(*args, **kwargs)
+
+    monkeypatch.setattr(ws_module, "build_runtime", capture_timeout)
+
+    calls = 0
+
     def fake_post(*args, **kwargs):
-        final_response = kwargs["json"]["system_instruction"]["parts"][0]["text"].startswith(
-            "Produce the final answer"
-        )
+        nonlocal calls
+        calls += 1
 
         class FakeResponse:
             def raise_for_status(self):
                 return None
 
             def json(self):
-                part = {"text": "I could not read that file."} if final_response else {
+                part = {"text": "I could not read that file."} if calls == 4 else {
                     "functionCall": {"name": "read_file", "args": {"path": "missing.txt"}}
                 }
                 return {"candidates": [{"content": {"parts": [part]}}]}
@@ -332,6 +346,7 @@ def test_run_websocket_pauses_after_repeated_tool_failure(tmp_path: Path, monkey
                     "task": "read missing file", "workspace_path": ".", "api_key": "ui-key",
                     "model_name": "gemini-3.5-flash",
                     "max_iterations": 10,
+                    "timeout_minutes": 45,
                 })
                 while True:
                     message = websocket.receive_json()
@@ -343,10 +358,9 @@ def test_run_websocket_pauses_after_repeated_tool_failure(tmp_path: Path, monkey
                     elif message["kind"] == "run.finished":
                         break
 
-    assert pause is not None
-    assert pause["reason"] == "repeated_failure"
-    assert pause["tool_name"] == "read_file"
-    assert pause["repeat_count"] == 3
+    assert pause is None
+    assert calls == 4
+    assert configured_timeouts == [45 * 60]
     assert final_payload is not None
     assert final_payload["output_text"] == "I could not read that file."
 

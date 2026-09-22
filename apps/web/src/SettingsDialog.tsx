@@ -26,6 +26,7 @@ export function SettingsDialog({ controller }: { controller: AppController }) {
     setApiKey,
     setSarvamApiKey,
     setMaxIterations,
+    setTimeoutMinutes,
     setSendOnEnter,
     setMidRunEnterAction,
     setUiScale,
@@ -41,6 +42,10 @@ export function SettingsDialog({ controller }: { controller: AppController }) {
     setMaxIterationsDraft,
     maxIterationsError,
     setMaxIterationsError,
+    timeoutMinutesDraft,
+    setTimeoutMinutesDraft,
+    timeoutMinutesError,
+    setTimeoutMinutesError,
     sendOnEnterDraft,
     setSendOnEnterDraft,
     midRunEnterActionDraft,
@@ -105,9 +110,20 @@ export function SettingsDialog({ controller }: { controller: AppController }) {
                     setMaxIterationsError("Enter a whole number from 1 to 50.");
                     return;
                   }
+                  const timeWarning = Number(timeoutMinutesDraft);
+                  if (
+                    !timeoutMinutesDraft.trim()
+                    || !Number.isInteger(timeWarning)
+                    || timeWarning < 1
+                    || timeWarning > 1440
+                  ) {
+                    setTimeoutMinutesError("Enter a whole number from 1 to 1440.");
+                    return;
+                  }
                   setApiKey(apiKeyDraft);
                   setSarvamApiKey(sarvamApiKeyDraft);
                   setMaxIterations(iterationWarning);
+                  setTimeoutMinutes(timeWarning);
                   setSendOnEnter(sendOnEnterDraft);
                   setMidRunEnterAction(midRunEnterActionDraft);
                   setUiScale(uiScaleDraft);
@@ -183,32 +199,60 @@ export function SettingsDialog({ controller }: { controller: AppController }) {
                   </section>
 
                   <section className="rounded-xl border bg-muted/20 p-4">
-                    <div className="flex items-center justify-between gap-4">
-                    <div>
+                    <div className="mb-3">
                       <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Runs</h3>
-                      <p className="mt-1 text-xs text-muted-foreground" id="iteration-warning-description">Choose when Harness pauses to ask whether it should continue.</p>
+                      <p className="mt-1 text-xs text-muted-foreground">Choose when Harness pauses to ask whether it should continue.</p>
                     </div>
-                      <Input
-                        aria-label="Iteration warning"
-                        aria-describedby={`iteration-warning-description${maxIterationsError ? " iteration-warning-error" : ""}`}
-                        aria-invalid={Boolean(maxIterationsError)}
-                        className="w-20 shrink-0"
-                        max={50}
-                        min={1}
-                        required
-                        type="number"
-                        value={maxIterationsDraft}
-                        onChange={(event) => {
-                          setMaxIterationsDraft(event.target.value);
-                          setMaxIterationsError("");
-                        }}
-                      />
+                    <div className="grid gap-3 min-[480px]:grid-cols-2">
+                      <div>
+                        <label className="block space-y-1.5 text-xs font-medium" htmlFor="iteration-warning">
+                          <span>Iteration warning</span>
+                          <Input
+                            id="iteration-warning"
+                            aria-describedby={maxIterationsError ? "iteration-warning-error" : undefined}
+                            aria-invalid={Boolean(maxIterationsError)}
+                            max={50}
+                            min={1}
+                            required
+                            type="number"
+                            value={maxIterationsDraft}
+                            onChange={(event) => {
+                              setMaxIterationsDraft(event.target.value);
+                              setMaxIterationsError("");
+                            }}
+                          />
+                        </label>
+                        {maxIterationsError ? (
+                          <p className="mt-1.5 text-xs text-destructive" id="iteration-warning-error">
+                            {maxIterationsError}
+                          </p>
+                        ) : null}
+                      </div>
+                      <div>
+                        <label className="block space-y-1.5 text-xs font-medium" htmlFor="time-warning">
+                          <span>Run time warning (minutes)</span>
+                          <Input
+                            id="time-warning"
+                            aria-describedby={timeoutMinutesError ? "time-warning-error" : undefined}
+                            aria-invalid={Boolean(timeoutMinutesError)}
+                            max={1440}
+                            min={1}
+                            required
+                            type="number"
+                            value={timeoutMinutesDraft}
+                            onChange={(event) => {
+                              setTimeoutMinutesDraft(event.target.value);
+                              setTimeoutMinutesError("");
+                            }}
+                          />
+                        </label>
+                        {timeoutMinutesError ? (
+                          <p className="mt-1.5 text-xs text-destructive" id="time-warning-error">
+                            {timeoutMinutesError}
+                          </p>
+                        ) : null}
+                      </div>
                     </div>
-                    {maxIterationsError ? (
-                      <p className="mt-1.5 text-right text-xs text-destructive" id="iteration-warning-error">
-                        {maxIterationsError}
-                      </p>
-                    ) : null}
                   </section>
 
                   <section className="rounded-xl border bg-muted/20 p-4">

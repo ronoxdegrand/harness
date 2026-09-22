@@ -677,8 +677,10 @@ export function AppView(controller: AppController) {
                     runtimeEvent.type === "turn.failed" || runtimeEvent.type === "turn.stopped"
                     || (runtimeEvent.type === "turn.completed" && runtimeEvent.payload.status === "completed"),
                   );
+                  const activityRunning = !terminalEvent && turn.run_id === runningRunId
+                    && (status === "running" || status === "connecting");
                   const activityEnd = terminalEvent ? eventTime(terminalEvent)
-                    : turn.run_id === runningRunId && status === "running" ? activityClock : null;
+                    : activityRunning ? activityClock : null;
                   const activityDuration = activityStart !== null && activityStart !== undefined && activityEnd !== null
                     ? elapsedLabel(activityEnd - activityStart) : null;
                   const isLatestPrompt =
@@ -752,6 +754,11 @@ export function AppView(controller: AppController) {
                         <>
                           <div className="flex items-center gap-3 py-1">
                             <Separator className="flex-1" />
+                            {activityDuration ? (
+                              <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                                {activityRunning ? "Working for" : "Worked for"} {activityDuration}
+                              </span>
+                            ) : null}
                             <Button
                               className="h-6 gap-1.5 border border-transparent px-2 text-muted-foreground hover:border-border"
                               size="xs"
@@ -767,17 +774,11 @@ export function AppView(controller: AppController) {
                               }}
                             >
                               <span>Activity</span>
-                              <Badge className="h-4 rounded-sm px-1.5 py-px text-[10px] font-semibold">
-                                {activityIterationCount}
+                              <span aria-hidden="true" className="text-muted-foreground/70">-</span>
+                              <Badge className="h-4 gap-0.5 rounded-sm px-1.5 py-px text-[10px]">
+                                <span className="font-semibold tabular-nums">{activityIterationCount}</span>
+                                <span>{activityIterationCount === 1 ? "iteration" : "iterations"}</span>
                               </Badge>
-                              <span className="text-muted-foreground/80">
-                                {activityIterationCount === 1 ? "iteration" : "iterations"}
-                              </span>
-                              {activityDuration ? (
-                                <span className="tabular-nums text-muted-foreground/80" data-tooltip="Run duration">
-                                  · {activityDuration}
-                                </span>
-                              ) : null}
                             </Button>
                             <CopyButton
                               className="!size-6"
@@ -826,9 +827,7 @@ export function AppView(controller: AppController) {
                     <p className="mt-1 text-sm leading-6 text-warning/85">
                       {continuationRequest.reason === "time_limit"
                         ? `This run has been active for ${Math.round((continuationRequest.ceiling_seconds ?? 1800) / 60)} minutes. Continue for another interval, or stop and generate a final response now.`
-                        : continuationRequest.reason === "repeated_failure"
-                          ? `${continuationRequest.tool_name ?? "A tool"} failed ${continuationRequest.repeat_count ?? 3} times with the same arguments. Continue, or stop and generate a final response now.`
-                          : `The harness completed ${continuationRequest.completed_iterations} iterations. Continue for up to ${continuationRequest.additional_iterations} more, or stop and generate a final response now.`}
+                        : `The harness completed ${continuationRequest.completed_iterations} iterations. Continue for up to ${continuationRequest.additional_iterations} more, or stop and generate a final response now.`}
                     </p>
                     <div className="mt-3 flex flex-wrap gap-2">
                       <Button type="submit" variant="affirmative">Continue</Button>

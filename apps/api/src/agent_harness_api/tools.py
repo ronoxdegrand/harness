@@ -217,6 +217,24 @@ def build_default_tool_registry() -> ToolRegistry:
                 replay_policy="idempotent",
             ),
             ToolDefinition(
+                name="patch",
+                description=(
+                    "Replace exactly one occurrence of old_string with new_string in an existing "
+                    "UTF-8 file. Use a distinctive old_string; the file is unchanged if it is "
+                    "missing or ambiguous."
+                ),
+                input_schema=_object_schema(
+                    {
+                        "path": {"type": "string"},
+                        "old_string": {"type": "string"},
+                        "new_string": {"type": "string"},
+                    },
+                    required=["path", "old_string", "new_string"],
+                ),
+                handler=_patch_file,
+                replay_policy="never",
+            ),
+            ToolDefinition(
                 name="list_files",
                 description=(
                     "List workspace files. Git-ignored files are excluded by default in Git repositories. "
@@ -499,6 +517,24 @@ def _write_file(arguments: dict[str, Any], root: Path) -> ToolResult:
             "path": str(path.relative_to(root).as_posix()),
             "bytes_written": path.stat().st_size,
         },
+    )
+
+
+def _patch_file(arguments: dict[str, Any], root: Path) -> ToolResult:
+    path = _resolve_path(root, arguments["path"])
+    old_string = arguments["old_string"]
+    if not old_string:
+        raise ValueError("old_string must not be empty.")
+    content = path.read_text(encoding="utf-8")
+    matches = content.count(old_string)
+    if matches != 1:
+        raise ValueError(f"Patch needs exactly one match; found {matches}.")
+    updated = content.replace(old_string, arguments["new_string"], 1)
+    path.write_text(updated, encoding="utf-8")
+    return ToolResult(
+        success=True,
+        output="",
+        metadata={"path": str(path.relative_to(root).as_posix())},
     )
 
 

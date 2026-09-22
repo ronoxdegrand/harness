@@ -76,6 +76,9 @@ export function useAppController() {
   const [maxIterations, setMaxIterations] = useState(() =>
     desktop ? 50 : Math.min(Math.max(Number(localStorage.getItem("max-iterations")) || 50, 1), 50),
   );
+  const [timeoutMinutes, setTimeoutMinutes] = useState(() =>
+    desktop ? 30 : Math.min(Math.max(Number(localStorage.getItem("timeout-minutes")) || 30, 1), 1440),
+  );
   const [sendOnEnter, setSendOnEnter] = useState(
     () => Boolean(desktop) || localStorage.getItem("send-on-enter") !== "false",
   );
@@ -95,6 +98,8 @@ export function useAppController() {
   const [sarvamApiKeyDraft, setSarvamApiKeyDraft] = useState(sarvamApiKey);
   const [maxIterationsDraft, setMaxIterationsDraft] = useState(String(maxIterations));
   const [maxIterationsError, setMaxIterationsError] = useState("");
+  const [timeoutMinutesDraft, setTimeoutMinutesDraft] = useState(String(timeoutMinutes));
+  const [timeoutMinutesError, setTimeoutMinutesError] = useState("");
   const [sendOnEnterDraft, setSendOnEnterDraft] = useState(sendOnEnter);
   const [midRunEnterActionDraft, setMidRunEnterActionDraft] = useState(midRunEnterAction);
   const [uiScaleDraft, setUiScaleDraft] = useState(uiScale);
@@ -216,10 +221,8 @@ export function useAppController() {
     iteration: number;
     completed_iterations: number;
     additional_iterations: number;
-    reason?: "time_limit" | "repeated_failure";
+    reason?: "time_limit";
     ceiling_seconds?: number;
-    tool_name?: string;
-    repeat_count?: number;
   } | null>(null);
   const [error, setError] = useState("");
   
@@ -402,6 +405,8 @@ export function useAppController() {
           settings.maxIterations ??
             Math.min(Math.max(Number(localStorage.getItem("max-iterations")) || 50, 1), 50),
         );
+        setTimeoutMinutes(settings.timeoutMinutes ??
+          Math.min(Math.max(Number(localStorage.getItem("timeout-minutes")) || 30, 1), 1440));
         setSendOnEnter(settings.sendOnEnter ?? localStorage.getItem("send-on-enter") !== "false");
         setMidRunEnterAction(validMidRunEnterAction(
           settings.midRunEnterAction ?? localStorage.getItem("mid-run-enter-action"),
@@ -461,6 +466,7 @@ export function useAppController() {
           apiKey,
           sarvamApiKey,
           maxIterations,
+          timeoutMinutes,
           sendOnEnter,
           midRunEnterAction,
           sidebarCollapsed,
@@ -484,6 +490,7 @@ export function useAppController() {
           sessionStorage.removeItem("gemini-api-key");
           sessionStorage.removeItem("sarvam-api-key");
           localStorage.removeItem("max-iterations");
+          localStorage.removeItem("timeout-minutes");
           localStorage.removeItem("send-on-enter");
           localStorage.removeItem("mid-run-enter-action");
           localStorage.removeItem("sidebar-collapsed");
@@ -507,6 +514,7 @@ export function useAppController() {
     sessionStorage.setItem("gemini-api-key", apiKey);
     sessionStorage.setItem("sarvam-api-key", sarvamApiKey);
     localStorage.setItem("max-iterations", String(maxIterations));
+    localStorage.setItem("timeout-minutes", String(timeoutMinutes));
     localStorage.setItem("send-on-enter", String(sendOnEnter));
     localStorage.setItem("mid-run-enter-action", midRunEnterAction);
     localStorage.setItem("sidebar-collapsed", String(sidebarCollapsed));
@@ -524,7 +532,7 @@ export function useAppController() {
     localStorage.setItem("thread-sort", threadSort);
     localStorage.setItem("group-threads-by-path", String(groupThreadsByPath));
     localStorage.setItem("appearance", appearance);
-  }, [activityWidth, apiKey, appearance, contextOpen, contextWidth, desktop, diffWidth, gitDiffShowUnchanged, gitDiffSplit, gitDiffWrap, gitOpen, gitWidth, groupThreadsByPath, maxIterations, midRunEnterAction, sarvamApiKey, sendOnEnter, settingsLoaded, sidebarCollapsed, sidebarWidth, threadSort, uiScale]);
+  }, [activityWidth, apiKey, appearance, contextOpen, contextWidth, desktop, diffWidth, gitDiffShowUnchanged, gitDiffSplit, gitDiffWrap, gitOpen, gitWidth, groupThreadsByPath, maxIterations, midRunEnterAction, sarvamApiKey, sendOnEnter, settingsLoaded, sidebarCollapsed, sidebarWidth, threadSort, timeoutMinutes, uiScale]);
 
   useEffect(() => {
     const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
@@ -937,6 +945,7 @@ export function useAppController() {
             workspace_path: workspacePath,
             model_name: modelName,
             max_iterations: maxIterations,
+            timeout_minutes: timeoutMinutes,
             ...(modelInfo.get(modelName)?.provider === "sarvam"
               ? sarvamApiKey.trim() ? { sarvam_api_key: sarvamApiKey.trim() } : {}
               : apiKey.trim() ? { api_key: apiKey.trim() } : {}),
@@ -1318,6 +1327,8 @@ export function useAppController() {
     setSarvamApiKeyDraft(sarvamApiKey);
     setMaxIterationsDraft(String(maxIterations));
     setMaxIterationsError("");
+    setTimeoutMinutesDraft(String(timeoutMinutes));
+    setTimeoutMinutesError("");
     setSendOnEnterDraft(sendOnEnter);
     setMidRunEnterActionDraft(midRunEnterAction);
     setUiScaleDraft(uiScale);
@@ -1419,6 +1430,7 @@ export function useAppController() {
   const settingsDirty = apiKeyDraft !== apiKey
     || sarvamApiKeyDraft !== sarvamApiKey
     || maxIterationsDraft !== String(maxIterations)
+    || timeoutMinutesDraft !== String(timeoutMinutes)
     || sendOnEnterDraft !== sendOnEnter
     || midRunEnterActionDraft !== midRunEnterAction
     || appearanceDraft !== appearance
@@ -1469,6 +1481,7 @@ export function useAppController() {
     setApiKey,
     setSarvamApiKey,
     setMaxIterations,
+    setTimeoutMinutes,
     sendOnEnter,
     setSendOnEnter,
     midRunEnterAction,
@@ -1492,6 +1505,10 @@ export function useAppController() {
     setMaxIterationsDraft,
     maxIterationsError,
     setMaxIterationsError,
+    timeoutMinutesDraft,
+    setTimeoutMinutesDraft,
+    timeoutMinutesError,
+    setTimeoutMinutesError,
     sendOnEnterDraft,
     setSendOnEnterDraft,
     midRunEnterActionDraft,

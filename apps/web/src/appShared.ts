@@ -74,8 +74,14 @@ export function eventTime(event: RuntimeEvent): number | null {
 }
 
 export function elapsedLabel(milliseconds: number) {
-  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+  let seconds = Math.max(0, Math.floor(milliseconds / 1000));
+  const parts: string[] = [];
+  for (const [unit, length] of [["d", 86400], ["h", 3600], ["m", 60], ["s", 1]] as const) {
+    const value = Math.floor(seconds / length);
+    if (value > 0) parts.push(`${value}${unit}`);
+    seconds %= length;
+  }
+  return parts.join(" ") || "0s";
 }
 
 export type RunSocketMessage =
@@ -100,10 +106,8 @@ export type RunSocketMessage =
         iteration: number;
         completed_iterations: number;
         additional_iterations: number;
-        reason?: "time_limit" | "repeated_failure";
+        reason?: "time_limit";
         ceiling_seconds?: number;
-        tool_name?: string;
-        repeat_count?: number;
       };
     }
   | { kind: "run.finished" };

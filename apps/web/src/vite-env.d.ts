@@ -4,6 +4,7 @@ interface DesktopSettings {
   apiKey: string;
   sarvamApiKey: string;
   maxIterations: number;
+  timeoutMinutes: number;
   sendOnEnter: boolean;
   midRunEnterAction: "queue" | "steer";
   sidebarCollapsed: boolean;

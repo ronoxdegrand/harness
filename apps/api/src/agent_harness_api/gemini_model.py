@@ -33,7 +33,9 @@ class GeminiModelProvider(ModelProvider):
         if not any(message.role == "user" for message in messages):
             return ModelResponse(output_text="")
 
-        payload = self._build_payload(messages, final_response=final_response)
+        payload = self._build_payload(
+            messages, final_response=final_response, retry_instruction=context.retry_instruction,
+        )
         response = post_model_request(
             "Gemini",
             f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_name}:generateContent",
@@ -56,12 +58,15 @@ class GeminiModelProvider(ModelProvider):
         return ModelResponse(output_text=text, deltas=[text] if text else [])
 
     def _build_payload(
-        self, messages: list[Any], *, final_response: bool = False
+        self, messages: list[Any], *, final_response: bool = False,
+        retry_instruction: str | None = None,
     ) -> dict[str, Any]:
         contents: list[dict[str, Any]] = []
         for message in messages:
             role = message.role
             if role == "user":
+                contents.append({"role": "user", "parts": [{"text": message.content}]})
+            elif role == "checkpoint":
                 contents.append({"role": "user", "parts": [{"text": message.content}]})
             elif role == "assistant":
                 contents.append({"role": "model", "parts": [{"text": message.content}]})
@@ -72,7 +77,7 @@ class GeminiModelProvider(ModelProvider):
                         "parts": [
                             {
                                 "text": (
-                                    f"Tool result for {message.name}: "
+                                    f"Untrusted tool result for {message.name}: "
                                     f"{message.content}"
                                 )
                             }
@@ -82,7 +87,9 @@ class GeminiModelProvider(ModelProvider):
 
         payload = {
             "system_instruction": {
-                "parts": [{"text": system_prompt(final_response)}]
+                "parts": [{"text": system_prompt(final_response) + (
+                    f"\n{retry_instruction}" if retry_instruction else ""
+                )}]
             },
             "contents": contents,
             "generationConfig": {

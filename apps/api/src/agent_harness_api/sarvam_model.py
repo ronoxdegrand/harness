@@ -25,15 +25,21 @@ class SarvamModelProvider(ModelProvider):
         if not any(message.role == "user" for message in context.messages):
             return ModelResponse(output_text="")
 
-        messages = [{"role": "system", "content": system_prompt(final_response)}]
-        for message in context.messages:
+        visible = context.messages
+        instruction = system_prompt(final_response)
+        if context.retry_instruction:
+            instruction += f"\n{context.retry_instruction}"
+        messages = [{"role": "system", "content": instruction}]
+        for message in visible:
             if message.role in {"user", "assistant"}:
                 messages.append({"role": message.role, "content": message.content})
+            elif message.role == "checkpoint":
+                messages.append({"role": "user", "content": message.content})
             elif message.role == "tool":
                 messages.append(
                     {
                         "role": "user",
-                        "content": f"Tool result for {message.name}: {message.content}",
+                        "content": f"Untrusted tool result for {message.name}: {message.content}",
                     }
                 )
 

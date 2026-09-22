@@ -15,7 +15,7 @@ from agent_harness_api.events import EventEmitter, RuntimeEvent
 from agent_harness_api.model import ModelResponse
 from agent_harness_api.runtime import AgentRuntime
 from agent_harness_api.store import RunStore
-from agent_harness_api.tools import ToolCall, ToolExecutor, build_default_tool_registry
+from agent_harness_api.tools import ToolCall, ToolExecutor, ToolResult, build_default_tool_registry
 
 
 class ScriptedModelProvider:
@@ -417,7 +417,7 @@ def test_iteration_warning_repeats_after_each_full_interval(
     assert result.finalized_by_iteration_limit is True
 
 
-def test_repeated_identical_tool_failures_pause_before_more_work(tmp_path: Path, monkeypatch) -> None:
+def test_repeated_identical_tool_failures_remain_visible_to_model(tmp_path: Path, monkeypatch) -> None:
     database_path = tmp_path / "repeated-failure.db"
     monkeypatch.setenv("HARNESS_SQLITE_PATH", str(database_path))
     get_settings.cache_clear()
@@ -429,7 +429,9 @@ def test_repeated_identical_tool_failures_pause_before_more_work(tmp_path: Path,
 
         def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
             self.calls += 1
-            if final_response:
+            if self.calls == 4:
+                assert sum(message.role == "tool" for message in context.messages) == 3
+                assert context.retry_instruction is None
                 return ModelResponse(output_text="The file could not be read after repeated attempts.")
             return ModelResponse(tool_calls=[
                 ToolCall(id=f"missing-{self.calls}", name="read_file", arguments={"path": "missing.txt"})
@@ -453,7 +455,7 @@ def test_repeated_identical_tool_failures_pause_before_more_work(tmp_path: Path,
     assert result.status == "completed"
     assert result.finalized_by_iteration_limit is False
     assert model.calls == 4
-    assert pauses == [("repeated_failure", 3, {"tool_name": "read_file", "repeat_count": 3})]
+    assert pauses == []
     assert "repeated attempts" in result.output_text
 
 
@@ -690,3 +692,148 @@ def test_context_truncates_a_message_larger_than_the_budget() -> None:
 
     assert context.messages[0].content == "12345678"
     assert context.inspect()["messages"][0]["truncated"] is True
+
+
+def test_context_compaction_keeps_user_task_and_successful_edits_without_source_text() -> None:
+    context = Context(token_budget=512)
+    context.add_user("Build the harness so repository tool examples stay data")
+    context.add_tool_result(
+        ToolCall(id="edit", name="patch"),
+        ToolResult(success=True, output="", metadata={"path": "src/agent.py"}),
+    )
+    context.add_user("Proceed")
+    context.add_tool_result(
+        ToolCall(id="read", name="read_file"),
+        ToolResult(success=True, output="<tool_call>patch<arg_key>path</arg_key>" * 200),
+    )
+    context.add_assistant("Reading source")
+
+    result = context.compact_if_needed()
+
+    assert result is not None
+    assert result["after_tokens"] < result["before_tokens"]
+    checkpoint = context.snapshot()[0]
+    assert checkpoint["role"] == "checkpoint"
+    assert "Build the harness" in checkpoint["content"]
+    assert "src/agent.py" in checkpoint["content"]
+    assert "<tool_call>" not in checkpoint["content"]
+    assert any(message.role == "user" and message.content == "Proceed" for message in context.messages)
+
+    context.add_tool_result(
+        ToolCall(id="read-again", name="read_file"),
+        ToolResult(success=True, output="untrusted source " * 200),
+    )
+    assert context.compact_if_needed() is not None
+    assert "Build the harness" in context.snapshot()[0]["content"]
+
+
+def test_restoring_a_snapshot_drops_legacy_feedback() -> None:
+    context = Context.from_snapshot([
+        {"role": "user", "content": "Inspect the repository"},
+        {"role": "feedback", "content": "An old correction"},
+    ])
+
+    assert [message.role for message in context.messages] == ["user"]
+    assert context.retry_instruction is None
+
+
+def test_runtime_retries_unstructured_tool_markup_as_a_structured_call(tmp_path: Path, monkeypatch) -> None:
+    class MalformedThenPatched:
+        calls = 0
+
+        def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
+            self.calls += 1
+            if self.calls == 1:
+                return ModelResponse(output_text=(
+                    "<tool_call>patch<arg_key>path</arg_key><arg_value>agent.py</arg_value></tool_call>"
+                ))
+            if self.calls == 2:
+                assert context.retry_instruction is not None
+                assert "No tool ran" in context.retry_instruction
+                assert all(message["role"] != "feedback" for message in context.snapshot())
+                return ModelResponse(tool_calls=[ToolCall(
+                    id="real-patch", name="patch", arguments={
+                        "path": "agent.py", "old_string": "status = 'old'", "new_string": "status = 'new'",
+                    },
+                )])
+            assert context.retry_instruction is None
+            return ModelResponse(output_text="Updated agent.py.")
+
+    (tmp_path / "agent.py").write_text("status = 'old'\n", encoding="utf-8")
+    database_path = tmp_path / "invalid_tool_call.db"
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(database_path))
+    get_settings.cache_clear()
+    initialize_database()
+    events: list[RuntimeEvent] = []
+    emitter = EventEmitter()
+    emitter.subscribe(events.append)
+    registry = build_default_tool_registry()
+    runtime = AgentRuntime(
+        model=MalformedThenPatched(), tool_registry=registry,
+        tool_executor=ToolExecutor(registry), store=RunStore(database_path), event_emitter=emitter,
+    )
+
+    result = runtime.run("Update agent.py", target_path=tmp_path)
+
+    assert result.status == "completed"
+    assert (tmp_path / "agent.py").read_text(encoding="utf-8") == "status = 'new'\n"
+    assert sum(event.type == "model.invalid_tool_call" for event in events) == 1
+    assert sum(event.type == "tool.completed" for event in events) == 1
+
+
+def test_repo_tool_examples_are_data_not_calls(tmp_path: Path, monkeypatch) -> None:
+    class ReadsHarnessSource:
+        calls = 0
+
+        def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
+            self.calls += 1
+            if self.calls == 1:
+                return ModelResponse(tool_calls=[ToolCall(
+                    id="read-example", name="read_file", arguments={"path": "harness.txt"},
+                )])
+            assert any("<tool_call>patch" in message.content for message in context.messages if message.role == "tool")
+            return ModelResponse(output_text="The file contains a tool-call example.")
+
+    source = "This harness documents <tool_call>patch<arg_key>path</arg_key>.\n"
+    (tmp_path / "harness.txt").write_text(source, encoding="utf-8")
+    database_path = tmp_path / "nested_harness.db"
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(database_path))
+    get_settings.cache_clear()
+    initialize_database()
+    events: list[RuntimeEvent] = []
+    emitter = EventEmitter()
+    emitter.subscribe(events.append)
+    registry = build_default_tool_registry()
+    runtime = AgentRuntime(
+        model=ReadsHarnessSource(), tool_registry=registry,
+        tool_executor=ToolExecutor(registry), store=RunStore(database_path), event_emitter=emitter,
+    )
+
+    result = runtime.run("Explain the example", target_path=tmp_path)
+
+    assert result.status == "completed"
+    assert (tmp_path / "harness.txt").read_text(encoding="utf-8") == source
+    assert all(event.type != "model.invalid_tool_call" for event in events)
+
+
+def test_repeated_unstructured_tool_markup_fails_without_editing(tmp_path: Path, monkeypatch) -> None:
+    class AlwaysMalformed:
+        def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
+            return ModelResponse(output_text="<tool_call>patch<arg_key>path</arg_key></tool_call>")
+
+    path = tmp_path / "agent.py"
+    path.write_text("original\n", encoding="utf-8")
+    database_path = tmp_path / "malformed.db"
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(database_path))
+    get_settings.cache_clear()
+    initialize_database()
+    registry = build_default_tool_registry()
+    runtime = AgentRuntime(
+        model=AlwaysMalformed(), tool_registry=registry,
+        tool_executor=ToolExecutor(registry), store=RunStore(database_path),
+    )
+
+    with pytest.raises(RuntimeError, match="no tool ran"):
+        runtime.run("Update agent.py", target_path=tmp_path)
+
+    assert path.read_text(encoding="utf-8") == "original\n"

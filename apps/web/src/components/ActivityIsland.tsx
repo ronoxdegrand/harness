@@ -1,6 +1,7 @@
 import type { PointerEvent as ReactPointerEvent, RefObject, Dispatch, SetStateAction } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { Badge, Button, Card } from "@/components/ui";
+import { CopyButton } from "@/components/AppPrimitives";
 import { DEFAULT_ACTIVITY_WIDTH, MIN_ACTIVITY_WIDTH, formatTimestamp, showInActivity, type RuntimeEvent } from "@/appShared";
 
 type EventGroup = { iteration: number | null; createdAt?: string; events: RuntimeEvent[] };
@@ -99,11 +100,20 @@ export function ActivityIsland({
                       )}
                     </Button>
                   </div>
-                  {group.createdAt ? (
-                    <time className="shrink-0 text-xs text-muted-foreground" dateTime={group.createdAt}>
-                      {formatTimestamp(group.createdAt)}
-                    </time>
-                  ) : null}
+                  <div className="flex shrink-0 items-center gap-1">
+                    {group.createdAt ? (
+                      <time className="text-xs text-muted-foreground" dateTime={group.createdAt}>
+                        {formatTimestamp(group.createdAt)}
+                      </time>
+                    ) : null}
+                    <CopyButton
+                      className="!size-6"
+                      content={JSON.stringify(group.events, null, 2)}
+                      label={group.iteration === null
+                        ? "Copy initialization activity"
+                        : `Copy iteration ${group.iteration} activity`}
+                    />
+                  </div>
                 </div>
                 {!groupCollapsed ? (
                   <div className="space-y-2" id={`activity-events-${groupIndex}`}>
