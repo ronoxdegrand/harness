@@ -6,12 +6,16 @@ from typing import Any
 import httpx
 
 from .context import Context
-from .model import ModelProvider, ModelResponse, system_prompt
+from .model import ModelProvider, ModelResponse, prepare_model_input, safe_model_marker, token_usage
+from .model_request import post_model_request
 from .tools import ToolCall
 
 
 class SarvamModelProvider(ModelProvider):
-    def __init__(self, *, api_key: str | None, model_name: str, tool_registry: Any) -> None:
+    def __init__(
+        self, *, api_key: str | None, model_name: str, tool_registry: Any,
+        max_output_tokens: int = 4096,
+    ) -> None:
         if not api_key:
             raise ValueError(
                 "SARVAM_API_KEY is not set. Add it in Settings or to your environment before running the app."
@@ -19,53 +23,61 @@ class SarvamModelProvider(ModelProvider):
         self.api_key = api_key
         self.model_name = model_name
         self.tool_registry = tool_registry
+        self.max_output_tokens = max_output_tokens
 
     def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
-        if not any(message.role == "user" for message in context.messages):
+        tool_definitions = [] if final_response else [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "parameters": tool["input_schema"],
+                },
+            }
+            for tool in self.tool_registry.definitions()
+        ]
+        prepared = prepare_model_input(
+            context, tools=tool_definitions, output_tokens=self.max_output_tokens,
+            final_response=final_response,
+        )
+        if prepared is None:
             return ModelResponse(output_text="")
-
-        messages = [{"role": "system", "content": system_prompt(final_response)}]
-        for message in context.messages:
-            if message.role in {"user", "assistant"}:
-                messages.append({"role": message.role, "content": message.content})
-            elif message.role == "tool":
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": f"Tool result for {message.name}: {message.content}",
-                    }
-                )
+        instruction, visible = prepared
+        messages = [
+            {"role": "system", "content": instruction},
+            *({"role": message.role, "content": message.content} for message in visible),
+        ]
 
         payload: dict[str, Any] = {
             "model": self.model_name,
             "messages": messages,
             "temperature": 0.2,
-            "max_tokens": 4096,
+            "max_tokens": self.max_output_tokens,
         }
         if not final_response:
-            payload["tools"] = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": tool["name"],
-                        "description": tool["description"],
-                        "parameters": tool["input_schema"],
-                    },
-                }
-                for tool in self.tool_registry.definitions()
-            ]
+            payload["tools"] = tool_definitions
             payload["tool_choice"] = "auto"
 
-        response = httpx.post(
+        response = post_model_request(
+            "Sarvam",
             "https://api.sarvam.ai/v1/chat/completions",
             headers={"api-subscription-key": self.api_key},
             json=payload,
             timeout=120,
         )
-        response.raise_for_status()
-        choices = response.json().get("choices") or []
+        data = response.json()
+        choices = data.get("choices") or []
+        diagnostics = {
+            "response_id": safe_model_marker(data.get("id")),
+            "usage": token_usage(data.get("usage"), {
+                "input_tokens": "prompt_tokens", "output_tokens": "completion_tokens",
+                "total_tokens": "total_tokens",
+            }),
+        }
         if not choices:
-            return ModelResponse()
+            return ModelResponse(**diagnostics)
+        diagnostics["finish_reason"] = safe_model_marker(choices[0].get("finish_reason"))
         message = choices[0].get("message") or {}
         text = str(message.get("content") or "").strip()
         tool_calls = []
@@ -87,4 +99,5 @@ class SarvamModelProvider(ModelProvider):
             output_text=text,
             tool_calls=tool_calls,
             deltas=[text] if text else [],
+            **diagnostics,
         )

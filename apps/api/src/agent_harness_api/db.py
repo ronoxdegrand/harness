@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .config import get_settings
 
-LATEST_SCHEMA_VERSION = 4
+LATEST_SCHEMA_VERSION = 5
 
 
 class SchemaCompatibilityError(RuntimeError):
@@ -107,11 +107,28 @@ def _migration_4(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migration_5(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """CREATE TABLE harness_threads_new (
+            id TEXT PRIMARY KEY, title TEXT NOT NULL, workspace_path TEXT NOT NULL,
+            model_name TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )"""
+    )
+    connection.execute(
+        """INSERT INTO harness_threads_new (id, title, workspace_path, model_name, created_at, updated_at)
+           SELECT id, title, workspace_path, model_name, created_at, updated_at FROM harness_threads"""
+    )
+    connection.execute("DROP TABLE harness_threads")
+    connection.execute("ALTER TABLE harness_threads_new RENAME TO harness_threads")
+
+
 MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "initial_schema", _migration_1),
     (2, "run_and_turn_metadata", _migration_2),
     (3, "turn_lookup_index", _migration_3),
     (4, "durable_tool_executions", _migration_4),
+    (5, "optional_thread_model", _migration_5),
 )
 
 

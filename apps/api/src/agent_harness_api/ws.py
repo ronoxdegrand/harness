@@ -10,12 +10,11 @@ from typing import Any, Callable
 from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect
 
-from .config import DEFAULT_MODEL, Settings
+from .config import Settings
 from .context import Context
 from .events import EventEmitter, RuntimeEvent
-from .gemini_model import GeminiModelProvider
+from .model_catalog import build_model_provider, model_spec
 from .runtime import AgentRuntime
-from .sarvam_model import SarvamModelProvider
 from .store import RunStore, Thread, thread_title_from_prompt
 from .tools import ToolExecutor, build_default_tool_registry
 
@@ -46,22 +45,19 @@ def build_runtime(
     gemini_api_key: str | None,
     sarvam_api_key: str | None,
     model_name: str,
+    max_output_tokens: int,
     max_iterations: int,
+    timeout_seconds: int,
     continuation_decider: Callable[[int], bool],
+    progress_decider: Callable[[str, int, dict[str, object]], bool],
     stop_requested: Callable[[], bool],
     steering_provider: Callable[[], list[str]],
 ) -> AgentRuntime:
     registry = build_default_tool_registry()
-    if model_name == "sarvam-105b":
-        model = SarvamModelProvider(
-            api_key=sarvam_api_key, model_name=model_name, tool_registry=registry
-        )
-    elif model_name.startswith("gemini-"):
-        model = GeminiModelProvider(
-            api_key=gemini_api_key, model_name=model_name, tool_registry=registry
-        )
-    else:
-        raise ValueError(f"Unsupported model: {model_name}")
+    model = build_model_provider(
+        model_name, registry, gemini_api_key=gemini_api_key, sarvam_api_key=sarvam_api_key,
+        max_output_tokens=max_output_tokens,
+    )
     return AgentRuntime(
         model=model,
         tool_registry=registry,
@@ -69,8 +65,9 @@ def build_runtime(
         store=RunStore(),
         event_emitter=emitter,
         max_iterations=max_iterations,
-        timeout_seconds=120,
+        timeout_seconds=timeout_seconds,
         continuation_decider=continuation_decider,
+        progress_decider=progress_decider,
         stop_requested=stop_requested,
         steering_provider=steering_provider,
     )
@@ -118,6 +115,7 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
     requested_api_key = request.get("api_key")
     requested_sarvam_api_key = request.get("sarvam_api_key")
     requested_max_iterations = request.get("max_iterations")
+    requested_timeout_minutes = request.get("timeout_minutes", 30)
 
     if not isinstance(task, str) or not (prompt := task.strip()):
         await _fail_run(websocket, "Task is required to start a run.")
@@ -148,6 +146,14 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
         or not 1 <= requested_max_iterations <= 50
     ):
         await _fail_run(websocket, "Max iterations must be an integer between 1 and 50.")
+        return
+
+    if (
+        isinstance(requested_timeout_minutes, bool)
+        or not isinstance(requested_timeout_minutes, int)
+        or not 1 <= requested_timeout_minutes <= 1440
+    ):
+        await _fail_run(websocket, "Run time warning must be a whole number of minutes from 1 to 1440.")
         return
 
     if requested_title is not None and (
@@ -202,9 +208,15 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
         await _fail_run(websocket, "Workspace path does not exist or is not a directory.")
         return
 
-    model_name = requested_model.strip() if requested_model else (
-        thread.model_name if thread else DEFAULT_MODEL
-    )
+    model_name = requested_model.strip() if requested_model else (thread.model_name if thread else None)
+    if not model_name:
+        await _fail_run(websocket, "Model name is required to start a run.")
+        return
+    try:
+        model_spec(model_name)
+    except ValueError as exc:
+        await _fail_run(websocket, str(exc))
+        return
 
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     continuation_decisions: Queue[bool] = Queue()
@@ -226,6 +238,23 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
                     "iteration": completed_iterations,
                     "completed_iterations": completed_iterations,
                     "additional_iterations": requested_max_iterations or 50,
+                },
+            },
+        )
+        return continuation_decisions.get()
+
+    def decide_progress(reason: str, completed_iterations: int, details: dict[str, object]) -> bool:
+        _push_message(
+            loop,
+            queue,
+            {
+                "kind": "run.continuation_required",
+                "payload": {
+                    "reason": reason,
+                    "iteration": completed_iterations,
+                    "completed_iterations": completed_iterations,
+                    "additional_iterations": requested_max_iterations or 50,
+                    **details,
                 },
             },
         )
@@ -253,8 +282,11 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
                 else settings.sarvam_api_key
             ),
             model_name=model_name,
+            max_output_tokens=settings.max_output_tokens,
             max_iterations=requested_max_iterations or 50,
+            timeout_seconds=requested_timeout_minutes * 60,
             continuation_decider=decide_continuation,
+            progress_decider=decide_progress,
             stop_requested=stop_event.is_set,
             steering_provider=take_steering,
         )

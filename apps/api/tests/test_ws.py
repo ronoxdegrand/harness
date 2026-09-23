@@ -3,9 +3,12 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+from watchfiles import Change
 
 from agent_harness_api.config import get_settings
 from agent_harness_api.main import app
+from agent_harness_api import ws as ws_module
 from agent_harness_api.ws import resolve_workspace_path
 
 
@@ -36,6 +39,42 @@ def test_absolute_workspaces_require_explicit_permission(tmp_path: Path) -> None
     assert resolve_workspace_path(workspace_root, str(repository), True) == repository.resolve()
 
 
+def test_git_changes_websocket_streams_workspace_paths(tmp_path: Path, monkeypatch) -> None:
+    repository = tmp_path / "demo"
+    repository.mkdir()
+    monkeypatch.setenv("HARNESS_WORKSPACE_ROOT", str(tmp_path))
+    get_settings.cache_clear()
+
+    async def fake_awatch(path: Path, **_kwargs):
+        yield {(Change.modified, str(path / "source.py"))}
+
+    with patch("agent_harness_api.main.awatch", side_effect=fake_awatch):
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws/git/changes?workspace_path=demo") as websocket:
+                assert websocket.receive_json() == {"kind": "git.changed", "paths": ["source.py"]}
+
+
+def test_git_changes_websocket_rejects_outside_workspace(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HARNESS_WORKSPACE_ROOT", str(tmp_path))
+    get_settings.cache_clear()
+    with TestClient(app) as client:
+        with pytest.raises(WebSocketDisconnect) as rejected:
+            with client.websocket_connect("/ws/git/changes?workspace_path=../outside"):
+                pass
+        assert rejected.value.code == 1008
+
+
+def test_git_changes_websocket_requires_authentication(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HARNESS_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("HARNESS_AUTH_TOKEN", "test-secret")
+    get_settings.cache_clear()
+    with TestClient(app) as client:
+        with pytest.raises(WebSocketDisconnect) as rejected:
+            with client.websocket_connect("/ws/git/changes?workspace_path=."):
+                pass
+        assert rejected.value.code == 1008
+
+
 def test_run_websocket_rejects_invalid_requests(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("HARNESS_WORKSPACE_ROOT", str(tmp_path))
     get_settings.cache_clear()
@@ -54,8 +93,12 @@ def test_run_websocket_rejects_invalid_requests(tmp_path: Path, monkeypatch) -> 
         ({"task": "inspect", "max_iterations": 0}, "Max iterations must be an integer"),
         ({"task": "inspect", "max_iterations": 51}, "Max iterations must be an integer"),
         ({"task": "inspect", "max_iterations": "8"}, "Max iterations must be an integer"),
+        ({"task": "inspect", "timeout_minutes": 0}, "Run time warning must be"),
+        ({"task": "inspect", "timeout_minutes": 1441}, "Run time warning must be"),
+        ({"task": "inspect", "timeout_minutes": "30"}, "Run time warning must be"),
         ({"task": "inspect", "workspace_path": "../outside"}, "Workspace path escapes"),
         ({"task": "inspect", "workspace_path": "missing"}, "Workspace path does not exist"),
+        ({"task": "inspect", "workspace_path": "."}, "Model name is required"),
     ]
 
     with TestClient(app) as client:
@@ -81,7 +124,7 @@ def test_run_websocket_reports_missing_gemini_key(tmp_path: Path, monkeypatch) -
         with TestClient(app) as client:
             with client.websocket_connect("/ws/run") as websocket:
                 assert websocket.receive_json()["kind"] == "session.ready"
-                websocket.send_json({"task": "inspect", "workspace_path": "."})
+                websocket.send_json({"task": "inspect", "workspace_path": ".", "model_name": "gemini-3.5-flash"})
                 failure = _receive_failure(websocket)
 
     assert "GEMINI_API_KEY is not set" in str(failure["error"])
@@ -98,7 +141,7 @@ def test_run_websocket_streams_runtime_events(tmp_path: Path, monkeypatch) -> No
 
     def fake_post(*args, **kwargs):
         call_count["value"] += 1
-        assert kwargs["params"]["key"] == "ui-key"
+        assert kwargs["headers"]["x-goog-api-key"] == "ui-key"
 
         class FakeResponse:
             def raise_for_status(self):
@@ -124,7 +167,7 @@ def test_run_websocket_streams_runtime_events(tmp_path: Path, monkeypatch) -> No
                     }
                 return {
                     "candidates": [
-                        {"content": {"parts": [{"text": "I inspected the repo and the tests pass."}]}}
+                            {"content": {"parts": [{"text": "I inspected the repo."}]}}
                     ]
                 }
 
@@ -138,15 +181,17 @@ def test_run_websocket_streams_runtime_events(tmp_path: Path, monkeypatch) -> No
 
                 websocket.send_json(
                     {
-                        "task": 'inspect the repo, search for "test_ok", run tests, and show git diff',
+                        "task": "inspect the repo",
                         "workspace_path": "demo",
                         "api_key": "ui-key",
+                        "model_name": "gemini-3.5-flash",
                         "max_iterations": 4,
                     }
                 )
 
                 kinds: list[str] = []
                 runtime_event_types: list[str] = []
+                runtime_event_times: list[str] = []
                 model_completed_payloads: list[dict[str, object]] = []
                 final_payload: dict[str, object] | None = None
 
@@ -155,6 +200,7 @@ def test_run_websocket_streams_runtime_events(tmp_path: Path, monkeypatch) -> No
                     kinds.append(message["kind"])
                     if message["kind"] == "runtime.event":
                         runtime_event_types.append(message["event"]["type"])
+                        runtime_event_times.append(message["event"]["created_at"])
                         if message["event"]["type"] == "model.completed":
                             model_completed_payloads.append(message["event"]["payload"])
                     if message["kind"] == "run.completed":
@@ -168,6 +214,7 @@ def test_run_websocket_streams_runtime_events(tmp_path: Path, monkeypatch) -> No
     assert "model.delta" in runtime_event_types
     assert "tool.started" in runtime_event_types
     assert "tool.completed" in runtime_event_types
+    assert runtime_event_times and all(time.endswith("+00:00") for time in runtime_event_times)
     assert model_completed_payloads
     assert "output_text" not in model_completed_payloads[0]
     assert final_payload is not None
@@ -219,6 +266,7 @@ def test_run_websocket_accepts_iteration_warning_decisions(tmp_path: Path, monke
                         "task": "keep inspecting",
                         "workspace_path": "demo",
                         "api_key": "ui-key",
+                        "model_name": "gemini-3.5-flash",
                         "max_iterations": 2,
                     }
                 )
@@ -276,6 +324,7 @@ def test_run_websocket_stops_at_a_safe_boundary(tmp_path: Path, monkeypatch) -> 
                         "task": "keep inspecting",
                         "workspace_path": "demo",
                         "api_key": "ui-key",
+                        "model_name": "gemini-3.5-flash",
                         "max_iterations": 2,
                     }
                 )
@@ -290,6 +339,68 @@ def test_run_websocket_stops_at_a_safe_boundary(tmp_path: Path, monkeypatch) -> 
 
     assert final_payload is not None
     assert final_payload["status"] == "stopped"
+
+
+def test_run_websocket_does_not_pause_after_repeated_tool_failure(tmp_path: Path, monkeypatch) -> None:
+    workspace_root = tmp_path / "workspace"
+    _create_repo(workspace_root)
+    monkeypatch.setenv("HARNESS_WORKSPACE_ROOT", str(workspace_root))
+    get_settings.cache_clear()
+
+    build_runtime = ws_module.build_runtime
+    configured_timeouts: list[int] = []
+
+    def capture_timeout(*args, **kwargs):
+        configured_timeouts.append(kwargs["timeout_seconds"])
+        return build_runtime(*args, **kwargs)
+
+    monkeypatch.setattr(ws_module, "build_runtime", capture_timeout)
+
+    calls = 0
+
+    def fake_post(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                part = {"text": "I could not read that file."} if calls == 4 else {
+                    "functionCall": {"name": "read_file", "args": {"path": "missing.txt"}}
+                }
+                return {"candidates": [{"content": {"parts": [part]}}]}
+
+        return FakeResponse()
+
+    pause = None
+    final_payload = None
+    with patch("agent_harness_api.gemini_model.httpx.post", side_effect=fake_post):
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws/run") as websocket:
+                assert websocket.receive_json()["kind"] == "session.ready"
+                websocket.send_json({
+                    "task": "read missing file", "workspace_path": ".", "api_key": "ui-key",
+                    "model_name": "gemini-3.5-flash",
+                    "max_iterations": 10,
+                    "timeout_minutes": 45,
+                })
+                while True:
+                    message = websocket.receive_json()
+                    if message["kind"] == "run.continuation_required":
+                        pause = message["payload"]
+                        websocket.send_json({"kind": "run.continuation_decision", "continue": False})
+                    elif message["kind"] == "run.completed":
+                        final_payload = message["payload"]
+                    elif message["kind"] == "run.finished":
+                        break
+
+    assert pause is None
+    assert calls == 4
+    assert configured_timeouts == [45 * 60]
+    assert final_payload is not None
+    assert final_payload["output_text"] == "I could not read that file."
 
 
 def test_run_websocket_routes_sarvam_model_and_key(tmp_path: Path, monkeypatch) -> None:

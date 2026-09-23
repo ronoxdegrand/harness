@@ -4,6 +4,7 @@ interface DesktopSettings {
   apiKey: string;
   sarvamApiKey: string;
   maxIterations: number;
+  timeoutMinutes: number;
   sendOnEnter: boolean;
   midRunEnterAction: "queue" | "steer";
   sidebarCollapsed: boolean;
@@ -17,6 +18,7 @@ interface DesktopSettings {
   gitDiffWrap: boolean;
   gitDiffSplit: boolean;
   gitDiffShowUnchanged: boolean;
+  gitDiffWidth: number;
   threadSort: "recent-message" | "created";
   groupThreadsByPath: boolean;
   scale: number;

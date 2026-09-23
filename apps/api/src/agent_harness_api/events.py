@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -12,9 +13,10 @@ EventHandler = Callable[["RuntimeEvent"], None]
 class RuntimeEvent:
     type: str
     payload: dict[str, Any]
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def as_dict(self) -> dict[str, Any]:
-        return {"type": self.type, "payload": self.payload}
+        return {"type": self.type, "payload": self.payload, "created_at": self.created_at}
 
 
 class EventEmitter:
@@ -29,4 +31,3 @@ class EventEmitter:
         for handler in self._handlers:
             handler(event)
         return event
-

@@ -33,6 +33,7 @@ function writeSettings(file, settings, encryption) {
       ? encryption.encryptString(settings.sarvamApiKey).toString("base64")
       : "",
     maxIterations: settings.maxIterations,
+    timeoutMinutes: settings.timeoutMinutes,
     sendOnEnter: settings.sendOnEnter,
     midRunEnterAction: settings.midRunEnterAction,
     sidebarCollapsed: settings.sidebarCollapsed,
@@ -46,6 +47,7 @@ function writeSettings(file, settings, encryption) {
     gitDiffWrap: settings.gitDiffWrap,
     gitDiffSplit: settings.gitDiffSplit,
     gitDiffShowUnchanged: settings.gitDiffShowUnchanged,
+    gitDiffWidth: settings.gitDiffWidth,
     threadSort: settings.threadSort,
     groupThreadsByPath: settings.groupThreadsByPath,
     scale: settings.scale,

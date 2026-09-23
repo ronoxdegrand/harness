@@ -9,6 +9,7 @@ from typing import Any
 
 from .context import Context
 from .db import get_database_path
+from .model_request import safe_stored_error
 
 
 def thread_title_from_prompt(prompt: str) -> str:
@@ -21,7 +22,7 @@ class Thread:
     id: str
     title: str
     workspace_path: str
-    model_name: str
+    model_name: str | None
     created_at: str
     updated_at: str
     last_message_at: str | None
@@ -73,7 +74,7 @@ class RunStore:
         self,
         *,
         workspace_path: Path,
-        model_name: str,
+        model_name: str | None = None,
         title: str,
     ) -> Thread:
         thread_id = str(uuid.uuid4())
@@ -231,16 +232,19 @@ class RunStore:
                 """,
                 (thread_id,),
             ).fetchall()
-        return [
-            {
+        events = []
+        for row in rows:
+            payload = json.loads(row[3])
+            if row[2] == "turn.failed" and isinstance(payload.get("error"), str):
+                payload["error"] = safe_stored_error(payload["error"])
+            events.append({
                 "id": row[0],
                 "run_id": row[1],
                 "type": row[2],
-                "payload": json.loads(row[3]),
+                "payload": payload,
                 "created_at": row[4],
-            }
-            for row in rows
-        ]
+            })
+        return events
 
     def get_thread_context(self, thread_id: str) -> dict[str, Any] | None:
         with self._connect() as connection:
@@ -478,7 +482,7 @@ class RunStore:
         return sqlite3.connect(self.database_path)
 
     @staticmethod
-    def _thread_from_row(row: tuple[str, str, str, str, str, str, str | None]) -> Thread:
+    def _thread_from_row(row: tuple[str, str, str, str | None, str, str, str | None]) -> Thread:
         return Thread(
             id=row[0],
             title=row[1],

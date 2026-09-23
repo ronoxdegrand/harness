@@ -43,7 +43,7 @@ def test_existing_database_is_backed_up_before_migration(database_path: Path) ->
     with sqlite3.connect(backups[0]) as backup:
         assert backup.execute(
             "SELECT MAX(version) FROM harness_schema_migrations"
-        ).fetchone()[0] == 3
+        ).fetchone()[0] == database.LATEST_SCHEMA_VERSION - 1
 
 
 def test_failed_migration_rolls_back_and_keeps_backup(
@@ -72,7 +72,7 @@ def test_failed_migration_rolls_back_and_keeps_backup(
                 "SELECT version FROM harness_schema_migrations ORDER BY version"
             )
         ]
-    assert versions == [1, 2, 3]
+    assert versions == list(range(1, database.LATEST_SCHEMA_VERSION))
     assert list(database_path.parent.glob(f"{database_path.name}.backup-*"))
 
 

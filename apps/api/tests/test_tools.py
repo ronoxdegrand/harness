@@ -1,7 +1,9 @@
+import hashlib
 import json
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 from agent_harness_api.tools import ToolCall, ToolExecutor, build_default_tool_registry
 
@@ -36,12 +38,32 @@ def test_tool_registry_exposes_metadata_and_schemas() -> None:
 
     assert "read_file" in tool_names
     assert "write_file" in tool_names
+    assert "patch" in tool_names
     assert "git_status" in tool_names
     assert "git_log" in tool_names
+    assert "fetch_url" in tool_names
     assert {"git_refresh", "git_switch", "git_sync", "git_commit", "git_stage", "git_unstage", "git_discard"} <= set(tool_names)
     assert any(tool["name"] == "shell" for tool in definitions)
-    assert registry.get("write_file").input_schema["required"] == ["path", "content"]
+    assert registry.get("write_file").input_schema["required"] == ["path", "content", "expected_sha256"]
+    assert registry.get("patch").input_schema["required"] == ["path", "expected_sha256", "edits"]
     assert registry.get("git_diff").input_schema["properties"]["staged"]["type"] == "boolean"
+
+
+def test_invalid_tool_call_returns_schema_or_available_tools(tmp_path: Path) -> None:
+    executor = ToolExecutor(build_default_tool_registry())
+
+    invalid_arguments = executor.execute(
+        ToolCall(id="bad-args", name="read_file", arguments={"path": "file.txt", "limit": 20}),
+        target_path=tmp_path,
+    )
+    unknown_tool = executor.execute(
+        ToolCall(id="bad-name", name="missing_tool"), target_path=tmp_path,
+    )
+
+    assert invalid_arguments.success is False
+    assert "Unknown arguments: limit" in (invalid_arguments.error or "")
+    assert invalid_arguments.metadata["expected_schema"] == executor.registry.get("read_file").input_schema
+    assert "read_file" in unknown_tool.metadata["available_tools"]
 
 
 def test_filesystem_tools_respect_workspace_root(tmp_path: Path) -> None:
@@ -56,7 +78,7 @@ def test_filesystem_tools_respect_workspace_root(tmp_path: Path) -> None:
         ToolCall(
             id="write",
             name="write_file",
-            arguments={"path": "notes/todo.txt", "content": "keep within root"},
+            arguments={"path": "notes/todo.txt", "content": "keep within root", "expected_sha256": "absent"},
         ),
         target_path=workspace,
     )
@@ -80,7 +102,7 @@ def test_filesystem_tools_respect_workspace_root(tmp_path: Path) -> None:
         ToolCall(
             id="escape",
             name="write_file",
-            arguments={"path": "../outside.txt", "content": "nope"},
+            arguments={"path": "../outside.txt", "content": "nope", "expected_sha256": "absent"},
         ),
         target_path=workspace,
     )
@@ -94,6 +116,216 @@ def test_filesystem_tools_respect_workspace_root(tmp_path: Path) -> None:
     assert ".cache/state.json" in hidden_list_result.output
     assert escape_result.success is False
     assert "escapes the workspace root" in (escape_result.error or "")
+
+
+def test_patch_changes_one_exact_match_and_rejects_ambiguous_edits(tmp_path: Path) -> None:
+    path = tmp_path / "agent.py"
+    path.write_text("old = 1\nother = 2\n", encoding="utf-8")
+    executor = ToolExecutor(build_default_tool_registry())
+    original_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+
+    changed = executor.execute(
+        ToolCall(id="patch-1", name="patch", arguments={
+            "path": "agent.py", "expected_sha256": original_hash,
+            "edits": [{"old_string": "old = 1", "new_string": "old = 3"}],
+        }), target_path=tmp_path,
+    )
+    assert changed.success is True
+    assert path.read_text(encoding="utf-8") == "old = 3\nother = 2\n"
+
+    ambiguous = executor.execute(
+        ToolCall(id="patch-2", name="patch", arguments={
+            "path": "agent.py", "expected_sha256": changed.metadata["sha256"],
+            "edits": [{"old_string": "=", "new_string": ":"}],
+        }), target_path=tmp_path,
+    )
+    assert ambiguous.success is False
+    assert "exactly one match" in (ambiguous.error or "")
+    assert path.read_text(encoding="utf-8") == "old = 3\nother = 2\n"
+
+
+def test_stale_edits_report_conflict_without_overwriting_changes(tmp_path: Path) -> None:
+    path = tmp_path / "agent.py"
+    path.write_text("value = 1\n", encoding="utf-8")
+    executor = ToolExecutor(build_default_tool_registry())
+    read = executor.execute(ToolCall(id="read", name="read_file", arguments={"path": "agent.py"}), target_path=tmp_path)
+    path.write_text("value = 2\n", encoding="utf-8")
+
+    for name, arguments in [
+        ("write_file", {"path": "agent.py", "content": "value = 3\n", "expected_sha256": read.metadata["sha256"]}),
+        ("patch", {"path": "agent.py", "expected_sha256": read.metadata["sha256"],
+                   "edits": [{"old_string": "value = 1", "new_string": "value = 3"}]}),
+    ]:
+        result = executor.execute(ToolCall(id=name, name=name, arguments=arguments), target_path=tmp_path)
+        assert result.success is False
+        assert result.metadata["conflict"] is True
+        assert result.metadata["actual_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+        assert path.read_text(encoding="utf-8") == "value = 2\n"
+
+
+def test_multi_edit_patch_is_atomic_when_later_match_fails(tmp_path: Path) -> None:
+    path = tmp_path / "agent.py"
+    path.write_text("one = 1\ntwo = 2\n", encoding="utf-8")
+    executor = ToolExecutor(build_default_tool_registry())
+    expected = hashlib.sha256(path.read_bytes()).hexdigest()
+    result = executor.execute(ToolCall(id="patch", name="patch", arguments={
+        "path": "agent.py", "expected_sha256": expected,
+        "edits": [
+            {"old_string": "one = 1", "new_string": "one = 3"},
+            {"old_string": "missing", "new_string": "present"},
+        ],
+    }), target_path=tmp_path)
+    assert result.success is False
+    assert path.read_text(encoding="utf-8") == "one = 1\ntwo = 2\n"
+
+
+def test_read_file_returns_small_files_completely_and_pages_large_files_by_line(tmp_path: Path) -> None:
+    small_content = "".join(f"line {number}\n" for number in range(600))
+    (tmp_path / "small.txt").write_text(small_content, encoding="utf-8")
+    executor = ToolExecutor(build_default_tool_registry())
+
+    small = executor.execute(
+        ToolCall(id="small", name="read_file", arguments={"path": "small.txt"}), target_path=tmp_path,
+    )
+    assert small.output == small_content
+    assert small.metadata["total_lines"] == 600
+    assert small.metadata["complete"] is True
+    assert small.metadata["next_start_line"] is None
+
+    large_content = "".join(f"line {number:04d} {'x' * 40}\n" for number in range(600))
+    (tmp_path / "large.txt").write_text(large_content, encoding="utf-8")
+    first = executor.execute(
+        ToolCall(id="read-1", name="read_file", arguments={"path": "large.txt"}), target_path=tmp_path,
+    )
+    second = executor.execute(ToolCall(id="read-2", name="read_file", arguments={
+        "path": "large.txt", "start_line": first.metadata["next_start_line"],
+    }), target_path=tmp_path)
+
+    assert len(first.output) <= 16_000
+    assert first.metadata["truncated"] is True
+    assert first.metadata["next_start_line"] == first.metadata["end_line"] + 1
+    assert second.metadata["start_line"] == first.metadata["next_start_line"]
+    assert first.output + second.output == large_content
+
+
+def test_read_file_chunk_pages_a_line_longer_than_the_source_read_limit(tmp_path: Path) -> None:
+    executor = ToolExecutor(build_default_tool_registry())
+    (tmp_path / "single-line.txt").write_text("x" * 20_000, encoding="utf-8")
+    source = executor.execute(
+        ToolCall(id="source", name="read_file", arguments={"path": "single-line.txt"}), target_path=tmp_path,
+    )
+    first = executor.execute(
+        ToolCall(id="long-1", name="read_file_chunk", arguments={"path": "single-line.txt"}), target_path=tmp_path,
+    )
+    second = executor.execute(
+        ToolCall(id="long-2", name="read_file_chunk", arguments={
+            "path": "single-line.txt", "offset": first.metadata["next_offset"],
+        }),
+        target_path=tmp_path,
+    )
+    invalid = executor.execute(
+        ToolCall(id="invalid", name="read_file", arguments={"path": "single-line.txt", "offset": 1}),
+        target_path=tmp_path,
+    )
+
+    assert source.metadata["requires_chunk"] is True
+    assert source.metadata["next_start_line"] is None
+    assert first.output + second.output == "x" * 20_000
+    assert second.metadata["complete"] is True
+    assert invalid.success is False
+    assert "Unknown arguments: offset" in (invalid.error or "")
+
+
+def test_read_file_uses_explicit_line_ranges(tmp_path: Path) -> None:
+    path = tmp_path / "source.py"
+    path.write_text("".join(f"line {number}\n" for number in range(1, 81)), encoding="utf-8")
+    executor = ToolExecutor(build_default_tool_registry())
+
+    first = executor.execute(ToolCall(id="range-1", name="read_file", arguments={
+        "path": "source.py", "start_line": 15, "line_count": 3,
+    }), target_path=tmp_path)
+    second = executor.execute(ToolCall(id="range-2", name="read_file", arguments={
+        "path": "source.py", "start_line": first.metadata["next_start_line"], "line_count": 2,
+    }), target_path=tmp_path)
+    clamped = executor.execute(ToolCall(id="clamped", name="read_file", arguments={
+        "path": "source.py", "start_line": 1, "line_count": 800,
+    }), target_path=tmp_path)
+
+    assert first.output == "line 15\nline 16\nline 17\n"
+    assert first.metadata["start_line"] == 15
+    assert first.metadata["end_line"] == 17
+    assert first.metadata["total_lines"] == 80
+    assert first.metadata["next_start_line"] == 18
+    assert second.output == "line 18\nline 19\n"
+    assert first.metadata["sha256"] == second.metadata["sha256"]
+    assert clamped.success is True
+    assert clamped.metadata["requested_line_count"] == 800
+    assert clamped.metadata["applied_line_count"] == 500
+
+
+def test_shell_output_is_bounded_and_git_diff_can_be_paged(tmp_path: Path) -> None:
+    executor = ToolExecutor(build_default_tool_registry())
+    output = "x" * 20_000
+    completed = subprocess.CompletedProcess(args=["command"], returncode=0, stdout=output, stderr="")
+
+    with patch("agent_harness_api.tools._run_command", return_value=completed):
+        shell_result = executor.execute(
+            ToolCall(id="shell", name="shell", arguments={"command": "command"}), target_path=tmp_path,
+        )
+        first_diff = executor.execute(ToolCall(id="diff-1", name="git_diff"), target_path=tmp_path)
+        second_diff = executor.execute(
+            ToolCall(id="diff-2", name="git_diff", arguments={"offset": first_diff.metadata["next_offset"]}),
+            target_path=tmp_path,
+        )
+
+    assert len(shell_result.output) == 16_000
+    assert shell_result.metadata["truncated"] is True
+    assert "next_offset" not in shell_result.metadata
+    assert first_diff.output + second_diff.output == output
+    assert second_diff.metadata["truncated"] is False
+
+
+def test_list_files_skips_generated_files_and_backups(tmp_path: Path) -> None:
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / ".gitignore").write_text(
+        "node_modules/\ndist/\nbuild/\nrelease/\n__pycache__/\nvenv/\nbackups/\n*.db*\n*.pyc\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("pass", encoding="utf-8")
+    for directory in ("node_modules", "dist", "build", "release", "__pycache__", "venv", "backups"):
+        (tmp_path / directory).mkdir()
+        (tmp_path / directory / "generated.txt").write_text("generated", encoding="utf-8")
+    (tmp_path / "app.db.backup-20260921").write_text("backup", encoding="utf-8")
+    (tmp_path / "app.db").write_text("database", encoding="utf-8")
+    (tmp_path / "app.pyc").write_text("cache", encoding="utf-8")
+
+    result = ToolExecutor(build_default_tool_registry()).execute(
+        ToolCall(id="list", name="list_files"), target_path=tmp_path,
+    )
+
+    assert result.output == "src/app.py"
+    assert result.metadata["count"] == 1
+
+    included = ToolExecutor(build_default_tool_registry()).execute(
+        ToolCall(id="all", name="list_files", arguments={"include_ignored": True}),
+        target_path=tmp_path,
+    )
+    assert "node_modules/generated.txt" in included.output
+
+
+def test_list_files_keeps_tracked_source_in_an_ignored_directory(tmp_path: Path) -> None:
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / ".gitignore").write_text("build/\n", encoding="utf-8")
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "handwritten.py").write_text("source", encoding="utf-8")
+    subprocess.run(["git", "add", "-f", "build/handwritten.py"], cwd=tmp_path, check=True, capture_output=True)
+
+    result = ToolExecutor(build_default_tool_registry()).execute(
+        ToolCall(id="list", name="list_files"), target_path=tmp_path,
+    )
+
+    assert result.output == "build/handwritten.py"
 
 
 def test_search_and_shell_tools_support_repo_inspection(tmp_path: Path) -> None:
@@ -146,6 +378,25 @@ def test_search_and_shell_tools_support_repo_inspection(tmp_path: Path) -> None:
     assert "escapes the workspace root" in (shell_escape.error or "")
 
 
+def test_search_skips_generated_and_hidden_files(tmp_path: Path) -> None:
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / ".gitignore").write_text("node_modules/\n.tmp/\n", encoding="utf-8")
+    (tmp_path / ".tmp").mkdir()
+    (tmp_path / ".tmp" / "build.txt").write_text("needle in build", encoding="utf-8")
+    (tmp_path / ".env").write_text("SECRET=needle", encoding="utf-8")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "package.js").write_text("needle in package", encoding="utf-8")
+    (tmp_path / "source.py").write_text("needle in source", encoding="utf-8")
+
+    result = ToolExecutor(build_default_tool_registry()).execute(
+        ToolCall(id="search", name="search_files", arguments={"query": "needle"}),
+        target_path=tmp_path,
+    )
+
+    assert result.success is True
+    assert result.output == "source.py:1:needle in source"
+
+
 def test_git_tools_and_repo_workflow(tmp_path: Path) -> None:
     workspace = tmp_path / "repo"
     _create_repo(workspace)
@@ -169,6 +420,7 @@ def test_git_tools_and_repo_workflow(tmp_path: Path) -> None:
             arguments={
                 "path": "src/math_utils.py",
                 "content": "def subtract(a: int, b: int) -> int:\n    return a - b\n\n",
+                "expected_sha256": hashlib.sha256((workspace / "src" / "math_utils.py").read_bytes()).hexdigest(),
             },
         ),
         target_path=workspace,

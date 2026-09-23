@@ -19,3 +19,9 @@ def test_production_must_bind_to_loopback(tmp_path: Path) -> None:
             sqlite_path=tmp_path / "app.db",
             _env_file=None,
         )
+
+
+def test_output_token_policy_is_bounded() -> None:
+    assert Settings(_env_file=None).max_output_tokens == 4096
+    with pytest.raises(ValidationError):
+        Settings(max_output_tokens=128, _env_file=None)

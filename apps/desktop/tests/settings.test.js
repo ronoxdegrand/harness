@@ -23,6 +23,7 @@ test("desktop settings persist with an encrypted API key", () => {
     apiKey: "secret",
     sarvamApiKey: "sarvam-secret",
     maxIterations: 12,
+    timeoutMinutes: 45,
     sendOnEnter: false,
     midRunEnterAction: "steer",
     sidebarCollapsed: true,
@@ -36,6 +37,7 @@ test("desktop settings persist with an encrypted API key", () => {
     gitDiffWrap: true,
     gitDiffSplit: true,
     gitDiffShowUnchanged: true,
+    gitDiffWidth: 980,
     threadSort: "created",
     groupThreadsByPath: true,
     scale: 0.9,
@@ -47,6 +49,7 @@ test("desktop settings persist with an encrypted API key", () => {
     assert.deepEqual(readSettings(file, encryption), settings);
     writeSettings(file, { ...settings, maxIterations: 20 }, encryption);
     assert.equal(readSettings(file, encryption).maxIterations, 20);
+    assert.equal(readSettings(file, encryption).timeoutMinutes, 45);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
