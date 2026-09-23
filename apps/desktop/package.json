@@ -1,7 +1,7 @@
 {
   "name": "@ai-agent-harness/desktop",
   "desktopName": "ai-agent-harness.desktop",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "description": "Desktop shell for AI Agent Harness.",
   "author": "ronoxdegrand",
   "private": true,
@@ -16,7 +16,7 @@
     "electron-updater": "6.8.9"
   },
   "devDependencies": {
-    "electron": "43.4.1",
+    "electron": "44.4.5",
     "electron-builder": "26.15.3"
   }
 }

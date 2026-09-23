@@ -1,6 +1,6 @@
 [project]
 name = "agent-harness-api"
-version = "0.7.2"
+version = "0.8.0"
 description = "FastAPI backend for the AI agent harness."
 requires-python = ">=3.12"
 dependencies = [
@@ -14,7 +14,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pyinstaller>=6.15.0,<7.0.0",
-    "pytest>=8.4.1,<9.0.0",
+    "pytest>=9.1.1,<10.0.0",
 ]
 
 [build-system]
