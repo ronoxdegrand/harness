@@ -328,6 +328,7 @@ async def git_commit_message(request: GitCommitMessageRequest) -> dict[str, str]
             registry,
             gemini_api_key=request.api_key or settings.gemini_api_key,
             sarvam_api_key=request.sarvam_api_key or settings.sarvam_api_key,
+            max_output_tokens=settings.max_output_tokens,
         )
         context = Context()
         context.add_user(

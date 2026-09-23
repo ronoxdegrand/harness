@@ -26,10 +26,14 @@ class Context:
         self._messages = messages or []
         self.token_budget = max(1, token_budget)
         self.retry_instruction: str | None = None
+        self.request_token_limit: int | None = None
 
     @property
     def messages(self) -> list[Message]:
         return [message for _, message in self._window()[0]]
+
+    def messages_for_budget(self, token_budget: int) -> list[Message]:
+        return [message for _, message in self._window(max(1, token_budget))[0]]
 
     def add_user(self, content: str) -> None:
         self._messages.append(Message(role="user", content=content))
@@ -154,11 +158,11 @@ class Context:
             "messages": items,
         }
 
-    def _window(self) -> tuple[list[tuple[int, Message]], int | None]:
+    def _window(self, token_budget: int | None = None) -> tuple[list[tuple[int, Message]], int | None]:
         if not self._messages:
             return [], None
 
-        remaining = self.token_budget
+        remaining = self.token_budget if token_budget is None else min(self.token_budget, token_budget)
         window: list[tuple[int, Message]] = []
         truncated = None
         pinned = next(
@@ -179,8 +183,20 @@ class Context:
             message = self._messages[index]
             tokens = max(1, (len(message.content) + 3) // 4)
             if tokens > remaining:
-                if index > (pinned if pinned is not None else -1):
-                    content = message.content[: remaining * 4]
+                if message.role == "tool" or index > (pinned if pinned is not None else -1):
+                    if message.role == "tool":
+                        try:
+                            payload = json.loads(message.content)
+                            path = payload.get("metadata", {}).get("path")
+                        except (TypeError, ValueError, AttributeError):
+                            path = None
+                        note = (
+                            f"Tool result for {message.name} was omitted to fit the request budget. "
+                            f"Path: {path or 'unknown'}. Re-read a narrow line range if needed."
+                        )
+                        content = note[:remaining * 4]
+                    else:
+                        content = message.content[: remaining * 4]
                     window.append((index, Message(message.role, content, message.name, message.tool_call_id)))
                     truncated = index
                 break

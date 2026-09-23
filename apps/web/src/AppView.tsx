@@ -7,8 +7,6 @@ import {
   AlertTriangle,
   Check,
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   ChevronUp,
   Columns2,
   CornerUpRight,
@@ -152,10 +150,7 @@ export function AppView(controller: AppController) {
     loadGitStatus,
     openGitDiff,
     closeGitDiff,
-    openAdjacentGitDiff,
     rememberDiffScroll,
-    gitDiffIndex,
-    gitDiffFiles,
     switchGitBranch,
     undoLastCommit,
     openThread,
@@ -1177,32 +1172,7 @@ export function AppView(controller: AppController) {
                 </div>
                 <p className="mt-0.5 text-[10px] text-muted-foreground">
                   {gitDiff.staged ? "Staged changes" : "Working tree changes"}
-                  {gitDiffIndex >= 0 ? ` · ${gitDiffIndex + 1} of ${gitDiffFiles.length}` : ""}
                 </p>
-              </div>
-              <div className="flex shrink-0 items-center rounded-lg border bg-card p-0.5">
-                <Button
-                  aria-label="Previous changed file"
-                  className="size-7 rounded-md text-muted-foreground"
-                  disabled={gitDiffIndex <= 0}
-                  size="icon-sm"
-                  type="button"
-                  variant="ghost"
-                  onClick={() => openAdjacentGitDiff(-1)}
-                >
-                  <ChevronLeft aria-hidden="true" className="size-3.5" />
-                </Button>
-                <Button
-                  aria-label="Next changed file"
-                  className="size-7 rounded-md text-muted-foreground"
-                  disabled={gitDiffIndex < 0 || gitDiffIndex >= gitDiffFiles.length - 1}
-                  size="icon-sm"
-                  type="button"
-                  variant="ghost"
-                  onClick={() => openAdjacentGitDiff(1)}
-                >
-                  <ChevronRight aria-hidden="true" className="size-3.5" />
-                </Button>
               </div>
               <div className="flex shrink-0 items-center rounded-lg border bg-card p-0.5">
                 {gitDiffCanSplit ? (

@@ -45,6 +45,7 @@ def build_runtime(
     gemini_api_key: str | None,
     sarvam_api_key: str | None,
     model_name: str,
+    max_output_tokens: int,
     max_iterations: int,
     timeout_seconds: int,
     continuation_decider: Callable[[int], bool],
@@ -55,6 +56,7 @@ def build_runtime(
     registry = build_default_tool_registry()
     model = build_model_provider(
         model_name, registry, gemini_api_key=gemini_api_key, sarvam_api_key=sarvam_api_key,
+        max_output_tokens=max_output_tokens,
     )
     return AgentRuntime(
         model=model,
@@ -280,6 +282,7 @@ async def handle_run_websocket(websocket: WebSocket, settings: Settings) -> None
                 else settings.sarvam_api_key
             ),
             model_name=model_name,
+            max_output_tokens=settings.max_output_tokens,
             max_iterations=requested_max_iterations or 50,
             timeout_seconds=requested_timeout_minutes * 60,
             continuation_decider=decide_continuation,

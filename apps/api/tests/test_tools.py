@@ -1,3 +1,4 @@
+import hashlib
 import json
 import subprocess
 import sys
@@ -43,8 +44,8 @@ def test_tool_registry_exposes_metadata_and_schemas() -> None:
     assert "fetch_url" in tool_names
     assert {"git_refresh", "git_switch", "git_sync", "git_commit", "git_stage", "git_unstage", "git_discard"} <= set(tool_names)
     assert any(tool["name"] == "shell" for tool in definitions)
-    assert registry.get("write_file").input_schema["required"] == ["path", "content"]
-    assert registry.get("patch").input_schema["required"] == ["path", "old_string", "new_string"]
+    assert registry.get("write_file").input_schema["required"] == ["path", "content", "expected_sha256"]
+    assert registry.get("patch").input_schema["required"] == ["path", "expected_sha256", "edits"]
     assert registry.get("git_diff").input_schema["properties"]["staged"]["type"] == "boolean"
 
 
@@ -77,7 +78,7 @@ def test_filesystem_tools_respect_workspace_root(tmp_path: Path) -> None:
         ToolCall(
             id="write",
             name="write_file",
-            arguments={"path": "notes/todo.txt", "content": "keep within root"},
+            arguments={"path": "notes/todo.txt", "content": "keep within root", "expected_sha256": "absent"},
         ),
         target_path=workspace,
     )
@@ -101,7 +102,7 @@ def test_filesystem_tools_respect_workspace_root(tmp_path: Path) -> None:
         ToolCall(
             id="escape",
             name="write_file",
-            arguments={"path": "../outside.txt", "content": "nope"},
+            arguments={"path": "../outside.txt", "content": "nope", "expected_sha256": "absent"},
         ),
         target_path=workspace,
     )
@@ -121,10 +122,12 @@ def test_patch_changes_one_exact_match_and_rejects_ambiguous_edits(tmp_path: Pat
     path = tmp_path / "agent.py"
     path.write_text("old = 1\nother = 2\n", encoding="utf-8")
     executor = ToolExecutor(build_default_tool_registry())
+    original_hash = hashlib.sha256(path.read_bytes()).hexdigest()
 
     changed = executor.execute(
         ToolCall(id="patch-1", name="patch", arguments={
-            "path": "agent.py", "old_string": "old = 1", "new_string": "old = 3",
+            "path": "agent.py", "expected_sha256": original_hash,
+            "edits": [{"old_string": "old = 1", "new_string": "old = 3"}],
         }), target_path=tmp_path,
     )
     assert changed.success is True
@@ -132,7 +135,8 @@ def test_patch_changes_one_exact_match_and_rejects_ambiguous_edits(tmp_path: Pat
 
     ambiguous = executor.execute(
         ToolCall(id="patch-2", name="patch", arguments={
-            "path": "agent.py", "old_string": "=", "new_string": ":",
+            "path": "agent.py", "expected_sha256": changed.metadata["sha256"],
+            "edits": [{"old_string": "=", "new_string": ":"}],
         }), target_path=tmp_path,
     )
     assert ambiguous.success is False
@@ -140,31 +144,123 @@ def test_patch_changes_one_exact_match_and_rejects_ambiguous_edits(tmp_path: Pat
     assert path.read_text(encoding="utf-8") == "old = 3\nother = 2\n"
 
 
-def test_read_file_pages_by_line_and_character_offset(tmp_path: Path) -> None:
-    content = "".join(f"line {number}\n" for number in range(250))
-    (tmp_path / "large.txt").write_text(content, encoding="utf-8")
+def test_stale_edits_report_conflict_without_overwriting_changes(tmp_path: Path) -> None:
+    path = tmp_path / "agent.py"
+    path.write_text("value = 1\n", encoding="utf-8")
+    executor = ToolExecutor(build_default_tool_registry())
+    read = executor.execute(ToolCall(id="read", name="read_file", arguments={"path": "agent.py"}), target_path=tmp_path)
+    path.write_text("value = 2\n", encoding="utf-8")
+
+    for name, arguments in [
+        ("write_file", {"path": "agent.py", "content": "value = 3\n", "expected_sha256": read.metadata["sha256"]}),
+        ("patch", {"path": "agent.py", "expected_sha256": read.metadata["sha256"],
+                   "edits": [{"old_string": "value = 1", "new_string": "value = 3"}]}),
+    ]:
+        result = executor.execute(ToolCall(id=name, name=name, arguments=arguments), target_path=tmp_path)
+        assert result.success is False
+        assert result.metadata["conflict"] is True
+        assert result.metadata["actual_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+        assert path.read_text(encoding="utf-8") == "value = 2\n"
+
+
+def test_multi_edit_patch_is_atomic_when_later_match_fails(tmp_path: Path) -> None:
+    path = tmp_path / "agent.py"
+    path.write_text("one = 1\ntwo = 2\n", encoding="utf-8")
+    executor = ToolExecutor(build_default_tool_registry())
+    expected = hashlib.sha256(path.read_bytes()).hexdigest()
+    result = executor.execute(ToolCall(id="patch", name="patch", arguments={
+        "path": "agent.py", "expected_sha256": expected,
+        "edits": [
+            {"old_string": "one = 1", "new_string": "one = 3"},
+            {"old_string": "missing", "new_string": "present"},
+        ],
+    }), target_path=tmp_path)
+    assert result.success is False
+    assert path.read_text(encoding="utf-8") == "one = 1\ntwo = 2\n"
+
+
+def test_read_file_returns_small_files_completely_and_pages_large_files_by_line(tmp_path: Path) -> None:
+    small_content = "".join(f"line {number}\n" for number in range(600))
+    (tmp_path / "small.txt").write_text(small_content, encoding="utf-8")
     executor = ToolExecutor(build_default_tool_registry())
 
-    first = executor.execute(ToolCall(id="read-1", name="read_file", arguments={"path": "large.txt"}), target_path=tmp_path)
-    second = executor.execute(
-        ToolCall(id="read-2", name="read_file", arguments={"path": "large.txt", "offset": first.metadata["next_offset"]}),
-        target_path=tmp_path,
+    small = executor.execute(
+        ToolCall(id="small", name="read_file", arguments={"path": "small.txt"}), target_path=tmp_path,
     )
+    assert small.output == small_content
+    assert small.metadata["total_lines"] == 600
+    assert small.metadata["complete"] is True
+    assert small.metadata["next_start_line"] is None
 
-    assert first.output.count("\n") == 200
+    large_content = "".join(f"line {number:04d} {'x' * 40}\n" for number in range(600))
+    (tmp_path / "large.txt").write_text(large_content, encoding="utf-8")
+    first = executor.execute(
+        ToolCall(id="read-1", name="read_file", arguments={"path": "large.txt"}), target_path=tmp_path,
+    )
+    second = executor.execute(ToolCall(id="read-2", name="read_file", arguments={
+        "path": "large.txt", "start_line": first.metadata["next_start_line"],
+    }), target_path=tmp_path)
+
+    assert len(first.output) <= 16_000
     assert first.metadata["truncated"] is True
-    assert second.metadata["truncated"] is False
-    assert first.output + second.output == content
+    assert first.metadata["next_start_line"] == first.metadata["end_line"] + 1
+    assert second.metadata["start_line"] == first.metadata["next_start_line"]
+    assert first.output + second.output == large_content
 
+
+def test_read_file_chunk_pages_a_line_longer_than_the_source_read_limit(tmp_path: Path) -> None:
+    executor = ToolExecutor(build_default_tool_registry())
     (tmp_path / "single-line.txt").write_text("x" * 20_000, encoding="utf-8")
-    first_line = executor.execute(
-        ToolCall(id="long-1", name="read_file", arguments={"path": "single-line.txt"}), target_path=tmp_path,
+    source = executor.execute(
+        ToolCall(id="source", name="read_file", arguments={"path": "single-line.txt"}), target_path=tmp_path,
     )
-    second_line = executor.execute(
-        ToolCall(id="long-2", name="read_file", arguments={"path": "single-line.txt", "offset": first_line.metadata["next_offset"]}),
+    first = executor.execute(
+        ToolCall(id="long-1", name="read_file_chunk", arguments={"path": "single-line.txt"}), target_path=tmp_path,
+    )
+    second = executor.execute(
+        ToolCall(id="long-2", name="read_file_chunk", arguments={
+            "path": "single-line.txt", "offset": first.metadata["next_offset"],
+        }),
         target_path=tmp_path,
     )
-    assert first_line.output + second_line.output == "x" * 20_000
+    invalid = executor.execute(
+        ToolCall(id="invalid", name="read_file", arguments={"path": "single-line.txt", "offset": 1}),
+        target_path=tmp_path,
+    )
+
+    assert source.metadata["requires_chunk"] is True
+    assert source.metadata["next_start_line"] is None
+    assert first.output + second.output == "x" * 20_000
+    assert second.metadata["complete"] is True
+    assert invalid.success is False
+    assert "Unknown arguments: offset" in (invalid.error or "")
+
+
+def test_read_file_uses_explicit_line_ranges(tmp_path: Path) -> None:
+    path = tmp_path / "source.py"
+    path.write_text("".join(f"line {number}\n" for number in range(1, 81)), encoding="utf-8")
+    executor = ToolExecutor(build_default_tool_registry())
+
+    first = executor.execute(ToolCall(id="range-1", name="read_file", arguments={
+        "path": "source.py", "start_line": 15, "line_count": 3,
+    }), target_path=tmp_path)
+    second = executor.execute(ToolCall(id="range-2", name="read_file", arguments={
+        "path": "source.py", "start_line": first.metadata["next_start_line"], "line_count": 2,
+    }), target_path=tmp_path)
+    clamped = executor.execute(ToolCall(id="clamped", name="read_file", arguments={
+        "path": "source.py", "start_line": 1, "line_count": 800,
+    }), target_path=tmp_path)
+
+    assert first.output == "line 15\nline 16\nline 17\n"
+    assert first.metadata["start_line"] == 15
+    assert first.metadata["end_line"] == 17
+    assert first.metadata["total_lines"] == 80
+    assert first.metadata["next_start_line"] == 18
+    assert second.output == "line 18\nline 19\n"
+    assert first.metadata["sha256"] == second.metadata["sha256"]
+    assert clamped.success is True
+    assert clamped.metadata["requested_line_count"] == 800
+    assert clamped.metadata["applied_line_count"] == 500
 
 
 def test_shell_output_is_bounded_and_git_diff_can_be_paged(tmp_path: Path) -> None:
@@ -324,6 +420,7 @@ def test_git_tools_and_repo_workflow(tmp_path: Path) -> None:
             arguments={
                 "path": "src/math_utils.py",
                 "content": "def subtract(a: int, b: int) -> int:\n    return a - b\n\n",
+                "expected_sha256": hashlib.sha256((workspace / "src" / "math_utils.py").read_bytes()).hexdigest(),
             },
         ),
         target_path=workspace,

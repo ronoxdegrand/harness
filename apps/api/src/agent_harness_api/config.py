@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     app_version: str = "0.7.1"
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=0, le=65535)
+    max_output_tokens: int = Field(default=4096, ge=512, le=65536)
     auth_token: str | None = None
     workspace_root: Path = Path(__file__).resolve().parents[4]
     allow_absolute_workspaces: bool = False

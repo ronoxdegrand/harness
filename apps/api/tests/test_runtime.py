@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sqlite3
 import subprocess
@@ -19,8 +20,9 @@ from agent_harness_api.tools import ToolCall, ToolExecutor, ToolResult, build_de
 
 
 class ScriptedModelProvider:
-    def __init__(self, python_executable: str) -> None:
+    def __init__(self, python_executable: str, repo_path: Path) -> None:
         self.python_executable = python_executable
+        self.repo_path = repo_path
         self.final_response_flags: list[bool] = []
 
     def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
@@ -89,6 +91,7 @@ class ScriptedModelProvider:
                         arguments={
                             "path": "math_utils.py",
                             "content": "def subtract(a: int, b: int) -> int:\n    return a - b\n",
+                            "expected_sha256": hashlib.sha256((self.repo_path / "math_utils.py").read_bytes()).hexdigest(),
                         },
                     )
                 ],
@@ -125,8 +128,15 @@ class ScriptedModelProvider:
 
 
 class EmptyModelProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
     def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
-        return ModelResponse()
+        self.calls += 1
+        if self.calls == 2:
+            assert context.retry_instruction is not None
+            assert "output limit" in context.retry_instruction
+        return ModelResponse(finish_reason="MAX_TOKENS", response_id="response-123", usage={"output_tokens": 10})
 
 
 class SteeringModelProvider:
@@ -199,8 +209,9 @@ def test_runtime_fails_when_model_returns_no_text_or_tools(tmp_path: Path, monke
     emitter = EventEmitter()
     emitter.subscribe(captured_events.append)
     registry = build_default_tool_registry()
+    model = EmptyModelProvider()
     runtime = AgentRuntime(
-        model=EmptyModelProvider(),
+        model=model,
         tool_registry=registry,
         tool_executor=ToolExecutor(registry),
         store=RunStore(database_path),
@@ -213,9 +224,135 @@ def test_runtime_fails_when_model_returns_no_text_or_tools(tmp_path: Path, monke
         runtime.run("ask for anything", target_path=tmp_path)
         raise AssertionError("Expected a runtime error when the model produced an empty response.")
     except RuntimeError as exc:
-        assert "empty response" in str(exc).lower()
+        assert "incomplete" in str(exc).lower()
     failure = next(event for event in captured_events if event.type == "turn.failed")
     assert failure.payload["iteration"] == 1
+    assert "finish_reason=MAX_TOKENS" in failure.payload["error"]
+    assert model.calls == 2
+    empty_events = [event for event in captured_events if event.type == "model.empty_response"]
+    assert [event.payload["attempt"] for event in empty_events] == [1, 2]
+    assert all(event.payload["response_id"] == "response-123" for event in empty_events)
+    assert sum(event.type == "model.incomplete_response" for event in captured_events) == 2
+
+
+def test_runtime_recovers_after_one_empty_model_response(tmp_path: Path, monkeypatch) -> None:
+    class EmptyThenText:
+        calls = 0
+
+        def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
+            self.calls += 1
+            if self.calls == 1:
+                return ModelResponse(finish_reason="MAX_TOKENS", response_id="response-1")
+            assert context.retry_instruction is not None
+            assert context.request_token_limit == 8000
+            return ModelResponse(output_text="Recovered response", finish_reason="STOP", response_id="response-2")
+
+    database_path = tmp_path / "recover_model.db"
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(database_path))
+    get_settings.cache_clear()
+    initialize_database()
+    events: list[RuntimeEvent] = []
+    emitter = EventEmitter()
+    emitter.subscribe(events.append)
+    registry = build_default_tool_registry()
+    model = EmptyThenText()
+    runtime = AgentRuntime(model=model, tool_registry=registry, tool_executor=ToolExecutor(registry),
+                           store=RunStore(database_path), event_emitter=emitter)
+
+    result = runtime.run("Say something", target_path=tmp_path)
+
+    assert result.status == "completed"
+    assert model.calls == 2
+    assert next(event for event in events if event.type == "model.empty_response").payload["finish_reason"] == "MAX_TOKENS"
+    recovery = next(event for event in events if event.type == "model.recovery_started")
+    assert recovery.payload["reason"] == "output_limit"
+    assert recovery.payload["message_token_limit"] == 8000
+    assert next(event for event in events if event.type == "model.completed").payload["response_id"] == "response-2"
+
+
+def test_runtime_continues_partial_length_response_before_completing(tmp_path: Path, monkeypatch) -> None:
+    class PartialThenComplete:
+        calls = 0
+
+        def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
+            self.calls += 1
+            if self.calls == 1:
+                return ModelResponse(
+                    output_text="I inspected the repository and",
+                    finish_reason="length",
+                    response_id="partial-1",
+                )
+            assert context.retry_instruction is not None
+            assert "without repeating" in context.retry_instruction
+            assert any(
+                message.role == "assistant" and message.content == "I inspected the repository and"
+                for message in context.messages
+            )
+            return ModelResponse(
+                output_text="The requested work is complete.",
+                finish_reason="stop",
+                response_id="complete-2",
+            )
+
+    database_path = tmp_path / "partial_model.db"
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(database_path))
+    get_settings.cache_clear()
+    initialize_database()
+    events: list[RuntimeEvent] = []
+    emitter = EventEmitter()
+    emitter.subscribe(events.append)
+    registry = build_default_tool_registry()
+    model = PartialThenComplete()
+    runtime = AgentRuntime(
+        model=model, tool_registry=registry, tool_executor=ToolExecutor(registry),
+        store=RunStore(database_path), event_emitter=emitter,
+    )
+
+    result = runtime.run("Finish the task", target_path=tmp_path)
+
+    assert result.status == "completed"
+    assert result.output_text == "The requested work is complete."
+    incomplete = next(event for event in events if event.type == "model.incomplete_response")
+    assert incomplete.payload["partial_output"] == "I inspected the repository and"
+    assert sum(event.type == "model.completed" for event in events) == 1
+
+
+def test_runtime_fails_resumably_after_two_partial_length_responses(tmp_path: Path, monkeypatch) -> None:
+    class AlwaysPartial:
+        calls = 0
+
+        def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
+            self.calls += 1
+            return ModelResponse(
+                output_text=f"partial response {self.calls}",
+                finish_reason="length",
+                response_id=f"partial-{self.calls}",
+            )
+
+    database_path = tmp_path / "repeated_partial.db"
+    monkeypatch.setenv("HARNESS_SQLITE_PATH", str(database_path))
+    get_settings.cache_clear()
+    initialize_database()
+    events: list[RuntimeEvent] = []
+    emitter = EventEmitter()
+    emitter.subscribe(events.append)
+    registry = build_default_tool_registry()
+    store = RunStore(database_path)
+    runtime = AgentRuntime(
+        model=AlwaysPartial(), tool_registry=registry, tool_executor=ToolExecutor(registry),
+        store=store, event_emitter=emitter,
+    )
+
+    with pytest.raises(RuntimeError, match="remained incomplete after one continuation"):
+        runtime.run("Finish the task", target_path=tmp_path, run_id="partial-run")
+
+    snapshot = store.load_latest_snapshot("partial-run")
+    assert snapshot is not None
+    assert [message["content"] for message in snapshot if message["role"] == "assistant"] == [
+        "partial response 1", "partial response 2",
+    ]
+    assert sum(event.type == "model.incomplete_response" for event in events) == 2
+    assert all(event.type != "model.completed" for event in events)
 
 
 def test_model_exception_is_sanitized_before_persistence(tmp_path: Path, monkeypatch) -> None:
@@ -246,6 +383,9 @@ def test_model_exception_is_sanitized_before_persistence(tmp_path: Path, monkeyp
         stored_error = connection.execute("SELECT error FROM harness_runs").fetchone()[0]
     assert "secret-test-key" not in stored_error
     assert "secret-test-key" not in str(next(event for event in events if event.type == "turn.failed").payload)
+    request_failure = next(event for event in events if event.type == "model.request_failed")
+    assert request_failure.payload["error_type"] == "RuntimeError"
+    assert "secret-test-key" not in str(request_failure.payload)
 
 
 def test_runtime_stops_before_starting_more_work(tmp_path: Path, monkeypatch) -> None:
@@ -319,7 +459,7 @@ def test_agent_runtime_executes_single_agent_loop(tmp_path: Path, monkeypatch) -
     emitter.subscribe(captured_events.append)
 
     registry = build_default_tool_registry()
-    model = ScriptedModelProvider(sys.executable)
+    model = ScriptedModelProvider(sys.executable, broken_repo)
     runtime = AgentRuntime(
         model=model,
         tool_registry=registry,
@@ -550,7 +690,7 @@ def test_runtime_resume_loads_latest_snapshot(tmp_path: Path, monkeypatch) -> No
 
     registry = build_default_tool_registry()
     runtime = AgentRuntime(
-        model=ScriptedModelProvider(sys.executable),
+            model=ScriptedModelProvider(sys.executable, tmp_path),
         tool_registry=registry,
         tool_executor=ToolExecutor(registry),
         store=store,
@@ -753,7 +893,9 @@ def test_runtime_retries_unstructured_tool_markup_as_a_structured_call(tmp_path:
                 assert all(message["role"] != "feedback" for message in context.snapshot())
                 return ModelResponse(tool_calls=[ToolCall(
                     id="real-patch", name="patch", arguments={
-                        "path": "agent.py", "old_string": "status = 'old'", "new_string": "status = 'new'",
+                        "path": "agent.py",
+                        "expected_sha256": hashlib.sha256((tmp_path / "agent.py").read_bytes()).hexdigest(),
+                        "edits": [{"old_string": "status = 'old'", "new_string": "status = 'new'"}],
                     },
                 )])
             assert context.retry_instruction is None
@@ -883,7 +1025,7 @@ def test_unsupported_edit_claim_gets_one_chance_to_do_the_work(tmp_path: Path, m
                 assert "no successful action" in context.retry_instruction
                 return ModelResponse(tool_calls=[ToolCall(
                     id="write", name="write_file",
-                    arguments={"path": "result.txt", "content": "done"},
+                    arguments={"path": "result.txt", "content": "done", "expected_sha256": "absent"},
                 )])
             assert context.retry_instruction is None
             return ModelResponse(output_text="I updated the file.")

@@ -6,7 +6,7 @@ from uuid import uuid4
 import httpx
 
 from .context import Context
-from .model import ModelProvider, ModelResponse, system_prompt
+from .model import ModelProvider, ModelResponse, prepare_model_input, safe_model_marker, system_prompt, token_usage
 from .model_request import post_model_request
 from .tools import ToolCall
 
@@ -18,10 +18,12 @@ class GeminiModelProvider(ModelProvider):
         api_key: str | None,
         model_name: str,
         tool_registry: Any,
+        max_output_tokens: int = 4096,
     ) -> None:
         self.api_key = api_key
         self.model_name = model_name
         self.tool_registry = tool_registry
+        self.max_output_tokens = max_output_tokens
 
         if not self.api_key:
             raise ValueError(
@@ -29,12 +31,23 @@ class GeminiModelProvider(ModelProvider):
             )
 
     def complete(self, context: Context, *, final_response: bool = False) -> ModelResponse:
-        messages = context.messages
-        if not any(message.role == "user" for message in messages):
+        declarations = [] if final_response else [
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": self._convert_schema(tool.input_schema),
+            }
+            for tool in self.tool_registry._tools.values()
+        ]
+        prepared = prepare_model_input(
+            context, tools=declarations, output_tokens=self.max_output_tokens,
+            final_response=final_response,
+        )
+        if prepared is None:
             return ModelResponse(output_text="")
-
+        instruction, messages = prepared
         payload = self._build_payload(
-            messages, final_response=final_response, retry_instruction=context.retry_instruction,
+            messages, instruction=instruction, final_response=final_response, tool_declarations=declarations,
         )
         response = post_model_request(
             "Gemini",
@@ -47,66 +60,57 @@ class GeminiModelProvider(ModelProvider):
 
         text = self._extract_text(data)
         tool_calls = self._extract_tool_calls(data)
+        candidates = data.get("candidates") or []
+        finish_reason = safe_model_marker(candidates[0].get("finishReason")) if candidates else None
+        diagnostics = {
+            "finish_reason": finish_reason,
+            "response_id": safe_model_marker(data.get("responseId")),
+            "usage": token_usage(data.get("usageMetadata"), {
+                "input_tokens": "promptTokenCount", "output_tokens": "candidatesTokenCount",
+                "total_tokens": "totalTokenCount",
+            }),
+        }
 
         if tool_calls:
             return ModelResponse(
                 output_text=text,
                 tool_calls=tool_calls,
                 deltas=[text] if text else [],
+                **diagnostics,
             )
 
-        return ModelResponse(output_text=text, deltas=[text] if text else [])
+        return ModelResponse(output_text=text, deltas=[text] if text else [], **diagnostics)
 
     def _build_payload(
-        self, messages: list[Any], *, final_response: bool = False,
-        retry_instruction: str | None = None,
+        self, messages: list[Any], *, instruction: str | None = None, final_response: bool = False,
+        tool_declarations: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        contents: list[dict[str, Any]] = []
-        for message in messages:
-            role = message.role
-            if role == "user":
-                contents.append({"role": "user", "parts": [{"text": message.content}]})
-            elif role == "checkpoint":
-                contents.append({"role": "user", "parts": [{"text": message.content}]})
-            elif role == "assistant":
-                contents.append({"role": "model", "parts": [{"text": message.content}]})
-            elif role == "tool":
-                contents.append(
-                    {
-                        "role": "user",
-                        "parts": [
-                            {
-                                "text": (
-                                    f"Untrusted tool result for {message.name}: "
-                                    f"{message.content}"
-                                )
-                            }
-                        ],
-                    }
-                )
+        contents = [
+            {
+                "role": "model" if message.role == "assistant" else "user",
+                "parts": [{"text": message.content}],
+            }
+            for message in messages
+        ]
 
         payload = {
             "system_instruction": {
-                "parts": [{"text": system_prompt(final_response) + (
-                    f"\n{retry_instruction}" if retry_instruction else ""
-                )}]
+                "parts": [{"text": instruction or system_prompt(final_response)}]
             },
             "contents": contents,
             "generationConfig": {
                 "temperature": 0.2,
+                "maxOutputTokens": self.max_output_tokens,
             },
         }
         if not final_response:
             payload["tools"] = [
                 {
-                    "functionDeclarations": [
-                        {
-                            "name": tool.name,
-                            "description": tool.description,
-                            "parameters": self._convert_schema(tool.input_schema),
-                        }
+                    "functionDeclarations": tool_declarations if tool_declarations is not None else [
+                        {"name": tool.name, "description": tool.description,
+                         "parameters": self._convert_schema(tool.input_schema)}
                         for tool in self.tool_registry._tools.values()
-                    ]
+                    ],
                 }
             ]
         return payload

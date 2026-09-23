@@ -40,14 +40,25 @@ def test_gemini_key_is_sent_in_a_header_not_a_url() -> None:
     context = Context()
     context.add_user("hello")
     request = httpx.Request("POST", "https://generativelanguage.googleapis.com/v1beta/models/test-model:generateContent")
-    response = httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": "Hi"}]}}]}, request=request)
+    response = httpx.Response(200, json={
+        "responseId": "gemini-response-1",
+        "usageMetadata": {"promptTokenCount": 12, "candidatesTokenCount": 3, "totalTokenCount": 15},
+        "candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": "Hi"}]}}],
+    }, request=request)
 
     with patch("agent_harness_api.gemini_model.httpx.post", return_value=response) as post:
-        assert provider.complete(context).output_text == "Hi"
+        result = provider.complete(context)
+
+    assert result.output_text == "Hi"
+    assert result.diagnostics() == {
+        "finish_reason": "STOP", "response_id": "gemini-response-1",
+        "usage": {"input_tokens": 12, "output_tokens": 3, "total_tokens": 15},
+    }
 
     assert post.call_args.kwargs["headers"] == {"x-goog-api-key": "secret-test-key"}
     assert "params" not in post.call_args.kwargs
     assert "secret-test-key" not in post.call_args.args[0]
+    assert post.call_args.kwargs["json"]["generationConfig"]["maxOutputTokens"] == 4096
 
 
 def test_gemini_separates_one_time_retry_instruction_from_repo_tool_examples() -> None:

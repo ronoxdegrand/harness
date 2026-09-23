@@ -47,6 +47,10 @@ def _has_unstructured_tool_call(text: str) -> bool:
     )
 
 
+def _reached_output_limit(finish_reason: str | None) -> bool:
+    return (finish_reason or "").lower() in {"length", "max_tokens", "max_output_tokens"}
+
+
 @dataclass
 class RunResult:
     run_id: str
@@ -202,17 +206,85 @@ class AgentRuntime:
                 if retry_instruction and not force_final_response:
                     context.retry_instruction = retry_instruction
                     retry_instruction = None
-                try:
-                    response = self.model.complete(
-                        context,
-                        final_response=force_final_response,
+                for attempt in range(2):
+                    self._check_stop()
+                    try:
+                        response = self.model.complete(
+                            context,
+                            final_response=force_final_response,
+                        )
+                    except ModelRequestError as exc:
+                        self._emit(active_run_id, "model.request_failed", iteration=iteration, error=str(exc))
+                        raise
+                    except Exception as exc:
+                        self._emit(active_run_id, "model.request_failed", iteration=iteration,
+                                   error_type=type(exc).__name__)
+                        raise ModelRequestError("The model request failed unexpectedly. Please try again.") from exc
+                    finally:
+                        context.retry_instruction = None
+                        context.request_token_limit = None
+                    if _reached_output_limit(response.finish_reason):
+                        self._emit(
+                            active_run_id,
+                            "model.incomplete_response",
+                            iteration=iteration,
+                            attempt=attempt + 1,
+                            partial_output=response.output_text,
+                            tool_calls=[call.as_dict() for call in response.tool_calls],
+                            **response.diagnostics(),
+                        )
+                        if not response.output_text and not response.tool_calls:
+                            self._emit(
+                                active_run_id, "model.empty_response", iteration=iteration,
+                                attempt=attempt + 1, **response.diagnostics(),
+                            )
+                        if response.output_text:
+                            context.add_assistant(response.output_text)
+                            self._emit(
+                                active_run_id, "context.updated", iteration=iteration,
+                                context=context.inspect(),
+                            )
+                        self.store.save_snapshot(active_run_id, iteration, context.snapshot())
+                        if attempt == 0:
+                            context.request_token_limit = max(512, context.token_budget // 4)
+                            context.retry_instruction = (
+                                "Your previous response was cut off at its output limit. Its partial text is in "
+                                "the conversation. Continue without repeating it. Respond concisely with either "
+                                "the structured tool calls needed for the task or the completed final answer."
+                            )
+                            self._emit(
+                                active_run_id, "model.recovery_started", iteration=iteration,
+                                reason="output_limit", message_token_limit=context.request_token_limit,
+                            )
+                            continue
+                        details = response.diagnostics()
+                        markers = ", ".join(
+                            f"{key}={value}" for key, value in details.items()
+                            if key in {"finish_reason", "response_id"} and value is not None
+                        )
+                        raise ModelRequestError(
+                            "Model response remained incomplete after one continuation"
+                            + (f" ({markers})." if markers else ".")
+                        )
+                    if response.output_text or response.tool_calls:
+                        break
+                    self._emit(active_run_id, "model.empty_response", iteration=iteration,
+                               attempt=attempt + 1, **response.diagnostics())
+                    if attempt == 0:
+                        context.retry_instruction = (
+                            "Your previous response contained no text or structured tool calls. "
+                            "Continue the task with a response or a structured tool call."
+                        )
+                else:
+                    details = response.diagnostics()
+                    markers = ", ".join(
+                        f"{key}={value}" for key, value in details.items()
+                        if key in {"finish_reason", "response_id"} and value is not None
                     )
-                except ModelRequestError:
-                    raise
-                except Exception as exc:
-                    raise ModelRequestError("The model request failed unexpectedly. Please try again.") from exc
-                finally:
-                    context.retry_instruction = None
+                    raise ModelRequestError(
+                        "Model returned an empty response twice; no text or tool calls were produced"
+                        + (f" ({markers})." if markers else ".")
+                    )
 
                 if not response.tool_calls and _has_unstructured_tool_call(response.output_text):
                     self._emit(active_run_id, "model.invalid_tool_call", iteration=iteration)
@@ -267,6 +339,7 @@ class AgentRuntime:
                 model_completed_payload: dict[str, object] = {
                     "iteration": iteration,
                     "tool_calls": [call.as_dict() for call in response.tool_calls],
+                    **response.diagnostics(),
                 }
                 if response.output_text:
                     model_completed_payload["output_text"] = response.output_text
@@ -276,11 +349,6 @@ class AgentRuntime:
                     "model.completed",
                     **model_completed_payload,
                 )
-
-                if not response.output_text and not response.tool_calls:
-                    raise RuntimeError(
-                        "Model returned an empty response; neither text nor tool calls were produced."
-                    )
 
                 if response.output_text:
                     context.add_assistant(response.output_text)

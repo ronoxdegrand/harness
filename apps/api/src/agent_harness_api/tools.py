@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -27,6 +29,14 @@ class ToolArgumentError(ValueError):
     pass
 
 
+class ToolConflictError(ValueError):
+    def __init__(self, path: str, expected: str, actual: str) -> None:
+        super().__init__("File changed since it was read. Read it again and retry the edit with its new sha256.")
+        self.path = path
+        self.expected = expected
+        self.actual = actual
+
+
 _SCHEMA_TYPE_MAP: dict[str, type[Any]] = {
     "array": list,
     "boolean": bool,
@@ -35,7 +45,7 @@ _SCHEMA_TYPE_MAP: dict[str, type[Any]] = {
 }
 _MAX_DISCOVERY_FILES = 5_000
 _OUTPUT_CHARS = 16_000
-_READ_LINES = 200
+_READ_LINES = 500
 
 
 def _workspace_files(
@@ -205,6 +215,20 @@ class ToolExecutor:
                     "expected_schema": tool.input_schema,
                 },
             )
+        except ToolConflictError as exc:
+            return ToolResult(
+                success=False,
+                output="",
+                error=str(exc),
+                metadata={
+                    "tool_name": call.name,
+                    "workspace_root": str(workspace_root),
+                    "path": exc.path,
+                    "conflict": True,
+                    "expected_sha256": exc.expected,
+                    "actual_sha256": exc.actual,
+                },
+            )
         except Exception as exc:
             return ToolResult(
                 success=False,
@@ -223,25 +247,42 @@ def build_default_tool_registry() -> ToolRegistry:
             ToolDefinition(
                 name="read_file",
                 description=(
-                    "Read a UTF-8 file in bounded slices. The result includes next_offset when more "
-                    "content remains; pass it as offset to continue reading."
+                    "Read a UTF-8 source file by 1-based line number. Small files are returned completely. "
+                    "For larger files, use next_start_line to continue. line_count is capped at 500 and the "
+                    "output is always bounded by 16,000 characters. The result includes sha256 for edits."
                 ),
                 input_schema=_object_schema(
-                    {"path": {"type": "string"}, "offset": {"type": "integer"}},
+                    {"path": {"type": "string"}, "start_line": {"type": "integer"},
+                     "line_count": {"type": "integer"}},
                     required=["path"],
                 ),
                 handler=_read_file,
                 replay_policy="safe",
             ),
             ToolDefinition(
+                name="read_file_chunk",
+                description=(
+                    "Read a UTF-8 file by 0-based character offset. Use this for minified files or lines too "
+                    "long for read_file, and follow next_offset until complete. Output is capped at 16,000 characters."
+                ),
+                input_schema=_object_schema(
+                    {"path": {"type": "string"}, "offset": {"type": "integer"}},
+                    required=["path"],
+                ),
+                handler=_read_file_chunk,
+                replay_policy="safe",
+            ),
+            ToolDefinition(
                 name="write_file",
-                description="Write UTF-8 text content relative to the workspace root.",
+                description=("Write a complete UTF-8 file only if its sha256 still matches the value from read_file. "
+                             "Use expected_sha256='absent' to create a new file. On conflict, re-read first."),
                 input_schema=_object_schema(
                     {
                         "path": {"type": "string"},
                         "content": {"type": "string"},
+                        "expected_sha256": {"type": "string"},
                     },
-                    required=["path", "content"],
+                    required=["path", "content", "expected_sha256"],
                 ),
                 handler=_write_file,
                 replay_policy="idempotent",
@@ -250,17 +291,20 @@ def build_default_tool_registry() -> ToolRegistry:
             ToolDefinition(
                 name="patch",
                 description=(
-                    "Replace exactly one occurrence of old_string with new_string in an existing "
-                    "UTF-8 file. Use a distinctive old_string; the file is unchanged if it is "
-                    "missing or ambiguous."
+                    "Apply all edits to one UTF-8 file in a single write if its sha256 matches read_file. "
+                    "Each old_string must match exactly once in sequence. Any mismatch leaves the file unchanged. "
+                    "Use one patch call per file per turn; on conflict, re-read the file."
                 ),
                 input_schema=_object_schema(
                     {
                         "path": {"type": "string"},
-                        "old_string": {"type": "string"},
-                        "new_string": {"type": "string"},
+                        "expected_sha256": {"type": "string"},
+                        "edits": {"type": "array", "items": _object_schema(
+                            {"old_string": {"type": "string"}, "new_string": {"type": "string"}},
+                            required=["old_string", "new_string"],
+                        )},
                     },
-                    required=["path", "old_string", "new_string"],
+                    required=["path", "expected_sha256", "edits"],
                 ),
                 handler=_patch_file,
                 replay_policy="never",
@@ -531,51 +575,147 @@ def _slice_output(content: str, offset: int, *, max_lines: int | None = None) ->
 
 def _read_file(arguments: dict[str, Any], root: Path) -> ToolResult:
     path = _resolve_path(root, arguments["path"])
-    content = path.read_text(encoding="utf-8")
-    offset = int(arguments.get("offset", 0))
-    output, metadata = _slice_output(content, offset, max_lines=_READ_LINES)
-    start_line = content.count("\n", 0, offset) + 1
+    raw = path.read_bytes()
+    content = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    lines = content.splitlines(keepends=True)
+    total_lines = len(lines)
+    start_line = arguments.get("start_line", 1)
+    requested_line_count = arguments.get("line_count", _READ_LINES)
+    if start_line < 1 or requested_line_count < 1:
+        raise ToolArgumentError("start_line and line_count must be at least 1.")
+    if total_lines and start_line > total_lines:
+        raise ToolArgumentError(f"start_line is past the end of the file ({total_lines} lines).")
+    if not total_lines and start_line != 1:
+        raise ToolArgumentError("start_line is past the end of the empty file.")
+
+    applied_line_count = min(requested_line_count, _READ_LINES)
+    start_index = start_line - 1
+    if "start_line" not in arguments and "line_count" not in arguments and len(content) <= _OUTPUT_CHARS:
+        selected = content
+    else:
+        selected = "".join(lines[start_index:start_index + applied_line_count])
+    output = selected[:_OUTPUT_CHARS]
+    split_line = False
+    if len(output) < len(selected) and not output.endswith("\n"):
+        last_newline = output.rfind("\n")
+        if last_newline >= 0:
+            output = output[:last_newline + 1]
+        else:
+            split_line = True
+    consumed_lines = output.count("\n") + int(bool(output) and not output.endswith("\n"))
+    end_line = start_line + consumed_lines - 1 if consumed_lines else start_line - 1
+    next_start_line = None if split_line else (end_line + 1 if end_line < total_lines else None)
+    complete = next_start_line is None and not split_line
     return ToolResult(
         success=True,
         output=output,
         metadata={
             "path": str(path.relative_to(root).as_posix()),
+            "sha256": hashlib.sha256(raw).hexdigest(),
             "start_line": start_line,
-            "end_line": start_line + output.count("\n") - int(output.endswith("\n")),
+            "end_line": end_line,
+            "total_lines": total_lines,
+            "requested_line_count": requested_line_count,
+            "applied_line_count": applied_line_count,
+            "next_start_line": next_start_line,
+            "complete": complete,
+            "truncated": not complete,
+            "requires_chunk": split_line,
+        },
+    )
+
+
+def _read_file_chunk(arguments: dict[str, Any], root: Path) -> ToolResult:
+    path = _resolve_path(root, arguments["path"])
+    raw = path.read_bytes()
+    content = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    output, metadata = _slice_output(content, arguments.get("offset", 0))
+    return ToolResult(
+        success=True,
+        output=output,
+        metadata={
+            "path": str(path.relative_to(root).as_posix()),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "complete": not metadata["truncated"],
             **metadata,
         },
     )
 
 
+def _current_version(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else "absent"
+
+
+def _check_version(path: Path, root: Path, expected: str) -> None:
+    if expected != "absent" and not re.fullmatch(r"[0-9a-f]{64}", expected):
+        raise ToolArgumentError("expected_sha256 must be the sha256 from read_file or 'absent'.")
+    actual = _current_version(path)
+    if actual != expected:
+        raise ToolConflictError(path.relative_to(root).as_posix(), expected, actual)
+
+
+def _atomic_file_write(path: Path, root: Path, content: bytes, expected: str) -> None:
+    _check_version(path, root, expected)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", delete=False) as stream:
+            temporary = stream.name
+            stream.write(content)
+        if path.exists():
+            os.chmod(temporary, path.stat().st_mode)
+        _check_version(path, root, expected)
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            Path(temporary).unlink(missing_ok=True)
+
+
 def _write_file(arguments: dict[str, Any], root: Path) -> ToolResult:
     path = _resolve_path(root, arguments["path"])
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(arguments["content"], encoding="utf-8")
+    content = arguments["content"].encode("utf-8")
+    _atomic_file_write(path, root, content, arguments["expected_sha256"])
     return ToolResult(
         success=True,
         output="",
         metadata={
             "path": str(path.relative_to(root).as_posix()),
-            "bytes_written": path.stat().st_size,
+            "bytes_written": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
         },
     )
 
 
 def _patch_file(arguments: dict[str, Any], root: Path) -> ToolResult:
     path = _resolve_path(root, arguments["path"])
-    old_string = arguments["old_string"]
-    if not old_string:
-        raise ValueError("old_string must not be empty.")
-    content = path.read_text(encoding="utf-8")
-    matches = content.count(old_string)
-    if matches != 1:
-        raise ValueError(f"Patch needs exactly one match; found {matches}.")
-    updated = content.replace(old_string, arguments["new_string"], 1)
-    path.write_text(updated, encoding="utf-8")
+    expected = arguments["expected_sha256"]
+    if expected == "absent":
+        raise ToolArgumentError("patch requires an existing file; use write_file to create it.")
+    _check_version(path, root, expected)
+    edits = arguments["edits"]
+    if not edits:
+        raise ToolArgumentError("edits must contain at least one replacement.")
+    updated = path.read_bytes().decode("utf-8")
+    for index, edit in enumerate(edits, start=1):
+        if not isinstance(edit, dict) or set(edit) != {"old_string", "new_string"} or not all(
+            isinstance(value, str) for value in edit.values()
+        ):
+            raise ToolArgumentError(f"Edit {index} must contain string old_string and new_string only.")
+        old_string = edit["old_string"]
+        if not old_string:
+            raise ToolArgumentError(f"Edit {index} old_string must not be empty.")
+        matches = updated.count(old_string)
+        if matches != 1:
+            raise ValueError(f"Edit {index} needs exactly one match; found {matches}. No edits were written.")
+        updated = updated.replace(old_string, edit["new_string"], 1)
+    content = updated.encode("utf-8")
+    _atomic_file_write(path, root, content, expected)
     return ToolResult(
         success=True,
         output="",
-        metadata={"path": str(path.relative_to(root).as_posix())},
+        metadata={"path": str(path.relative_to(root).as_posix()), "sha256": hashlib.sha256(content).hexdigest(),
+                  "edits_applied": len(edits)},
     )
 
 

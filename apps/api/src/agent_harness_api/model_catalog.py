@@ -28,13 +28,20 @@ def model_spec(model_name: str) -> ModelSpec:
 
 def build_model_provider(
     model_name: str, registry: ToolRegistry, *, gemini_api_key: str | None, sarvam_api_key: str | None,
+    max_output_tokens: int = 4096,
 ) -> ModelProvider:
     spec = model_spec(model_name)
     if spec.provider == "gemini":
         from .gemini_model import GeminiModelProvider
 
-        return GeminiModelProvider(api_key=gemini_api_key, model_name=model_name, tool_registry=registry)
+        return GeminiModelProvider(
+            api_key=gemini_api_key, model_name=model_name, tool_registry=registry,
+            max_output_tokens=max_output_tokens,
+        )
 
     from .sarvam_model import SarvamModelProvider
 
-    return SarvamModelProvider(api_key=sarvam_api_key, model_name=model_name, tool_registry=registry)
+    return SarvamModelProvider(
+        api_key=sarvam_api_key, model_name=model_name, tool_registry=registry,
+        max_output_tokens=max_output_tokens,
+    )

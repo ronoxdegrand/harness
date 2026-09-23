@@ -58,6 +58,15 @@ import {
   type ThreadTurn,
 } from "@/appShared";
 
+function firstAvailableModel(
+  availableModels: string[],
+  ...candidates: Array<string | null | undefined>
+) {
+  return candidates.find((candidate): candidate is string => (
+    Boolean(candidate) && availableModels.includes(candidate as string)
+  )) ?? "";
+}
+
 export function useAppController() {
   // Persistent settings, thread data, panel state, and transient run state.
   const desktop = window.harnessDesktop;
@@ -305,6 +314,11 @@ export function useAppController() {
   const availableModels = modelCatalog
     .filter((model) => model.selectable && (model.provider === "gemini" ? apiKey.trim() : sarvamApiKey.trim()))
     .map((model) => model.id);
+  const recentThreadModel = threads.find((thread) => thread.model_name)?.model_name;
+  const availableModelsRef = useRef(availableModels);
+  availableModelsRef.current = availableModels;
+  const modelNameRef = useRef(modelName);
+  modelNameRef.current = modelName;
   useEffect(() => {
     if (status !== "running" && status !== "connecting") return;
     const timer = window.setInterval(() => setActivityClock(Date.now()), 1000);
@@ -376,9 +390,16 @@ export function useAppController() {
   useEffect(() => {
     setModelName((current) => {
       if (current && availableModels.includes(current)) return current;
-      return selectableModel(activeThread?.model_name ?? "", availableModels);
+      const nextModel = firstAvailableModel(
+        availableModels,
+        activeThread?.model_name,
+        localStorage.getItem("last-used-model"),
+        recentThreadModel,
+      );
+      if (nextModel) localStorage.setItem("last-used-model", nextModel);
+      return nextModel;
     });
-  }, [apiKey, sarvamApiKey, modelCatalog, activeThread?.model_name]);
+  }, [apiKey, sarvamApiKey, modelCatalog, activeThread?.model_name, recentThreadModel]);
 
   useEffect(() => {
     return () => {
@@ -860,6 +881,14 @@ export function useAppController() {
     const nextWorkspacePath = pathMode === "unselected"
       ? ""
       : activeThread?.workspace_path ?? workspacePath;
+    const nextModelName = firstAvailableModel(
+      availableModelsRef.current,
+      localStorage.getItem("last-used-model"),
+      modelNameRef.current,
+      activeThread?.model_name,
+      recentThreadModel,
+    );
+    if (nextModelName) localStorage.setItem("last-used-model", nextModelName);
     socketRef.current?.close();
     activeThreadIdRef.current = null;
     setActiveThread(null);
@@ -881,7 +910,7 @@ export function useAppController() {
     setStatus("idle");
     setTask("");
     setNewThreadTitle(null);
-    setModelName("");
+    setModelName(nextModelName);
     setWorkspacePath(nextWorkspacePath);
     setContextPreviewOpen(false);
     if (!nextWorkspacePath.trim()) {
@@ -944,6 +973,7 @@ export function useAppController() {
   function beginRun(submittedTaskValue: string, threadOverride?: ThreadSummary | null) {
     if (!submittedTaskValue.trim() || !modelName || (!activeThread && !threadOverride && !workspacePath.trim())) return;
     socketRef.current?.close();
+    localStorage.setItem("last-used-model", modelName);
 
     const thread = threadOverride === undefined ? activeThread : threadOverride;
     let runThread = thread;
@@ -1439,12 +1469,6 @@ export function useAppController() {
   ].map((file) => ({ file, staged: false })).concat(
     (gitStatus?.staged ?? []).map((file) => ({ file, staged: true })),
   );
-  const gitDiffIndex = gitDiffFiles.findIndex(({ file, staged }) =>
-    file.path === gitDiff?.path && staged === gitDiff?.staged);
-  function openAdjacentGitDiff(direction: -1 | 1) {
-    const next = gitDiffFiles[gitDiffIndex + direction];
-    if (next) void openGitDiff(next.file, next.staged);
-  }
   function rememberDiffScroll() {
     const body = diffBodyRef.current;
     if (!body || !gitDiff) return;
@@ -1688,10 +1712,7 @@ export function useAppController() {
     loadGitStatus,
     openGitDiff,
     closeGitDiff,
-    openAdjacentGitDiff,
     rememberDiffScroll,
-    gitDiffIndex,
-    gitDiffFiles,
     switchGitBranch,
     syncGitBranch,
     createGitCommit,
