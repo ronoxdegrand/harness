@@ -155,11 +155,11 @@ export function useAppController() {
   const [contextClosing, setContextClosing] = useState(false);
   const [gitPreviewOpen, setGitPreviewOpen] = useState(false);
   const [gitClosing, setGitClosing] = useState(false);
-  
-  
-  
-  
-  
+
+
+
+
+
   const [gitDiffWrap, setGitDiffWrap] = useState(() =>
     !desktop && localStorage.getItem("git-diff-wrap") === "true",
   );
@@ -171,9 +171,9 @@ export function useAppController() {
   );
   const [renderedDiffWidth, setRenderedDiffWidth] = useState(0);
   const [composerHeight, setComposerHeight] = useState(0);
-  
-  
-  
+
+
+
   const [collapsedGitGroups, setCollapsedGitGroups] = useState<Record<GitGroup, boolean>>({
     staged: false,
     changes: false,
@@ -234,14 +234,14 @@ export function useAppController() {
     ceiling_seconds?: number;
   } | null>(null);
   const [error, setError] = useState("");
-  
+
   const socketRef = useRef<WebSocket | null>(null);
   const queuedTasksRef = useRef<QueuedTask[]>([]);
   const syntheticTurnIdRef = useRef(-1);
   const activeThreadIdRef = useRef<string | null>(null);
   const taskInputRef = useRef<HTMLTextAreaElement | null>(null);
   const composerRef = useRef<HTMLFormElement | null>(null);
-  
+
   const conversationBottomRef = useRef<HTMLDivElement | null>(null);
   const conversationAreaRef = useRef<HTMLDivElement | null>(null);
   const diffPanelRef = useRef<HTMLElement | null>(null);
@@ -258,11 +258,11 @@ export function useAppController() {
   });
   const apiKeyPromptedRef = useRef(false);
   const continuationPendingRef = useRef(false);
-  
+
   const gitCloseTimerRef = useRef<number | null>(null);
   const contextCloseTimerRef = useRef<number | null>(null);
-  
-  
+
+
   const resizeRef = useRef<{
     panel: "sidebar" | "activity" | "context" | "git" | "diff";
     startX: number;
@@ -829,25 +829,25 @@ export function useAppController() {
     }
   }
 
-  
 
-  
 
-  
 
-  
 
-  
 
-  
 
-  
 
-  
 
-  
 
-  
+
+
+
+
+
+
+
+
+
+
 
   async function openThread(threadId: string, preserveIterationLimit = false) {
     try {

@@ -244,4 +244,3 @@ export function showInActivity(event: RuntimeEvent) {
     && event.type !== "model.delta"
     && event.type !== "turn.completed";
 }
-

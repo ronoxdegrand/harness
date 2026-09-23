@@ -57,4 +57,3 @@ export function ShortcutKeys({ keys }: { keys: string[] }) {
     </span>
   );
 }
-
